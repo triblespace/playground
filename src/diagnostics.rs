@@ -278,7 +278,7 @@ struct BranchSnapshot {
 #[notebook(name = "Playground Diagnostics")]
 pub fn diagnostics(nb: &mut NotebookCtx) {
     let padding = DEFAULT_CARD_PADDING;
-    nb.state(
+    let dashboard = nb.state(
         "playground-diagnostics",
         DashboardState::default(),
         move |ui, state| {
@@ -329,103 +329,152 @@ _Live view of the agent pile, exec queue, and message activity._"
                     refresh_snapshot(state);
                 }
                 ui.ctx().request_repaint();
-
-                ui.separator();
-                ui.heading("Overview");
-                let snapshot_value = state.snapshot.clone();
-                match snapshot_value {
-                    None => {
-                        ui.label("No snapshot yet.");
-                    }
-                    Some(Err(err)) => {
-                        ui.colored_label(egui::Color32::RED, err);
-                    }
-                    Some(Ok(snapshot)) => {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Pile: {}", snapshot.pile_path.display()));
-                        });
-                        if !snapshot.branches.is_empty() {
-                            ui.label("Branches:");
-                            for branch in &snapshot.branches {
-                                let label =
-                                    branch.name.as_deref().unwrap_or("<unnamed>").to_string();
-                                ui.label(format!("- {label} ({})", id_prefix(branch.id)));
-                            }
-                        }
-
-                        ui.separator();
-                        ui.heading("Exec queue");
-                        if let Some(err) = &snapshot.exec_error {
-                            ui.colored_label(egui::Color32::RED, err);
-                        } else {
-                            render_exec_summary(ui, &snapshot.exec_summary);
-                            render_exec_rows(
-                                ui,
-                                snapshot.now_key,
-                                &snapshot.exec_rows,
-                                &snapshot.shortnames,
-                            );
-                        }
-
-                        ui.separator();
-                        ui.heading("Reasoning summaries");
-                        if snapshot.reasoning_summaries.is_empty() {
-                            ui.label("No summaries yet.");
-                        } else {
-                            render_reasoning_summaries(
-                                ui,
-                                snapshot.now_key,
-                                &snapshot.reasoning_summaries,
-                            );
-                        }
-
-                        ui.separator();
-                        ui.heading("Local messages");
-                        if let Some(err) = &snapshot.local_message_error {
-                            ui.colored_label(egui::Color32::RED, err);
-                        } else {
-                            auto_ack_local_messages(
-                                state,
-                                &snapshot.branches,
-                                &snapshot.local_message_rows,
-                                snapshot.local_reader_id,
-                            );
-                            render_local_messages(
-                                ui,
-                                snapshot.now_key,
-                                &snapshot.local_message_rows,
-                                snapshot.local_sender_id,
-                                snapshot.local_reader_id,
-                            );
-                        }
-                        render_local_composer(ui, state, &snapshot.branches, &snapshot);
-
-                        ui.separator();
-                        ui.heading("Relations");
-                        if let Some(err) = &snapshot.relations_error {
-                            ui.colored_label(egui::Color32::RED, err);
-                        } else {
-                            render_relations(ui, &snapshot.relations_people);
-                        }
-
-                        ui.separator();
-                        ui.heading("Teams conversations");
-                        if let Some(err) = &snapshot.teams_error {
-                            ui.colored_label(egui::Color32::RED, err);
-                        } else {
-                            render_teams_conversations(
-                                ui,
-                                state,
-                                snapshot.now_key,
-                                &snapshot.teams_chats,
-                                &snapshot.teams_messages,
-                            );
-                        }
-                    }
-                }
             });
         },
     );
+
+    nb.view(move |ui| {
+        let state = dashboard.read(ui);
+        with_padding(ui, padding, |ui| {
+            ui.heading("Overview");
+            let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
+                return;
+            };
+            ui.horizontal(|ui| {
+                ui.label(format!("Pile: {}", snapshot.pile_path.display()));
+            });
+            if !snapshot.branches.is_empty() {
+                ui.label("Branches:");
+                for branch in &snapshot.branches {
+                    let label = branch.name.as_deref().unwrap_or("<unnamed>").to_string();
+                    ui.label(format!("- {label} ({})", id_prefix(branch.id)));
+                }
+            }
+        });
+    });
+
+    nb.view(move |ui| {
+        let state = dashboard.read(ui);
+        with_padding(ui, padding, |ui| {
+            ui.heading("Exec queue");
+            let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
+                return;
+            };
+            if let Some(err) = &snapshot.exec_error {
+                ui.colored_label(egui::Color32::RED, err);
+            } else {
+                render_exec_summary(ui, &snapshot.exec_summary);
+                render_exec_rows(
+                    ui,
+                    snapshot.now_key,
+                    &snapshot.exec_rows,
+                    &snapshot.shortnames,
+                );
+            }
+        });
+    });
+
+    nb.view(move |ui| {
+        let state = dashboard.read(ui);
+        with_padding(ui, padding, |ui| {
+            ui.heading("Reasoning summaries");
+            let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
+                return;
+            };
+            if snapshot.reasoning_summaries.is_empty() {
+                ui.label("No summaries yet.");
+            } else {
+                render_reasoning_summaries(ui, snapshot.now_key, &snapshot.reasoning_summaries);
+            }
+        });
+    });
+
+    nb.view(move |ui| {
+        let mut state = dashboard.read_mut(ui);
+        with_padding(ui, padding, |ui| {
+            ui.heading("Local messages");
+            let snapshot = {
+                let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
+                    return;
+                };
+                snapshot.clone()
+            };
+            if let Some(err) = &snapshot.local_message_error {
+                ui.colored_label(egui::Color32::RED, err);
+            } else {
+                auto_ack_local_messages(
+                    &mut state,
+                    &snapshot.branches,
+                    &snapshot.local_message_rows,
+                    snapshot.local_reader_id,
+                );
+                render_local_messages(
+                    ui,
+                    snapshot.now_key,
+                    &snapshot.local_message_rows,
+                    snapshot.local_sender_id,
+                    snapshot.local_reader_id,
+                );
+            }
+            render_local_composer(ui, &mut state, &snapshot.branches, &snapshot);
+        });
+    });
+
+    nb.view(move |ui| {
+        let state = dashboard.read(ui);
+        with_padding(ui, padding, |ui| {
+            ui.heading("Relations");
+            let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
+                return;
+            };
+            if let Some(err) = &snapshot.relations_error {
+                ui.colored_label(egui::Color32::RED, err);
+            } else {
+                render_relations(ui, &snapshot.relations_people);
+            }
+        });
+    });
+
+    nb.view(move |ui| {
+        let mut state = dashboard.read_mut(ui);
+        with_padding(ui, padding, |ui| {
+            ui.heading("Teams conversations");
+            let snapshot = {
+                let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
+                    return;
+                };
+                snapshot.clone()
+            };
+            if let Some(err) = &snapshot.teams_error {
+                ui.colored_label(egui::Color32::RED, err);
+            } else {
+                render_teams_conversations(
+                    ui,
+                    &mut state,
+                    snapshot.now_key,
+                    &snapshot.teams_chats,
+                    &snapshot.teams_messages,
+                );
+            }
+        });
+    });
+}
+
+fn snapshot_or_message<'a>(
+    ui: &mut egui::Ui,
+    snapshot: &'a Option<Result<DashboardSnapshot, String>>,
+) -> Option<&'a DashboardSnapshot> {
+    match snapshot {
+        None => {
+            ui.label("No snapshot yet.");
+            None
+        }
+        Some(Err(err)) => {
+            ui.colored_label(egui::Color32::RED, err);
+            None
+        }
+        Some(Ok(snapshot)) => Some(snapshot),
+    }
 }
 
 fn ensure_repo_open(state: &mut DashboardState) -> Result<(), String> {
