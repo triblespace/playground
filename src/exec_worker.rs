@@ -1,0 +1,411 @@
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, anyhow};
+use triblespace::core::blob::Bytes;
+use triblespace::core::blob::schemas::UnknownBlob;
+use triblespace::core::repo::{Repository, Workspace};
+use triblespace::core::repo::pile::Pile;
+use triblespace::prelude::blobschemas::LongString;
+use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, U256BE};
+use triblespace::prelude::*;
+
+use crate::config::Config;
+use crate::branch_util::ensure_branch_id;
+use crate::repo_util::{ensure_worker_shortname, init_repo, load_text, push_workspace, seed_metadata};
+use crate::workspace_snapshot::{DEFAULT_WORKSPACE_BRANCH, restore_snapshot};
+use crate::time_util::{epoch_interval, interval_key, now_epoch};
+use crate::schema::playground_exec;
+
+#[derive(Debug, Clone)]
+struct CommandRequest {
+    id: Id,
+    command: Value<Handle<Blake3, LongString>>,
+    requested_at: Option<Value<NsTAIInterval>>,
+    cwd: Option<Value<Handle<Blake3, LongString>>>,
+    stdin: Option<Value<Handle<Blake3, UnknownBlob>>>,
+    stdin_text: Option<Value<Handle<Blake3, LongString>>>,
+    timeout_ms: Option<Value<U256BE>>,
+}
+
+#[derive(Debug)]
+struct ExecOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    exit_code: Option<i32>,
+    stdout_text: Option<String>,
+    stderr_text: Option<String>,
+    error: Option<String>,
+}
+
+pub(crate) fn run_exec_loop(
+    config: Config,
+    worker_id: Id,
+    poll_ms: u64,
+    stop: Option<Arc<AtomicBool>>,
+) -> Result<()> {
+    let default_cwd = config
+        .exec
+        .default_cwd
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+
+    let (mut repo, branch_id) = init_repo(&config).context("open triblespace repo")?;
+    seed_metadata(&mut repo)?;
+    let label = format!("exec-{}", id_prefix(worker_id));
+    ensure_worker_shortname(&mut repo, branch_id, worker_id, &label)?;
+    maybe_bootstrap_workspace(&mut repo)?;
+
+    loop {
+        if stop_requested(&stop) {
+            break;
+        }
+
+        let mut ws = repo
+            .pull(branch_id)
+            .map_err(|err| anyhow!("pull workspace: {err:?}"))?;
+        let catalog = ws.checkout(..).context("checkout workspace")?;
+        let Some(request) = next_request(&catalog) else {
+            sleep(Duration::from_millis(poll_ms));
+            continue;
+        };
+
+        if stop_requested(&stop) {
+            break;
+        }
+
+        let command = load_text(&mut ws, request.command).context("load command")?;
+        let cwd = match request.cwd {
+            Some(handle) => Some(load_text(&mut ws, handle).context("load cwd")?),
+            None => default_cwd.clone(),
+        };
+        let stdin = load_stdin(&mut ws, &request).context("load stdin")?;
+        let attempt: u64 = 1;
+
+        let started_at = epoch_interval(now_epoch());
+        let in_progress_id = ufoid();
+        let mut change = TribleSet::new();
+        change += entity! { &in_progress_id @
+            playground_exec::kind: playground_exec::kind_in_progress,
+            playground_exec::about_request: request.id,
+            playground_exec::worker: worker_id,
+            playground_exec::started_at: started_at,
+            playground_exec::attempt: attempt,
+        };
+        ws.commit(change, None, Some("playground_exec in_progress"));
+        push_workspace(&mut repo, &mut ws).context("push in_progress")?;
+
+        let started = Instant::now();
+        let output = execute_command(&command, cwd.as_deref(), stdin);
+        let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let finished_at = epoch_interval(now_epoch());
+
+        let result_id = ufoid();
+        let mut change = TribleSet::new();
+        change += entity! { &result_id @
+            playground_exec::kind: playground_exec::kind_command_result,
+            playground_exec::about_request: request.id,
+            playground_exec::finished_at: finished_at,
+            playground_exec::attempt: attempt,
+            playground_exec::duration_ms: duration_ms,
+        };
+
+        let stdout_handle = ws.put::<UnknownBlob, _>(Bytes::from_source(output.stdout));
+        let stderr_handle = ws.put::<UnknownBlob, _>(Bytes::from_source(output.stderr));
+        change += entity! { &result_id @
+            playground_exec::stdout: stdout_handle,
+            playground_exec::stderr: stderr_handle,
+        };
+
+        if let Some(exit_code) = output.exit_code.and_then(|code| u64::try_from(code).ok()) {
+            change += entity! { &result_id @ playground_exec::exit_code: exit_code };
+        }
+
+        if let Some(stdout_text) = output.stdout_text {
+            let handle = ws.put::<LongString, _>(stdout_text);
+            change += entity! { &result_id @ playground_exec::stdout_text: handle };
+        }
+
+        if let Some(stderr_text) = output.stderr_text {
+            let handle = ws.put::<LongString, _>(stderr_text);
+            change += entity! { &result_id @ playground_exec::stderr_text: handle };
+        }
+
+        if let Some(error) = output.error {
+            let handle = ws.put::<LongString, _>(error);
+            change += entity! { &result_id @ playground_exec::error: handle };
+        }
+
+        ws.commit(change, None, Some("playground_exec result"));
+        push_workspace(&mut repo, &mut ws).context("push result")?;
+    }
+
+    Ok(())
+}
+
+fn stop_requested(stop: &Option<Arc<AtomicBool>>) -> bool {
+    stop.as_ref()
+        .map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+fn execute_command(command: &str, cwd: Option<&str>, stdin: Option<Bytes>) -> ExecOutput {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-lc").arg(command);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    if stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return ExecOutput {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: None,
+                stdout_text: None,
+                stderr_text: None,
+                error: Some(format!("spawn failed: {err}")),
+            };
+        }
+    };
+
+    if let Some(stdin) = stdin {
+        if let Some(mut handle) = child.stdin.take() {
+            let _ = handle.write_all(stdin.as_ref());
+        }
+    }
+
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(err) => {
+            return ExecOutput {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: None,
+                stdout_text: None,
+                stderr_text: None,
+                error: Some(format!("wait failed: {err}")),
+            };
+        }
+    };
+
+    let stdout_text = std::str::from_utf8(&output.stdout).ok().map(str::to_string);
+    let stderr_text = std::str::from_utf8(&output.stderr).ok().map(str::to_string);
+
+    ExecOutput {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code: output.status.code(),
+        stdout_text,
+        stderr_text,
+        error: None,
+    }
+}
+
+fn maybe_bootstrap_workspace(repo: &mut Repository<Pile>) -> Result<()> {
+    if !env_flag("PLAYGROUND_WORKSPACE_BOOTSTRAP") {
+        return Ok(());
+    }
+
+    let root = env_path("PLAYGROUND_WORKSPACE_ROOT").unwrap_or_else(|| PathBuf::from("/workspace"));
+    let branch = env_string("PLAYGROUND_WORKSPACE_BRANCH")
+        .unwrap_or_else(|| DEFAULT_WORKSPACE_BRANCH.to_string());
+
+    if root.exists() {
+        if !dir_is_empty(&root).context("check workspace dir")? {
+            return Ok(());
+        }
+    } else {
+        fs::create_dir_all(&root)
+            .with_context(|| format!("create workspace root {}", root.display()))?;
+    }
+
+    let branch_id = ensure_branch_id(repo, branch.as_str())
+        .with_context(|| format!("ensure workspace branch {branch}"))?;
+    let _ = restore_snapshot(repo, branch_id, None, &root, false)?;
+    Ok(())
+}
+
+fn dir_is_empty(path: &Path) -> Result<bool> {
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("read dir {}", path.display()))?;
+    Ok(entries.next().is_none())
+}
+
+fn env_flag(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|val| {
+            let val = val.trim().to_ascii_lowercase();
+            std::matches!(val.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn env_string(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|val| {
+        let trimmed = val.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn env_path(key: &str) -> Option<PathBuf> {
+    env_string(key).map(PathBuf::from)
+}
+
+fn next_request(catalog: &TribleSet) -> Option<CommandRequest> {
+    let mut requests: HashMap<Id, CommandRequest> = HashMap::new();
+    for (request_id, command) in find!(
+        (request_id: Id, command: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?request_id @
+            playground_exec::kind: playground_exec::kind_command_request,
+            playground_exec::command_text: ?command,
+        }])
+    ) {
+        requests.insert(
+            request_id,
+            CommandRequest {
+                id: request_id,
+                command,
+                requested_at: None,
+                cwd: None,
+                stdin: None,
+                stdin_text: None,
+                timeout_ms: None,
+            },
+        );
+    }
+
+    if requests.is_empty() {
+        return None;
+    }
+
+    for (request_id, requested_at) in find!(
+        (request_id: Id, requested_at: Value<NsTAIInterval>),
+        pattern!(catalog, [{
+            ?request_id @ playground_exec::requested_at: ?requested_at
+        }])
+    ) {
+        if let Some(entry) = requests.get_mut(&request_id) {
+            entry.requested_at = Some(requested_at);
+        }
+    }
+
+    for (request_id, cwd) in find!(
+        (request_id: Id, cwd: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?request_id @ playground_exec::cwd: ?cwd
+        }])
+    ) {
+        if let Some(entry) = requests.get_mut(&request_id) {
+            entry.cwd = Some(cwd);
+        }
+    }
+
+    for (request_id, stdin) in find!(
+        (request_id: Id, stdin: Value<Handle<Blake3, UnknownBlob>>),
+        pattern!(catalog, [{
+            ?request_id @ playground_exec::stdin: ?stdin
+        }])
+    ) {
+        if let Some(entry) = requests.get_mut(&request_id) {
+            entry.stdin = Some(stdin);
+        }
+    }
+
+    for (request_id, stdin_text) in find!(
+        (request_id: Id, stdin_text: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?request_id @ playground_exec::stdin_text: ?stdin_text
+        }])
+    ) {
+        if let Some(entry) = requests.get_mut(&request_id) {
+            entry.stdin_text = Some(stdin_text);
+        }
+    }
+
+    for (request_id, timeout_ms) in find!(
+        (request_id: Id, timeout_ms: Value<U256BE>),
+        pattern!(catalog, [{
+            ?request_id @ playground_exec::timeout_ms: ?timeout_ms
+        }])
+    ) {
+        if let Some(entry) = requests.get_mut(&request_id) {
+            entry.timeout_ms = Some(timeout_ms);
+        }
+    }
+
+    let mut in_progress = HashSet::new();
+    for (request_id,) in find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            _?event @
+            playground_exec::kind: playground_exec::kind_in_progress,
+            playground_exec::about_request: ?request_id,
+        }])
+    ) {
+        in_progress.insert(request_id);
+    }
+
+    let mut done = HashSet::new();
+    for (request_id,) in find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            _?event @
+            playground_exec::kind: playground_exec::kind_command_result,
+            playground_exec::about_request: ?request_id,
+        }])
+    ) {
+        done.insert(request_id);
+    }
+
+    let mut candidates: Vec<CommandRequest> = requests
+        .into_values()
+        .filter(|req| !in_progress.contains(&req.id) && !done.contains(&req.id))
+        .collect();
+    candidates.sort_by_key(|req| req.requested_at.map(interval_key).unwrap_or(i128::MIN));
+    candidates.into_iter().next()
+}
+
+fn load_stdin(ws: &mut Workspace<Pile>, request: &CommandRequest) -> Result<Option<Bytes>> {
+    if let Some(stdin) = request.stdin {
+        let bytes: Bytes = ws.get(stdin).context("read stdin bytes")?;
+        return Ok(Some(bytes));
+    }
+
+    if let Some(stdin_text) = request.stdin_text {
+        let text = load_text(ws, stdin_text)?;
+        return Ok(Some(Bytes::from_source(text.into_bytes())));
+    }
+
+    Ok(None)
+}
+
+fn id_prefix(id: Id) -> String {
+    let raw: [u8; 16] = id.into();
+    let mut out = String::with_capacity(8);
+    for byte in raw.iter().take(4) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}

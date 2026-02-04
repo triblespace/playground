@@ -1,0 +1,71 @@
+# Lima config for the Playground executor VM.
+# Edit this file and re-run `playground run`. To apply changes, set
+# PLAYGROUND_LIMA_RECREATE=1 (it will delete and recreate the VM).
+
+images:
+  - location: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-arm64.img"
+    arch: "aarch64"
+  - location: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    arch: "x86_64"
+
+vmType: "vz"
+mountType: "virtiofs"
+
+cpus: 4
+memory: "8GiB"
+disk: "60GiB"
+
+mounts:
+  - location: "__PLAYGROUND_ROOT__"
+    mountPoint: "__VM_ROOT__"
+    writable: true
+  - location: "__STATE_ROOT__"
+    mountPoint: "__VM_ROOT__/state"
+    writable: true
+  - location: "__RUNTIME_ROOT__"
+    mountPoint: "__VM_ROOT__/runtime"
+    writable: true
+  - location: "__GORBIE_ROOT__"
+    mountPoint: "__VM_ROOT__/vendor/GORBIE"
+    writable: false
+  - location: "__SCHEMAS_ROOT__"
+    mountPoint: "__VM_ROOT__/vendor/schemas"
+    writable: false
+
+provision:
+  - mode: system
+    script: |
+      set -euo pipefail
+      echo "[playground] system provision start"
+      apt-get update
+      apt-get install -y --no-install-recommends ca-certificates curl build-essential
+      cat >/etc/systemd/system/playground-exec.service <<'SERVICE'
+      [Unit]
+      Description=Playground Exec Worker
+      After=network-online.target
+
+      [Service]
+      User=lima
+      Group=lima
+      WorkingDirectory=__VM_ROOT__
+      EnvironmentFile=__VM_ROOT__/runtime/playground.env
+      ExecStart=/bin/bash -lc 'source $HOME/.cargo/env >/dev/null 2>&1 || true; cargo run --manifest-path __VM_ROOT__/playground/Cargo.toml -- exec --pile "$PLAYGROUND_PILE"'
+      Restart=always
+      RestartSec=2
+
+      [Install]
+      WantedBy=multi-user.target
+      SERVICE
+      systemctl daemon-reload
+      systemctl enable playground-exec.service
+      systemctl restart playground-exec.service
+      echo "[playground] system provision done"
+  - mode: user
+    script: |
+      set -euo pipefail
+      echo "[playground] user provision start"
+      if [[ ! -x "$HOME/.cargo/bin/rustc" ]]; then
+        echo "[playground] installing rustup"
+        curl https://sh.rustup.rs -sSf | sh -s -- -y
+      fi
+      echo "[playground] user provision done"
