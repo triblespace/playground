@@ -23,7 +23,7 @@ const DEFAULT_SEED_PROMPT: &str = "Begin.";
 const DEFAULT_BRANCH: &str = "main";
 const DEFAULT_AUTHOR: &str = "agent";
 const DEFAULT_AUTHOR_ROLE: &str = "user";
-const DEFAULT_POLL_MS: u64 = 1_000;
+const DEFAULT_POLL_MS: u64 = 1;
 const DEFAULT_PILE_PATH: &str = "self.pile";
 const CONFIG_BRANCH: &str = "config";
 
