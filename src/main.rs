@@ -32,7 +32,6 @@ use config::Config;
 use repo_util::{init_repo, load_text, push_workspace};
 use schema::{openai_responses, playground_cog, playground_exec};
 use time_util::{epoch_interval, interval_key, now_epoch};
-use workspace_snapshot::DEFAULT_WORKSPACE_BRANCH;
 
 #[derive(Subcommand, Debug)]
 enum CommandMode {
@@ -318,7 +317,6 @@ fn prepare_lima_service(config: &Config, args: &LimaExecArgs) -> Result<()> {
     let repo_root = repo_root();
     let playground_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let state_root = repo_root.join("state");
-    let runtime_root = repo_root.join("runtime");
 
     let instance = env_string("PLAYGROUND_LIMA_INSTANCE").unwrap_or_else(|| args.instance.clone());
     let vm_root = env_path("PLAYGROUND_LIMA_ROOT").unwrap_or_else(|| args.vm_root.clone());
@@ -344,7 +342,6 @@ fn prepare_lima_service(config: &Config, args: &LimaExecArgs) -> Result<()> {
         fs::create_dir_all(parent).context("create Lima config directory")?;
     }
     fs::create_dir_all(&state_root).ok();
-    fs::create_dir_all(&runtime_root).ok();
     let workspace_root = state_root.join("workspaces").join(&instance);
     fs::create_dir_all(&workspace_root).ok();
 
@@ -352,15 +349,13 @@ fn prepare_lima_service(config: &Config, args: &LimaExecArgs) -> Result<()> {
         .file_name()
         .ok_or_else(|| anyhow!("pile path missing filename"))?;
     let pile_vm = PathBuf::from("/pile").join(pile_name);
-    write_lima_env(&runtime_root, &pile_vm, &vm_root, DEFAULT_WORKSPACE_BRANCH)?;
-
     render_lima_template(
         &template,
         &config_path,
         &playground_root,
-        &runtime_root,
         &pile_root,
         &workspace_root,
+        &pile_vm,
         &vm_root,
     )?;
 
@@ -407,39 +402,13 @@ fn limactl_output(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn write_lima_env(
-    runtime_root: &Path,
-    pile_vm: &Path,
-    workspace_root: &Path,
-    workspace_branch: &str,
-) -> Result<()> {
-    let env_path = runtime_root.join("playground.env");
-    let mut contents = String::new();
-    contents.push_str("PLAYGROUND_PILE=");
-    contents.push_str(&pile_vm.to_string_lossy());
-    contents.push('\n');
-    contents.push_str("PLAYGROUND_WORKSPACE_ROOT=");
-    contents.push_str(&workspace_root.to_string_lossy());
-    contents.push('\n');
-    contents.push_str("PLAYGROUND_WORKSPACE_BRANCH=");
-    contents.push_str(workspace_branch);
-    contents.push('\n');
-    contents.push_str("CARGO_TARGET_DIR=");
-    contents.push_str(&workspace_root.join("target").to_string_lossy());
-    contents.push('\n');
-    contents.push_str("PLAYGROUND_WORKSPACE_BOOTSTRAP=1\n");
-    fs::write(&env_path, contents)
-        .with_context(|| format!("write Lima env {}", env_path.display()))?;
-    Ok(())
-}
-
 fn render_lima_template(
     template: &Path,
     out_path: &Path,
     playground_root: &Path,
-    runtime_root: &Path,
     pile_root: &Path,
     workspace_root: &Path,
+    pile_vm: &Path,
     vm_root: &Path,
 ) -> Result<()> {
     let mut text = fs::read_to_string(template)
@@ -447,9 +416,9 @@ fn render_lima_template(
 
     let replacements = [
         ("__PLAYGROUND_ROOT__", playground_root),
-        ("__RUNTIME_ROOT__", runtime_root),
         ("__PILE_ROOT__", pile_root),
         ("__WORKSPACE_ROOT__", workspace_root),
+        ("__PILE_PATH__", pile_vm),
         ("__VM_ROOT__", vm_root),
     ];
 

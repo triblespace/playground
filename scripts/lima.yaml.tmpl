@@ -25,9 +25,6 @@ mounts:
   - location: "__WORKSPACE_ROOT__"
     mountPoint: "__VM_ROOT__"
     writable: true
-  - location: "__RUNTIME_ROOT__"
-    mountPoint: "/runtime"
-    writable: false
 
 provision:
   - mode: system
@@ -45,8 +42,7 @@ provision:
       User=lima
       Group=lima
       WorkingDirectory=/opt/playground
-      EnvironmentFile=/runtime/playground.env
-      ExecStart=/bin/bash -lc 'source $HOME/.cargo/env >/dev/null 2>&1 || true; cargo run --manifest-path /opt/playground/Cargo.toml -- exec --pile "$PLAYGROUND_PILE"'
+      ExecStart=/bin/bash -lc 'source $HOME/.cargo/env >/dev/null 2>&1 || true; CARGO_TARGET_DIR=/workspace/target cargo run --manifest-path /opt/playground/Cargo.toml -- exec --pile __PILE_PATH__'
       Restart=always
       RestartSec=2
 
