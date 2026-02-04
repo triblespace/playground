@@ -26,10 +26,37 @@ use GORBIE::md;
 use GORBIE::notebook;
 use GORBIE::widgets::{Button, TextField};
 
-use crate::archive_schema::archive;
 use crate::schema::openai_responses;
 use crate::schema::playground_exec;
-use crate::teams_schema::teams;
+
+mod archive {
+    use triblespace::macros::id_hex;
+    use triblespace::prelude::blobschemas::LongString;
+    use triblespace::prelude::valueschemas::{Blake3, GenId, Handle, NsTAIInterval};
+    use triblespace::prelude::*;
+
+    attributes! {
+        "5F10520477A04E5FB322C85CC78C6762" as pub kind: GenId;
+        "838CC157FFDD37C6AC7CC5A472E43ADB" as pub author: GenId;
+        "E63EE961ABDB1D1BEC0789FDAFFB9501" as pub author_name: Handle<Blake3, LongString>;
+        "ACF09FF3D62B73983A222313FF0C52D2" as pub content: Handle<Blake3, LongString>;
+        "0DA5DD275AA34F86B0297CC35F1B7395" as pub created_at: NsTAIInterval;
+    }
+
+    #[allow(non_upper_case_globals)]
+    pub const kind_message: Id = id_hex!("1A0841C92BBDA0A26EA9A8252D6ECD9B");
+}
+
+mod teams {
+    use triblespace::prelude::blobschemas::LongString;
+    use triblespace::prelude::valueschemas::{Blake3, GenId, Handle};
+    use triblespace::prelude::*;
+
+    attributes! {
+        "1E525B603A0060D9FA132B3D4EE9538A" as pub chat: GenId;
+        "B6089037C04529F55D2A2D1A668DBE95" as pub chat_id: Handle<Blake3, LongString>;
+    }
+}
 
 type CommitHandle = Value<Handle<Blake3, SimpleArchive>>;
 const EXEC_SCROLL_HEIGHT: f32 = 260.0;

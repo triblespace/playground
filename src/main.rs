@@ -17,7 +17,6 @@ use triblespace::prelude::blobschemas::LongString;
 use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, U256BE};
 use triblespace::prelude::*;
 
-mod archive_schema;
 mod branch_util;
 mod config;
 mod diagnostics;
@@ -26,7 +25,6 @@ mod llm_worker;
 mod repo_ops;
 mod repo_util;
 mod schema;
-mod teams_schema;
 mod time_util;
 mod workspace_snapshot;
 
