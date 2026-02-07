@@ -341,6 +341,11 @@ fn prepare_lima_service(config: &Config, args: &LimaExecArgs) -> Result<()> {
         .ok_or_else(|| anyhow!("pile path missing parent directory"))?
         .to_path_buf();
 
+    let persona_root = repo_root.join("personas").join(&instance);
+    fs::create_dir_all(&persona_root).ok();
+    let workspace_root = persona_root.join("workspace");
+    fs::create_dir_all(&workspace_root).ok();
+
     let template = env_path("PLAYGROUND_LIMA_TEMPLATE")
         .or_else(|| args.template.clone())
         .unwrap_or_else(|| playground_root.join("scripts/lima.yaml.tmpl"));
@@ -350,14 +355,10 @@ fn prepare_lima_service(config: &Config, args: &LimaExecArgs) -> Result<()> {
 
     let config_path = env_path("PLAYGROUND_LIMA_CONFIG")
         .or_else(|| args.config.clone())
-        .unwrap_or_else(|| playground_root.join("state/lima.yaml"));
+        .unwrap_or_else(|| persona_root.join("state/lima.yaml"));
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).context("create Lima config directory")?;
     }
-    let persona_root = repo_root.join("personas").join(&instance);
-    fs::create_dir_all(&persona_root).ok();
-    let workspace_root = persona_root.join("workspace");
-    fs::create_dir_all(&workspace_root).ok();
 
     let pile_name = pile_abs
         .file_name()
