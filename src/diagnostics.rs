@@ -134,9 +134,8 @@ struct DashboardConfig {
     exec_branches: String,
     local_message_branches: String,
     relations_branches: String,
-    local_sender: String,
-    local_recipient: String,
-    local_reader: String,
+    local_me: String,
+    local_peer: String,
     teams_branches: String,
 }
 
@@ -151,9 +150,8 @@ impl Default for DashboardConfig {
             exec_branches: "main".to_string(),
             local_message_branches: "local-messages".to_string(),
             relations_branches: "relations".to_string(),
-            local_sender: "jp".to_string(),
-            local_recipient: "agent".to_string(),
-            local_reader: "agent".to_string(),
+            local_me: "jp".to_string(),
+            local_peer: "agent".to_string(),
             teams_branches: "teams".to_string(),
         }
     }
@@ -239,7 +237,8 @@ struct LocalMessageRow {
     from_id: Id,
     to_id: Id,
     body: String,
-    read_by_reader: bool,
+    read_by_me: bool,
+    read_by_peer: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -289,9 +288,8 @@ struct DashboardSnapshot {
     reasoning_summaries: Vec<ReasoningSummaryRow>,
     local_message_rows: Vec<LocalMessageRow>,
     local_message_error: Option<String>,
-    local_sender_id: Option<Id>,
-    local_recipient_id: Option<Id>,
-    local_reader_id: Option<Id>,
+    local_me_id: Option<Id>,
+    local_peer_id: Option<Id>,
     relations_people: Vec<RelationRow>,
     relations_error: Option<String>,
     relations_labels: HashMap<Id, String>,
@@ -340,16 +338,12 @@ _Live view of the agent pile, exec queue, and message activity._"
                     ui.text_edit_singleline(&mut state.config.relations_branches);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Local sender");
-                    ui.text_edit_singleline(&mut state.config.local_sender);
+                    ui.label("Local me");
+                    ui.text_edit_singleline(&mut state.config.local_me);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Local recipient");
-                    ui.text_edit_singleline(&mut state.config.local_recipient);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Local reader");
-                    ui.text_edit_singleline(&mut state.config.local_reader);
+                    ui.label("Local peer");
+                    ui.text_edit_singleline(&mut state.config.local_peer);
                 });
                 ui.horizontal(|ui| {
                     ui.label("Teams branches");
@@ -437,14 +431,14 @@ _Live view of the agent pile, exec queue, and message activity._"
                     &mut state,
                     &snapshot.branches,
                     &snapshot.local_message_rows,
-                    snapshot.local_reader_id,
+                    snapshot.local_me_id,
                 );
                 render_local_messages(
                     ui,
                     snapshot.now_key,
                     &snapshot.local_message_rows,
-                    snapshot.local_sender_id,
-                    snapshot.local_reader_id,
+                    snapshot.local_me_id,
+                    snapshot.local_peer_id,
                 );
             }
             render_local_composer(ui, &mut state, &snapshot.branches, &snapshot);
@@ -657,9 +651,8 @@ fn load_snapshot(
             reasoning_summaries: Vec::new(),
             local_message_rows: Vec::new(),
             local_message_error,
-            local_sender_id: None,
-            local_recipient_id: None,
-            local_reader_id: None,
+            local_me_id: None,
+            local_peer_id: None,
             relations_people: Vec::new(),
             relations_error,
             relations_labels: HashMap::new(),
@@ -706,13 +699,12 @@ fn build_snapshot(
     let now_key = epoch_key(now_epoch());
     let relations_people = collect_relations_people(&relations_data, ws);
     let relations_labels = collect_relations_labels(&relations_people);
-    let local_sender_id = resolve_person_ref(&relations_people, &config.local_sender);
-    let local_recipient_id = resolve_person_ref(&relations_people, &config.local_recipient);
-    let local_reader_id = resolve_person_ref(&relations_people, &config.local_reader);
+    let local_me_id = resolve_person_ref(&relations_people, &config.local_me);
+    let local_peer_id = resolve_person_ref(&relations_people, &config.local_peer);
     let exec_rows = collect_exec_rows(&exec_data, ws);
     let exec_summary = summarize_exec(&exec_rows);
     let reasoning_summaries = collect_reasoning_summaries(&exec_data, ws);
-    let local_message_rows = collect_local_messages(&local_data, ws, local_reader_id);
+    let local_message_rows = collect_local_messages(&local_data, ws, local_me_id, local_peer_id);
     let (teams_messages, teams_chats) = collect_teams_messages(&teams_data, ws);
     let labels = collect_labels(&exec_data, ws);
 
@@ -726,9 +718,8 @@ fn build_snapshot(
         reasoning_summaries,
         local_message_rows,
         local_message_error,
-        local_sender_id,
-        local_recipient_id,
-        local_reader_id,
+        local_me_id,
+        local_peer_id,
         relations_people,
         relations_error,
         relations_labels,
@@ -1008,7 +999,8 @@ fn collect_exec_rows(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<ExecRow>
 fn collect_local_messages(
     data: &TribleSet,
     ws: &mut Workspace<Pile>,
-    reader_id: Option<Id>,
+    me_id: Option<Id>,
+    peer_id: Option<Id>,
 ) -> Vec<LocalMessageRow> {
     let mut rows = Vec::new();
     for (message_id, from, to, body_handle, created_at) in find!(
@@ -1035,7 +1027,8 @@ fn collect_local_messages(
             from_id: from,
             to_id: to,
             body,
-            read_by_reader: false,
+            read_by_me: false,
+            read_by_peer: false,
         });
     }
 
@@ -1059,10 +1052,13 @@ fn collect_local_messages(
         reads.entry(message_id).or_default().insert(reader_id);
     }
 
-    if let Some(reader_id) = reader_id {
-        for row in &mut rows {
-            if let Some(readers) = reads.get(&row.id) {
-                row.read_by_reader = readers.contains(&reader_id);
+    for row in &mut rows {
+        if let Some(readers) = reads.get(&row.id) {
+            if let Some(me_id) = me_id {
+                row.read_by_me = readers.contains(&me_id);
+            }
+            if let Some(peer_id) = peer_id {
+                row.read_by_peer = readers.contains(&peer_id);
             }
         }
     }
@@ -1409,61 +1405,51 @@ fn render_local_composer(
     branches: &[BranchEntry],
     snapshot: &DashboardSnapshot,
 ) {
-    let sender_label = snapshot
-        .local_sender_id
+    let me_label = snapshot
+        .local_me_id
         .and_then(|id| snapshot.relations_labels.get(&id).cloned())
-        .unwrap_or_else(|| state.config.local_sender.clone());
-    let recipient_label = snapshot
-        .local_recipient_id
+        .unwrap_or_else(|| state.config.local_me.clone());
+    let peer_label = snapshot
+        .local_peer_id
         .and_then(|id| snapshot.relations_labels.get(&id).cloned())
-        .unwrap_or_else(|| state.config.local_recipient.clone());
+        .unwrap_or_else(|| state.config.local_peer.clone());
+
     ui.horizontal(|ui| {
-        ui.label("From");
+        ui.label("Me");
         render_person_picker(
             ui,
-            "local_sender_picker",
+            "local_me_picker",
             &snapshot.relations_people,
-            snapshot.local_sender_id,
-            &mut state.config.local_sender,
+            snapshot.local_me_id,
+            &mut state.config.local_me,
         );
         ui.add_space(10.0);
-        ui.label("To");
+        ui.label("Peer");
         render_person_picker(
             ui,
-            "local_recipient_picker",
+            "local_peer_picker",
             &snapshot.relations_people,
-            snapshot.local_recipient_id,
-            &mut state.config.local_recipient,
+            snapshot.local_peer_id,
+            &mut state.config.local_peer,
         );
     });
 
-    ui.horizontal(|ui| {
-        ui.label("Auto-ack as");
-        render_person_picker(
-            ui,
-            "local_reader_picker",
-            &snapshot.relations_people,
-            snapshot.local_reader_id,
-            &mut state.config.local_reader,
-        );
-    });
-
-    ui.small(format!("{sender_label} → {recipient_label}"));
-    if snapshot.local_sender_id.is_none() {
+    ui.small(format!("{me_label} → {peer_label}"));
+    if snapshot.local_me_id.is_none() {
         ui.colored_label(
             egui::Color32::RED,
             format!(
-                "Unknown sender '{}' (check Relations branch).",
-                state.config.local_sender
+                "Unknown me '{}' (check Relations branch).",
+                state.config.local_me
             ),
         );
     }
-    if snapshot.local_recipient_id.is_none() {
+    if snapshot.local_peer_id.is_none() {
         ui.colored_label(
             egui::Color32::RED,
             format!(
-                "Unknown recipient '{}' (check Relations branch).",
-                state.config.local_recipient
+                "Unknown peer '{}' (check Relations branch).",
+                state.config.local_peer
             ),
         );
     }
@@ -1648,17 +1634,17 @@ fn send_local_message_from_ui(
         }
     };
 
-    let Some(from_id) = snapshot.local_sender_id else {
+    let Some(from_id) = snapshot.local_me_id else {
         state.local_send_error = Some(format!(
-            "Unknown sender '{}' (check Relations branch).",
-            state.config.local_sender
+            "Unknown me '{}' (check Relations branch).",
+            state.config.local_me
         ));
         return;
     };
-    let Some(to_id) = snapshot.local_recipient_id else {
+    let Some(to_id) = snapshot.local_peer_id else {
         state.local_send_error = Some(format!(
-            "Unknown recipient '{}' (check Relations branch).",
-            state.config.local_recipient
+            "Unknown peer '{}' (check Relations branch).",
+            state.config.local_peer
         ));
         return;
     };
@@ -1719,15 +1705,15 @@ fn auto_ack_local_messages(
     state: &mut DashboardState,
     branches: &[BranchEntry],
     rows: &[LocalMessageRow],
-    reader_id: Option<Id>,
+    me_id: Option<Id>,
 ) {
     state.local_read_error = None;
-    let Some(reader_id) = reader_id else {
+    let Some(me_id) = me_id else {
         return;
     };
     let unread: Vec<Id> = rows
         .iter()
-        .filter(|row| row.to_id == reader_id && !row.read_by_reader)
+        .filter(|row| row.to_id == me_id && !row.read_by_me)
         .map(|row| row.id)
         .collect();
     if unread.is_empty() {
@@ -1747,7 +1733,7 @@ fn auto_ack_local_messages(
         }
     };
 
-    if let Err(err) = ack_local_messages(repo, branch_id, &unread, reader_id) {
+    if let Err(err) = ack_local_messages(repo, branch_id, &unread, me_id) {
         state.local_read_error = Some(err);
     }
 }
@@ -2075,8 +2061,8 @@ fn render_local_messages(
     ui: &mut egui::Ui,
     now_key: i128,
     rows: &[LocalMessageRow],
-    sender_id: Option<Id>,
-    reader_id: Option<Id>,
+    me_id: Option<Id>,
+    peer_id: Option<Id>,
 ) {
     egui::ScrollArea::vertical()
         .id_salt("local_messages_scroll")
@@ -2084,10 +2070,10 @@ fn render_local_messages(
         .max_height(LOCAL_MESSAGE_SCROLL_HEIGHT)
         .show(ui, |ui| {
             for row in rows {
-                let is_sender = sender_id.map_or(false, |id| row.from_id == id);
+                let is_sender = me_id.map_or(false, |id| row.from_id == id);
                 let age = format_age(now_key, row.created_at);
                 let meta = if is_sender {
-                    if reader_id.is_some() && row.read_by_reader {
+                    if peer_id.is_some() && row.read_by_peer {
                         format!("{age} · read")
                     } else {
                         format!("{age} · sent")
