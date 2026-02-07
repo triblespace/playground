@@ -1417,7 +1417,38 @@ fn render_local_composer(
         .local_recipient_id
         .and_then(|id| snapshot.relations_labels.get(&id).cloned())
         .unwrap_or_else(|| state.config.local_recipient.clone());
-    ui.small(format!("From: {sender_label} → {recipient_label}"));
+    ui.horizontal(|ui| {
+        ui.label("From");
+        render_person_picker(
+            ui,
+            "local_sender_picker",
+            &snapshot.relations_people,
+            snapshot.local_sender_id,
+            &mut state.config.local_sender,
+        );
+        ui.add_space(10.0);
+        ui.label("To");
+        render_person_picker(
+            ui,
+            "local_recipient_picker",
+            &snapshot.relations_people,
+            snapshot.local_recipient_id,
+            &mut state.config.local_recipient,
+        );
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Auto-ack as");
+        render_person_picker(
+            ui,
+            "local_reader_picker",
+            &snapshot.relations_people,
+            snapshot.local_reader_id,
+            &mut state.config.local_reader,
+        );
+    });
+
+    ui.small(format!("{sender_label} → {recipient_label}"));
     if snapshot.local_sender_id.is_none() {
         ui.colored_label(
             egui::Color32::RED,
@@ -1476,6 +1507,37 @@ fn render_local_composer(
     if let Some(err) = &state.local_read_error {
         ui.colored_label(egui::Color32::RED, err);
     }
+}
+
+fn render_person_picker(
+    ui: &mut egui::Ui,
+    id_salt: &'static str,
+    people: &[RelationRow],
+    selected: Option<Id>,
+    raw: &mut String,
+) {
+    let selected_text = selected
+        .and_then(|id| people.iter().find(|person| person.id == id))
+        .map(|person| {
+            let label = person.label.as_deref().unwrap_or("<unnamed>");
+            format!("{label} ({})", id_prefix(person.id))
+        })
+        .unwrap_or_else(|| raw.trim().to_string());
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(selected_text)
+        .show_ui(ui, |ui| {
+            for person in people {
+                let label = person.label.as_deref().unwrap_or("<unnamed>");
+                let display = format!("{label} ({})", id_prefix(person.id));
+                if ui
+                    .selectable_label(selected == Some(person.id), display)
+                    .clicked()
+                {
+                    // Persist a stable reference; labels/aliases can change.
+                    *raw = format!("{:x}", person.id);
+                }
+            }
+        });
 }
 
 fn render_teams_conversations(
