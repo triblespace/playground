@@ -138,7 +138,7 @@ Kinds and attributes (draft, with schema intent):
   - `stdin` (bytes, optional)
   - `stdin_text` (text, optional convenience)
   - `timeout_ms` (u64, optional)
-  - `sandbox_profile` (id, optional; link to profile entity with `metadata::shortname`)
+  - `sandbox_profile` (id, optional; link to profile entity with `metadata::name`)
   - `requested_at` (timestamp)
   - `about_message` / `about_thought` / `about_request` (id links)
 - `playground_exec::kind_in_progress`
@@ -261,7 +261,7 @@ schema conflation.
 
 - Prefer additive migrations: introduce new schemas and link from old data.
 - Keep identifiers stable: renaming modules does not require new IDs.
-- If labels change, append `metadata::shortname`/`metadata::name` on the same IDs.
+- If labels change, append `metadata::name` entries on the same IDs.
 - Legacy playground data can remain as a historical projection, but new work
   should target the dedicated schemas (`archive::*`, `teams::*`,
   `openai_responses::*`, `playground_exec::*`) instead of the old playground protocol.

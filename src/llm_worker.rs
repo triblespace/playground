@@ -16,7 +16,7 @@ use triblespace::prelude::*;
 
 use crate::config::Config;
 use crate::repo_util::{
-    ensure_worker_shortname, init_repo, load_text, push_workspace, seed_metadata,
+    ensure_worker_name, init_repo, load_text, push_workspace, seed_metadata,
 };
 use crate::schema::openai_responses;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
@@ -86,7 +86,7 @@ pub(crate) fn run_llm_loop(
     let (mut repo, branch_id) = init_repo(&config).context("open triblespace repo")?;
     seed_metadata(&mut repo)?;
     let label = format!("llm-{}", id_prefix(worker_id));
-    ensure_worker_shortname(&mut repo, branch_id, worker_id, &label)?;
+    ensure_worker_name(&mut repo, branch_id, worker_id, &label)?;
 
     let client = ResponsesClient::new(
         config.llm.base_url.as_str(),
@@ -129,7 +129,7 @@ pub(crate) fn run_llm_loop(
         let started_at = epoch_interval(now_epoch());
         let in_progress_id = ufoid();
         let attempt: u64 = 1;
-        let request_raw_handle = ws.put::<LongString, _>(request_raw.clone());
+.clone());
 
         let mut change = TribleSet::new();
         change += entity! { ExclusiveId::force_ref(&request.id) @
@@ -165,8 +165,7 @@ pub(crate) fn run_llm_loop(
 
         match result {
             Ok(result) => {
-                let output_handle = ws.put::<LongString, _>(result.output_text);
-                let raw_handle = ws.put::<LongString, _>(result.raw.clone());
+                let (ws.put(result.output_text)) = .put(result.raw.clone());
                 change += entity! { &result_id @
                     openai_responses::output_text: output_handle,
                     openai_responses::response_raw: raw_handle,
@@ -182,7 +181,7 @@ pub(crate) fn run_llm_loop(
                             .reader()
                             .context("read response import blobs")?;
                         for (_, blob) in reader.iter() {
-                            ws.put::<UnknownBlob, _>(blob.bytes.clone());
+                            ws.put(blob.bytes.clone());
                         }
 
                         for root in roots {
@@ -200,8 +199,8 @@ pub(crate) fn run_llm_loop(
                 }
             }
             Err(err) => {
-                let handle = ws.put::<LongString, _>(err.to_string());
-                change += entity! { &result_id @ openai_responses::error: handle };
+                let (ws.put(err.to_string())) = ws.put(err.to_string());
+                change += e };
             }
         }
 

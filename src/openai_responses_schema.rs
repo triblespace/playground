@@ -62,64 +62,64 @@ where
     let mut tribles = TribleSet::new();
 
     tribles += entity! { ExclusiveId::force_ref(&openai_responses::openai_responses_metadata) @
-        metadata::shortname: "openai_responses_metadata",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("openai_responses_metadata".to_string())?,
+        metadata::description: blobs.put(
             "Root id for describing the openai_responses protocol.".to_string(),
         )?,
         metadata::tag: openai_responses::tag_protocol,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&openai_responses::tag_protocol) @
-        metadata::shortname: "tag_protocol",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_protocol".to_string())?,
+        metadata::description: blobs.put(
             "Tag for openai_responses protocol metadata.".to_string(),
         )?,
         metadata::tag: openai_responses::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&openai_responses::tag_kind) @
-        metadata::shortname: "tag_kind",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_kind".to_string())?,
+        metadata::description: blobs.put(
             "Tag for openai_responses protocol kind constants.".to_string(),
         )?,
         metadata::tag: openai_responses::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&openai_responses::tag_attribute) @
-        metadata::shortname: "tag_attribute",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_attribute".to_string())?,
+        metadata::description: blobs.put(
             "Tag for openai_responses protocol attributes.".to_string(),
         )?,
         metadata::tag: openai_responses::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&openai_responses::tag_tag) @
-        metadata::shortname: "tag_tag",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_tag".to_string())?,
+        metadata::description: blobs.put(
             "Tag for openai_responses protocol tag constants.".to_string(),
         )?,
         metadata::tag: openai_responses::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&openai_responses::kind_request) @
-        metadata::shortname: "kind_request",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("kind_request".to_string())?,
+        metadata::description: blobs.put(
             "Response request entity kind.".to_string(),
         )?,
         metadata::tag: openai_responses::tag_kind,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&openai_responses::kind_in_progress) @
-        metadata::shortname: "kind_in_progress",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("kind_in_progress".to_string())?,
+        metadata::description: blobs.put(
             "Response in-progress entity kind.".to_string(),
         )?,
         metadata::tag: openai_responses::tag_kind,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&openai_responses::kind_result) @
-        metadata::shortname: "kind_result",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("kind_result".to_string())?,
+        metadata::description: blobs.put(
             "Response result entity kind.".to_string(),
         )?,
         metadata::tag: openai_responses::tag_kind,
@@ -201,11 +201,10 @@ where
     S: ValueSchema,
 {
     let mut tribles = metadata::Metadata::describe(attribute, blobs)?;
-    let handle = blobs.put::<LongString, _>(name.to_owned())?;
+
     let attribute_id = metadata::Metadata::id(attribute);
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::shortname: name,
-        metadata::name: handle,
+        metadata::name: (blobs.put(name.to_owned())?),
         metadata::tag: openai_responses::tag_attribute,
     };
     Ok(tribles)

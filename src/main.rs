@@ -796,7 +796,7 @@ fn create_thought_and_request(
     }
 
     let now = epoch_interval(now_epoch());
-    let prompt_handle = ws.put::<LongString, _>(prompt.to_owned());
+    let prompt_handle = ws.put(prompt.to_owned());
     let thought_id = ufoid();
     let mut change = TribleSet::new();
     change += entity! { &thought_id @
@@ -1177,7 +1177,7 @@ fn ensure_command_request(
 
         let request_id = ufoid();
         let now = epoch_interval(now_epoch());
-        let command_handle = ws.put::<LongString, _>(command.to_owned());
+        let command_handle = ws.put(command.to_owned());
         let mut change = TribleSet::new();
         change += entity! { &request_id @
             playground_exec::kind: playground_exec::kind_command_request,
@@ -1188,7 +1188,7 @@ fn ensure_command_request(
             change += entity! { &request_id @ playground_exec::about_thought: thought_id };
         }
         if let Some(cwd) = default_cwd {
-            let handle = ws.put::<LongString, _>(cwd.to_owned());
+            let handle = ws.put(cwd.to_owned());
             change += entity! { &request_id @ playground_exec::cwd: handle };
         }
         if let Some(profile) = sandbox_profile {

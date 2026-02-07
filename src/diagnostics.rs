@@ -18,7 +18,7 @@ use triblespace::core::value::schemas::hash::{Blake3, Handle};
 use triblespace::core::value::schemas::time::NsTAIInterval;
 use triblespace::macros::{entity, find, id_hex, pattern};
 use triblespace::prelude::valueschemas::U256BE;
-use triblespace::prelude::{BlobStore, BlobStoreGet, BranchStore, ToValue, View};
+use triblespace::prelude::{BlobStore, BlobStoreGet, BranchStore, ToBlob, ToValue, View};
 
 use GORBIE::NotebookCtx;
 use GORBIE::cards::{DEFAULT_CARD_PADDING, with_padding};
@@ -107,6 +107,7 @@ mod local_messages {
 
 mod relations {
     use triblespace::prelude::attributes;
+    use triblespace::prelude::blobschemas;
     use triblespace::prelude::valueschemas;
 
     attributes! {
@@ -114,6 +115,9 @@ mod relations {
         "32B22FBA3EC2ADC3FFEB48483FE8961F" as affinity: valueschemas::ShortString;
         "9B3329149D54CB9A8E8075E4AA862649" as teams_user_id: valueschemas::ShortString;
         "B563A063474CBE62ED25A8D0E9A1853C" as email: valueschemas::ShortString;
+        "DC0916CB5F640984EFE359A33105CA9A" as display_name: valueschemas::Handle<valueschemas::Blake3, blobschemas::LongString>;
+        "F0AD0BBFAC4C4C899637573DC965622E" as first_name: valueschemas::Handle<valueschemas::Blake3, blobschemas::LongString>;
+        "764DD765142B3F4725B614BD3B9118EC" as last_name: valueschemas::Handle<valueschemas::Blake3, blobschemas::LongString>;
     }
 }
 
@@ -257,6 +261,8 @@ struct ReasoningSummaryRow {
 struct RelationRow {
     id: Id,
     label: Option<String>,
+    first_name: Option<String>,
+    last_name: Option<String>,
     display_name: Option<String>,
     affinity: Option<String>,
     teams_user_id: Option<String>,
@@ -285,7 +291,7 @@ struct DashboardSnapshot {
     teams_messages: Vec<TeamsMessageRow>,
     teams_chats: Vec<TeamsChatRow>,
     teams_error: Option<String>,
-    shortnames: HashMap<Id, String>,
+    labels: HashMap<Id, String>,
     now_key: i128,
 }
 
@@ -388,7 +394,7 @@ _Live view of the agent pile, exec queue, and message activity._"
                     ui,
                     snapshot.now_key,
                     &snapshot.exec_rows,
-                    &snapshot.shortnames,
+                    &snapshot.labels,
                 );
             }
         });
@@ -629,7 +635,7 @@ fn load_snapshot(
             teams_messages: Vec::new(),
             teams_chats: Vec::new(),
             teams_error,
-            shortnames: HashMap::new(),
+            labels: HashMap::new(),
             now_key,
         });
     };
@@ -677,7 +683,7 @@ fn build_snapshot(
     let reasoning_summaries = collect_reasoning_summaries(&exec_data, ws);
     let local_message_rows = collect_local_messages(&local_data, ws, local_reader_id);
     let (teams_messages, teams_chats) = collect_teams_messages(&teams_data, ws);
-    let shortnames = collect_shortnames(&exec_data);
+    let labels = collect_labels(&exec_data, ws);
 
     DashboardSnapshot {
         pile_path,
@@ -698,7 +704,7 @@ fn build_snapshot(
         teams_messages,
         teams_chats,
         teams_error,
-        shortnames,
+        labels,
         now_key,
     }
 }
@@ -715,11 +721,17 @@ fn list_branches(pile: &mut Pile<Blake3>) -> Result<Vec<BranchEntry>, String> {
             .and_then(|head| reader.get::<TribleSet, _>(head).ok())
             .and_then(|metadata_set: TribleSet| {
                 find!(
-                    (shortname: String),
-                    pattern!(&metadata_set, [{ metadata::shortname: ?shortname }])
+                    (handle: Value<Handle<Blake3, LongString>>),
+                    pattern!(&metadata_set, [{ metadata::name: ?handle }])
                 )
                 .into_iter()
-                .map(|(shortname,)| shortname)
+                .map(|(handle,)| {
+                    reader
+                        .get::<View<str>, _>(handle)
+                        .ok()
+                        .map(|view| view.as_ref().to_string())
+                        .unwrap_or_else(|| handle_prefix(handle))
+                })
                 .next()
             });
         branches.push(BranchEntry {
@@ -1031,6 +1043,8 @@ fn collect_relations_people(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<R
             RelationRow {
                 id: person_id,
                 label: None,
+                first_name: None,
+                last_name: None,
                 display_name: None,
                 affinity: None,
                 teams_user_id: None,
@@ -1041,23 +1055,53 @@ fn collect_relations_people(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<R
         );
     }
 
-    for (person_id, label) in find!(
-        (person_id: Id, label: String),
-        pattern!(data, [{ ?person_id @ metadata::shortname: ?label }])
-    ) {
-        if let Some(person) = people.get_mut(&person_id) {
-            person.label = Some(label);
-        }
-    }
-
     for (person_id, handle) in find!(
         (person_id: Id, handle: Value<Handle<Blake3, LongString>>),
         pattern!(data, [{ ?person_id @ metadata::name: ?handle }])
     ) {
         if let Some(person) = people.get_mut(&person_id) {
+            if person.label.is_none() {
+                if let Some(value) = load_text(ws, handle) {
+                    person.label = Some(value);
+                }
+            }
+        }
+    }
+
+    for (person_id, handle) in find!(
+        (person_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(data, [{ ?person_id @ relations::display_name: ?handle }])
+    ) {
+        if let Some(person) = people.get_mut(&person_id) {
             if person.display_name.is_none() {
                 if let Some(value) = load_text(ws, handle) {
                     person.display_name = Some(value);
+                }
+            }
+        }
+    }
+
+    for (person_id, handle) in find!(
+        (person_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(data, [{ ?person_id @ relations::first_name: ?handle }])
+    ) {
+        if let Some(person) = people.get_mut(&person_id) {
+            if person.first_name.is_none() {
+                if let Some(value) = load_text(ws, handle) {
+                    person.first_name = Some(value);
+                }
+            }
+        }
+    }
+
+    for (person_id, handle) in find!(
+        (person_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(data, [{ ?person_id @ relations::last_name: ?handle }])
+    ) {
+        if let Some(person) = people.get_mut(&person_id) {
+            if person.last_name.is_none() {
+                if let Some(value) = load_text(ws, handle) {
+                    person.last_name = Some(value);
                 }
             }
         }
@@ -1128,6 +1172,12 @@ fn collect_relations_labels(people: &[RelationRow]) -> HashMap<Id, String> {
     for person in people {
         if let Some(label) = person.label.as_ref() {
             map.insert(person.id, label.clone());
+        } else if let (Some(first), Some(last)) = (person.first_name.as_ref(), person.last_name.as_ref()) {
+            map.insert(person.id, format!("{first} {last}"));
+        } else if let Some(first) = person.first_name.as_ref() {
+            map.insert(person.id, first.clone());
+        } else if let Some(last) = person.last_name.as_ref() {
+            map.insert(person.id, last.clone());
         } else if let Some(name) = person.display_name.as_ref() {
             map.insert(person.id, name.clone());
         }
@@ -1146,6 +1196,22 @@ fn resolve_person_ref(people: &[RelationRow], raw: &str) -> Option<Id> {
     for person in people {
         if let Some(label) = person.label.as_ref() {
             if label == trimmed {
+                return Some(person.id);
+            }
+        }
+        if let (Some(first), Some(last)) = (person.first_name.as_ref(), person.last_name.as_ref()) {
+            let full = format!("{first} {last}");
+            if full == trimmed {
+                return Some(person.id);
+            }
+        }
+        if let Some(first) = person.first_name.as_ref() {
+            if first == trimmed {
+                return Some(person.id);
+            }
+        }
+        if let Some(last) = person.last_name.as_ref() {
+            if last == trimmed {
                 return Some(person.id);
             }
         }
@@ -1281,13 +1347,15 @@ fn collect_reasoning_summaries(
     rows
 }
 
-fn collect_shortnames(data: &TribleSet) -> HashMap<Id, String> {
+fn collect_labels(data: &TribleSet, ws: &mut Workspace<Pile>) -> HashMap<Id, String> {
     let mut map = HashMap::new();
-    for (entity_id, shortname) in find!(
-        (entity_id: Id, shortname: String),
-        pattern!(data, [{ ?entity_id @ metadata::shortname: ?shortname }])
+    for (entity_id, handle) in find!(
+        (entity_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(data, [{ ?entity_id @ metadata::name: ?handle }])
     ) {
-        map.entry(entity_id).or_insert(shortname);
+        if let Some(label) = load_text(ws, handle) {
+            map.entry(entity_id).or_insert(label);
+        }
     }
     map
 }
@@ -1527,7 +1595,7 @@ fn send_local_message(
     let now = now_epoch();
     let now_interval: Value<NsTAIInterval> = (now, now).to_value();
     let message_id = triblespace::prelude::ufoid();
-    let body_handle = ws.put::<LongString, _>(body.to_string());
+    let body_handle = ws.put(body.to_string());
     change += entity! { &message_id @
         metadata::tag: &LOCAL_KIND_MESSAGE_ID,
         local_messages::from: from,
@@ -1623,7 +1691,7 @@ fn ensure_local_metadata(ws: &mut Workspace<Pile>) -> Result<TribleSet, String> 
 
     let mut existing_kinds: HashSet<Id> = find!(
         (kind: Id),
-        pattern!(&space, [{ ?kind @ metadata::shortname: _?name }])
+        pattern!(&space, [{ ?kind @ metadata::name: _?handle }])
     )
     .into_iter()
     .map(|(kind,)| kind)
@@ -1631,7 +1699,8 @@ fn ensure_local_metadata(ws: &mut Workspace<Pile>) -> Result<TribleSet, String> 
 
     for (id, label) in LOCAL_KIND_SPECS {
         if !existing_kinds.contains(&id) {
-            change += entity! { ExclusiveId::force_ref(&id) @ metadata::shortname: label };
+            let name_handle = label.to_owned().to_blob().get_handle::<Blake3>();
+            change += entity! { ExclusiveId::force_ref(&id) @ metadata::name: name_handle };
             existing_kinds.insert(id);
         }
     }
@@ -1838,7 +1907,7 @@ fn render_exec_rows(
     ui: &mut egui::Ui,
     now_key: i128,
     rows: &[ExecRow],
-    shortnames: &HashMap<Id, String>,
+    labels: &HashMap<Id, String>,
 ) {
     egui::ScrollArea::vertical()
         .id_salt("exec_rows_scroll")
@@ -1866,7 +1935,7 @@ fn render_exec_rows(
                         );
                         ui.label(
                             row.worker
-                                .map(|id| format_id(shortnames, id))
+                                .map(|id| format_id(labels, id))
                                 .unwrap_or_else(|| "-".to_string()),
                         );
                         ui.end_row();
@@ -1962,7 +2031,13 @@ fn render_relations(ui: &mut egui::Ui, people: &[RelationRow]) {
             for person in people {
                 let label = person.label.as_deref().unwrap_or("<unnamed>");
                 ui.label(format!("[{}] {}", id_prefix(person.id), label));
-                if let Some(name) = &person.display_name {
+                let full_name = match (&person.first_name, &person.last_name) {
+                    (Some(first), Some(last)) => Some(format!("{first} {last}")),
+                    (Some(first), None) => Some(first.clone()),
+                    (None, Some(last)) => Some(last.clone()),
+                    (None, None) => None,
+                };
+                if let Some(name) = person.display_name.as_ref().or(full_name.as_ref()) {
                     ui.small(name);
                 }
                 if let Some(affinity) = &person.affinity {
@@ -2115,8 +2190,17 @@ fn id_prefix(id: Id) -> String {
     out
 }
 
-fn format_id(shortnames: &HashMap<Id, String>, id: Id) -> String {
-    shortnames
+fn handle_prefix(handle: Value<Handle<Blake3, LongString>>) -> String {
+    let raw = handle.raw;
+    let mut out = String::with_capacity(8);
+    for byte in raw.iter().take(4) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn format_id(labels: &HashMap<Id, String>, id: Id) -> String {
+    labels
         .get(&id)
         .cloned()
         .unwrap_or_else(|| id_prefix(id))

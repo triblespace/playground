@@ -43,48 +43,48 @@ where
     let mut tribles = TribleSet::new();
 
     tribles += entity! { ExclusiveId::force_ref(&playground_cog::playground_cog_metadata) @
-        metadata::shortname: "playground_cog_metadata",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("playground_cog_metadata".to_string())?,
+        metadata::description: blobs.put(
             "Root id for describing the playground_cog protocol.".to_string(),
         )?,
         metadata::tag: playground_cog::tag_protocol,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_cog::tag_protocol) @
-        metadata::shortname: "tag_protocol",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_protocol".to_string())?,
+        metadata::description: blobs.put(
             "Tag for playground_cog protocol metadata.".to_string(),
         )?,
         metadata::tag: playground_cog::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_cog::tag_kind) @
-        metadata::shortname: "tag_kind",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_kind".to_string())?,
+        metadata::description: blobs.put(
             "Tag for playground_cog protocol kind constants.".to_string(),
         )?,
         metadata::tag: playground_cog::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_cog::tag_attribute) @
-        metadata::shortname: "tag_attribute",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_attribute".to_string())?,
+        metadata::description: blobs.put(
             "Tag for playground_cog protocol attributes.".to_string(),
         )?,
         metadata::tag: playground_cog::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_cog::tag_tag) @
-        metadata::shortname: "tag_tag",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_tag".to_string())?,
+        metadata::description: blobs.put(
             "Tag for playground_cog protocol tag constants.".to_string(),
         )?,
         metadata::tag: playground_cog::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_cog::kind_thought) @
-        metadata::shortname: "kind_thought",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("kind_thought".to_string())?,
+        metadata::description: blobs.put(
             "Thought entity kind.".to_string(),
         )?,
         metadata::tag: playground_cog::tag_kind,
@@ -132,11 +132,10 @@ where
     S: ValueSchema,
 {
     let mut tribles = metadata::Metadata::describe(attribute, blobs)?;
-    let handle = blobs.put::<LongString, _>(name.to_owned())?;
+
     let attribute_id = metadata::Metadata::id(attribute);
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::shortname: name,
-        metadata::name: handle,
+        metadata::name: (blobs.put(name.to_owned())?),
         metadata::tag: playground_cog::tag_attribute,
     };
     Ok(tribles)

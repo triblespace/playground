@@ -249,13 +249,13 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     let now = epoch_interval(now_epoch());
     let config_id = ufoid();
 
-    let system_prompt = ws.put::<LongString, _>(config.system_prompt.clone());
-    let seed_prompt = ws.put::<LongString, _>(config.seed_prompt.clone());
-    let branch = ws.put::<LongString, _>(config.branch.clone());
-    let author = ws.put::<LongString, _>(config.author.clone());
-    let author_role = ws.put::<LongString, _>(config.author_role.clone());
-    let llm_model = ws.put::<LongString, _>(config.llm.model.clone());
-    let llm_base_url = ws.put::<LongString, _>(config.llm.base_url.clone());
+    let system_prompt = ws.put(config.system_prompt.clone());
+    let seed_prompt = ws.put(config.seed_prompt.clone());
+    let branch = ws.put(config.branch.clone());
+    let author = ws.put(config.author.clone());
+    let author_role = ws.put(config.author_role.clone());
+    let llm_model = ws.put(config.llm.model.clone());
+    let llm_base_url = ws.put(config.llm.base_url.clone());
     let poll_ms: Value<U256BE> = config.poll_ms.to_value();
     let llm_stream: Value<U256BE> = if config.llm.stream { 1u64 } else { 0u64 }.to_value();
 
@@ -281,15 +281,15 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
         change += entity! { &config_id @ playground_config::persona_id: id };
     }
     if let Some(key) = config.llm.api_key.as_ref() {
-        let handle = ws.put::<LongString, _>(key.clone());
+        let handle = ws.put(key.clone());
         change += entity! { &config_id @ playground_config::llm_api_key: handle };
     }
     if let Some(effort) = config.llm.reasoning_effort.as_ref() {
-        let handle = ws.put::<LongString, _>(effort.clone());
+        let handle = ws.put(effort.clone());
         change += entity! { &config_id @ playground_config::llm_reasoning_effort: handle };
     }
     if let Some(cwd) = config.exec.default_cwd.as_ref() {
-        let handle = ws.put::<LongString, _>(cwd.to_string_lossy().to_string());
+        let handle = ws.put(cwd.to_string_lossy().to_string());
         change += entity! { &config_id @ playground_config::exec_default_cwd: handle };
     }
     if let Some(profile) = config.exec.sandbox_profile {

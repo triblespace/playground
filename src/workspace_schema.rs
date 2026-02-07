@@ -57,72 +57,72 @@ where
     let mut tribles = TribleSet::new();
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::playground_workspace_metadata) @
-        metadata::shortname: "playground_workspace_metadata",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("playground_workspace_metadata".to_string())?,
+        metadata::description: blobs.put(
             "Root id for describing the playground_workspace protocol.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_protocol,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::tag_protocol) @
-        metadata::shortname: "tag_protocol",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_protocol".to_string())?,
+        metadata::description: blobs.put(
             "Tag for playground_workspace protocol metadata.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::tag_kind) @
-        metadata::shortname: "tag_kind",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_kind".to_string())?,
+        metadata::description: blobs.put(
             "Tag for playground_workspace protocol kind constants.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::tag_attribute) @
-        metadata::shortname: "tag_attribute",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_attribute".to_string())?,
+        metadata::description: blobs.put(
             "Tag for playground_workspace protocol attributes.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::tag_tag) @
-        metadata::shortname: "tag_tag",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("tag_tag".to_string())?,
+        metadata::description: blobs.put(
             "Tag for playground_workspace protocol tag constants.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_tag,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::kind_snapshot) @
-        metadata::shortname: "kind_snapshot",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("kind_snapshot".to_string())?,
+        metadata::description: blobs.put(
             "Workspace snapshot entity kind.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_kind,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::kind_file) @
-        metadata::shortname: "kind_file",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("kind_file".to_string())?,
+        metadata::description: blobs.put(
             "Workspace file entry entity kind.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_kind,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::kind_dir) @
-        metadata::shortname: "kind_dir",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("kind_dir".to_string())?,
+        metadata::description: blobs.put(
             "Workspace directory entry entity kind.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_kind,
     };
 
     tribles += entity! { ExclusiveId::force_ref(&playground_workspace::kind_symlink) @
-        metadata::shortname: "kind_symlink",
-        metadata::name: blobs.put::<LongString, _>(
+        metadata::name: blobs.put("kind_symlink".to_string())?,
+        metadata::description: blobs.put(
             "Workspace symlink entry entity kind.".to_string(),
         )?,
         metadata::tag: playground_workspace::tag_kind,
@@ -184,11 +184,10 @@ where
     S: ValueSchema,
 {
     let mut tribles = metadata::Metadata::describe(attribute, blobs)?;
-    let handle = blobs.put::<LongString, _>(name.to_owned())?;
+
     let attribute_id = metadata::Metadata::id(attribute);
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::shortname: name,
-        metadata::name: handle,
+        metadata::name: (blobs.put(name.to_owned())?),
         metadata::tag: playground_workspace::tag_attribute,
     };
     Ok(tribles)

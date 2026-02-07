@@ -20,7 +20,7 @@ use triblespace::prelude::*;
 use crate::branch_util::ensure_branch_id;
 use crate::config::Config;
 use crate::repo_util::{
-    ensure_worker_shortname, init_repo, load_text, push_workspace, seed_metadata,
+    ensure_worker_name, init_repo, load_text, push_workspace, seed_metadata,
 };
 use crate::schema::playground_exec;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
@@ -62,7 +62,7 @@ pub(crate) fn run_exec_loop(
     let (mut repo, branch_id) = init_repo(&config).context("open triblespace repo")?;
     seed_metadata(&mut repo)?;
     let label = format!("exec-{}", id_prefix(worker_id));
-    ensure_worker_shortname(&mut repo, branch_id, worker_id, &label)?;
+    ensure_worker_name(&mut repo, branch_id, worker_id, &label)?;
     maybe_bootstrap_workspace(&mut repo)?;
 
     loop {
@@ -118,10 +118,8 @@ pub(crate) fn run_exec_loop(
             playground_exec::attempt: attempt,
             playground_exec::duration_ms: duration_ms,
         };
-
-        let stdout_handle = ws.put::<UnknownBlob, _>(Bytes::from_source(output.stdout));
-        let stderr_handle = ws.put::<UnknownBlob, _>(Bytes::from_source(output.stderr));
-        change += entity! { &result_id @
+::from_source(output.stdout));
+        let (ws.put(Bytes::from_source(ouange += entity! { &result_id @
             playground_exec::stdout: stdout_handle,
             playground_exec::stderr: stderr_handle,
         };
@@ -131,17 +129,17 @@ pub(crate) fn run_exec_loop(
         }
 
         if let Some(stdout_text) = output.stdout_text {
-            let handle = ws.put::<LongString, _>(stdout_text);
+            let handle = ws.put(stdout_text);
             change += entity! { &result_id @ playground_exec::stdout_text: handle };
         }
 
         if let Some(stderr_text) = output.stderr_text {
-            let handle = ws.put::<LongString, _>(stderr_text);
+            let handle = ws.put(stderr_text);
             change += entity! { &result_id @ playground_exec::stderr_text: handle };
         }
 
         if let Some(error) = output.error {
-            let handle = ws.put::<LongString, _>(error);
+            let handle = ws.put(error);
             change += entity! { &result_id @ playground_exec::error: handle };
         }
 

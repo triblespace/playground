@@ -56,7 +56,7 @@ pub(crate) fn load_text(
     Ok(view.as_ref().to_string())
 }
 
-pub(crate) fn ensure_worker_shortname(
+pub(crate) fn ensure_worker_name(
     repo: &mut Repository<Pile>,
     branch_id: Id,
     worker_id: Id,
@@ -64,12 +64,12 @@ pub(crate) fn ensure_worker_shortname(
 ) -> Result<()> {
     let mut ws = repo
         .pull(branch_id)
-        .map_err(|err| anyhow!("pull workspace for worker shortname: {err:?}"))?;
+        .map_err(|err| anyhow!("pull workspace for worker name: {err:?}"))?;
     let catalog = ws.checkout(..).context("checkout workspace")?;
 
     let exists = find!(
-        (shortname: String),
-        pattern!(&catalog, [{ worker_id @ metadata::shortname: ?shortname }])
+        (name_handle: Value<Handle<Blake3, LongString>>),
+        pattern!(&catalog, [{ worker_id @ metadata::name: ?name_handle }])
     )
     .into_iter()
     .next()
@@ -78,11 +78,17 @@ pub(crate) fn ensure_worker_shortname(
         return Ok(());
     }
 
+    let name_blob = label.to_owned().to_blob();
+    let name_handle = name_blob.get_handle::<Blake3>();
+    repo.storage_mut()
+        .put(name_blob)
+        .map_err(|err| anyhow!("store worker name blob: {err:?}"))?;
+
     let mut change = TribleSet::new();
     change += entity! { ExclusiveId::force_ref(&worker_id) @
-        metadata::shortname: label
+        metadata::name: name_handle
     };
-    ws.commit(change, None, Some("worker shortname"));
-    push_workspace(repo, &mut ws).context("push worker shortname")?;
+    ws.commit(change, None, Some("worker name"));
+    push_workspace(repo, &mut ws).context("push worker name")?;
     Ok(())
 }

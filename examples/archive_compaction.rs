@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use ed25519_dalek::SigningKey;
 use eframe::egui;
 use rand::rngs::OsRng;
-use triblespace::core::blob::Blob;
-use triblespace::core::blob::schemas::UnknownBlob;
+use triblespace::core::blob::{Blob, ToBlob};
+use triblespace::core::blob::schemas::{LongString, UnknownBlob};
 use triblespace::core::blob::schemas::simplearchive::SimpleArchive;
 use triblespace::core::metadata;
 use triblespace::core::repo::pile::Pile;
@@ -84,6 +84,10 @@ fn find_branch_by_name(
     let iter = pile
         .branches()
         .map_err(|err| format!("list branches: {err:?}"))?;
+    let expected = LongString::from(branch_name)
+        .to_blob()
+        .get_handle::<Blake3>()
+        .to_value();
 
     for item in iter {
         let branch_id = item.map_err(|err| format!("branch id: {err:?}"))?;
@@ -97,15 +101,18 @@ fn find_branch_by_name(
             .get(head)
             .map_err(|err| format!("branch metadata blob: {err:?}"))?;
 
-        let name = find!(
-            (shortname: String),
-            pattern!(&meta, [{ metadata::shortname: ?shortname }])
+        let mut names = find!(
+            (handle: Value<Handle<Blake3, LongString>>),
+            pattern!(&meta, [{ metadata::name: ?handle }])
         )
-        .into_iter()
-        .next()
-        .map(|(n,)| n)
-        .unwrap_or_default();
-        if name == branch_name {
+        .into_iter();
+        let Some((handle,)) = names.next() else {
+            continue;
+        };
+        if names.next().is_some() {
+            continue;
+        }
+        if handle == expected {
             return Ok(Some(branch_id));
         }
     }
