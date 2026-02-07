@@ -72,6 +72,19 @@ Prompts can also be loaded from files:
 cargo run --manifest-path playground/Cargo.toml -- --pile /path/to/pile/self.pile config set system-prompt @./system_prompt.txt
 ```
 
+## Pile migrations
+
+If you upgraded from an older pile where branch names were stored in legacy metadata, migrate branch
+metadata once so `metadata::name` exists for every branch:
+
+```bash
+cargo run --manifest-path playground/Cargo.toml -- --pile /path/to/pile/self.pile migrate branch-metadata
+```
+
+This is append-only: it does not rewrite commit history. It appends new branch metadata blobs and
+updates the branch pointers. If multiple branches share the same name, the extra branches are
+renamed to `name--orphan-<idprefix>` so name lookups become unambiguous.
+
 ## Workspace snapshots (in the pile)
 
 Capture a curated snapshot of the workspace into the pile (branch `workspace` by default):

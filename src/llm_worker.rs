@@ -15,9 +15,7 @@ use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, ShortStr
 use triblespace::prelude::*;
 
 use crate::config::Config;
-use crate::repo_util::{
-    ensure_worker_name, init_repo, load_text, push_workspace, seed_metadata,
-};
+use crate::repo_util::{ensure_worker_name, init_repo, load_text, push_workspace, seed_metadata};
 use crate::schema::openai_responses;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
 
@@ -129,7 +127,7 @@ pub(crate) fn run_llm_loop(
         let started_at = epoch_interval(now_epoch());
         let in_progress_id = ufoid();
         let attempt: u64 = 1;
-.clone());
+        let request_raw_handle = ws.put(request_raw);
 
         let mut change = TribleSet::new();
         change += entity! { ExclusiveId::force_ref(&request.id) @
@@ -165,7 +163,9 @@ pub(crate) fn run_llm_loop(
 
         match result {
             Ok(result) => {
-                let (ws.put(result.output_text)) = .put(result.raw.clone());
+                let raw_blob = result.raw.clone().to_blob();
+                let output_handle = ws.put(result.output_text);
+                let raw_handle = ws.put(result.raw);
                 change += entity! { &result_id @
                     openai_responses::output_text: output_handle,
                     openai_responses::response_raw: raw_handle,
@@ -173,15 +173,17 @@ pub(crate) fn run_llm_loop(
 
                 let mut import_blobs = MemoryBlobStore::<Blake3>::new();
                 let mut importer = JsonObjectImporter::<_, Blake3>::new(&mut import_blobs, None);
-                match importer.import_blob(result.raw.to_blob()) {
+                match importer.import_blob(raw_blob) {
                     Ok(roots) => {
                         let data = importer.data().clone();
-                        let metadata = importer.metadata().unwrap_or_else(|err| match err {});
-                        let reader = import_blobs
+                        let metadata = importer
+                            .metadata()
+                            .context("build response import metadata")?;
+                        let import_reader = import_blobs
                             .reader()
                             .context("read response import blobs")?;
-                        for (_, blob) in reader.iter() {
-                            ws.put(blob.bytes.clone());
+                        for (_, blob) in import_reader.iter() {
+                            ws.put::<UnknownBlob, _>(blob.bytes.clone());
                         }
 
                         for root in roots {
@@ -199,8 +201,10 @@ pub(crate) fn run_llm_loop(
                 }
             }
             Err(err) => {
-                let (ws.put(err.to_string())) = ws.put(err.to_string());
-                change += e };
+                let handle = ws.put(err.to_string());
+                change += entity! { &result_id @
+                    openai_responses::error: handle,
+                };
             }
         }
 

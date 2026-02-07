@@ -19,9 +19,7 @@ use triblespace::prelude::*;
 
 use crate::branch_util::ensure_branch_id;
 use crate::config::Config;
-use crate::repo_util::{
-    ensure_worker_name, init_repo, load_text, push_workspace, seed_metadata,
-};
+use crate::repo_util::{ensure_worker_name, init_repo, load_text, push_workspace, seed_metadata};
 use crate::schema::playground_exec;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
 use crate::workspace_snapshot::{DEFAULT_WORKSPACE_BRANCH, restore_snapshot};
@@ -106,6 +104,14 @@ pub(crate) fn run_exec_loop(
 
         let started = Instant::now();
         let output = execute_command(&command, cwd.as_deref(), stdin);
+        let ExecOutput {
+            stdout,
+            stderr,
+            exit_code,
+            stdout_text,
+            stderr_text,
+            error,
+        } = output;
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let finished_at = epoch_interval(now_epoch());
 
@@ -118,27 +124,28 @@ pub(crate) fn run_exec_loop(
             playground_exec::attempt: attempt,
             playground_exec::duration_ms: duration_ms,
         };
-::from_source(output.stdout));
-        let (ws.put(Bytes::from_source(ouange += entity! { &result_id @
+        let stdout_handle = ws.put::<UnknownBlob, _>(Bytes::from_source(stdout));
+        let stderr_handle = ws.put::<UnknownBlob, _>(Bytes::from_source(stderr));
+        change += entity! { &result_id @
             playground_exec::stdout: stdout_handle,
             playground_exec::stderr: stderr_handle,
         };
 
-        if let Some(exit_code) = output.exit_code.and_then(|code| u64::try_from(code).ok()) {
+        if let Some(exit_code) = exit_code.and_then(|code| u64::try_from(code).ok()) {
             change += entity! { &result_id @ playground_exec::exit_code: exit_code };
         }
 
-        if let Some(stdout_text) = output.stdout_text {
+        if let Some(stdout_text) = stdout_text {
             let handle = ws.put(stdout_text);
             change += entity! { &result_id @ playground_exec::stdout_text: handle };
         }
 
-        if let Some(stderr_text) = output.stderr_text {
+        if let Some(stderr_text) = stderr_text {
             let handle = ws.put(stderr_text);
             change += entity! { &result_id @ playground_exec::stderr_text: handle };
         }
 
-        if let Some(error) = output.error {
+        if let Some(error) = error {
             let handle = ws.put(error);
             change += entity! { &result_id @ playground_exec::error: handle };
         }

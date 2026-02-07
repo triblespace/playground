@@ -22,6 +22,7 @@ mod config;
 mod diagnostics;
 mod exec_worker;
 mod llm_worker;
+mod migrate;
 mod repo_ops;
 mod repo_util;
 mod schema;
@@ -45,9 +46,29 @@ enum CommandMode {
     Llm(WorkerArgs),
     #[command(about = "Open the diagnostics dashboard")]
     Diagnostics(DiagnosticsArgs),
+    #[command(about = "Migrate legacy pile metadata to the current schemas")]
+    Migrate {
+        #[command(subcommand)]
+        command: MigrateCommand,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MigrateCommand {
+    #[command(
+        about = "Migrate branch metadata to ensure branches have metadata::name (LongString handle)"
+    )]
+    BranchMetadata {
+        /// Show what would change without mutating the pile.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Do not rename duplicate branches (useful for forensic inspection).
+        #[arg(long, default_value_t = false)]
+        no_rename_empty_duplicates: bool,
     },
 }
 
@@ -193,6 +214,20 @@ fn main() -> Result<()> {
             diagnostics::set_default_pile(Some(pile_path));
             diagnostics::diagnostics();
             Ok(())
+        }
+        CommandMode::Migrate { command } => {
+            let instance = default_instance_name();
+            let pile_path = resolve_pile_path(cli.pile.clone(), instance.as_str());
+            match command {
+                MigrateCommand::BranchMetadata {
+                    dry_run,
+                    no_rename_empty_duplicates,
+                } => migrate::migrate_branch_metadata(
+                    pile_path.as_path(),
+                    dry_run,
+                    !no_rename_empty_duplicates,
+                ),
+            }
         }
         CommandMode::Config { command } => {
             let instance = default_instance_name();

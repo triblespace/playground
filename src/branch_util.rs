@@ -18,7 +18,10 @@ pub(crate) fn ensure_branch_id(repo: &mut Repository<Pile>, name: &str) -> Resul
 }
 
 pub(crate) fn find_branch_id(pile: &mut Pile, name: &str) -> Result<Option<Id>> {
-    let name_handle = name.to_owned().to_blob().get_handle::<valueschemas::Blake3>();
+    let name_handle = name
+        .to_owned()
+        .to_blob()
+        .get_handle::<valueschemas::Blake3>();
     let reader = pile.reader().context("pile reader")?;
     let iter = pile.branches().context("list branches")?;
 
@@ -29,7 +32,7 @@ pub(crate) fn find_branch_id(pile: &mut Pile, name: &str) -> Result<Option<Id>> 
         };
         let metadata_set: TribleSet = reader.get(head).context("branch metadata")?;
         let mut names = find!(
-            (handle: Value<Handle<valueschemas::Blake3, blobschemas::LongString>>),
+            (handle: Value<valueschemas::Handle<valueschemas::Blake3, blobschemas::LongString>>),
             pattern!(&metadata_set, [{ metadata::name: ?handle }])
         )
         .into_iter();

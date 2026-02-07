@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use ed25519_dalek::SigningKey;
 use eframe::egui;
 use rand::rngs::OsRng;
-use triblespace::core::blob::{Blob, ToBlob};
-use triblespace::core::blob::schemas::{LongString, UnknownBlob};
+use triblespace::core::blob::schemas::UnknownBlob;
+use triblespace::core::blob::schemas::longstring::LongString;
 use triblespace::core::blob::schemas::simplearchive::SimpleArchive;
+use triblespace::core::blob::{Blob, ToBlob};
 use triblespace::core::metadata;
 use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::{BlobStoreList, BlobStoreMeta, BranchStore, Repository};
@@ -84,10 +85,7 @@ fn find_branch_by_name(
     let iter = pile
         .branches()
         .map_err(|err| format!("list branches: {err:?}"))?;
-    let expected = LongString::from(branch_name)
-        .to_blob()
-        .get_handle::<Blake3>()
-        .to_value();
+    let expected = branch_name.to_string().to_blob().get_handle::<Blake3>();
 
     for item in iter {
         let branch_id = item.map_err(|err| format!("branch id: {err:?}"))?;
