@@ -5,7 +5,9 @@ use rand_core::{OsRng, TryRngCore};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::time::Duration;
 use triblespace::core::blob::schemas::longstring::LongString;
 use triblespace::core::blob::schemas::simplearchive::SimpleArchive;
 use triblespace::core::id::{ExclusiveId, Id};
@@ -21,9 +23,9 @@ use triblespace::prelude::valueschemas::U256BE;
 use triblespace::prelude::{BlobStore, BlobStoreGet, BranchStore, ToBlob, ToValue, View};
 
 use GORBIE::NotebookCtx;
+use GORBIE::NotebookConfig;
 use GORBIE::cards::{DEFAULT_CARD_PADDING, with_padding};
 use GORBIE::md;
-use GORBIE::notebook;
 use GORBIE::widgets::{Button, TextField};
 
 use crate::schema::openai_responses;
@@ -68,6 +70,7 @@ const TEAMS_SCROLL_HEIGHT: f32 = 520.0;
 const TEAMS_CHAT_LIST_WIDTH: f32 = 220.0;
 
 static DIAGNOSTICS_PILE_OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
+static DIAGNOSTICS_HEADLESS: AtomicBool = AtomicBool::new(false);
 
 pub fn set_default_pile(path: Option<PathBuf>) {
     let _ = DIAGNOSTICS_PILE_OVERRIDE.set(path);
@@ -77,6 +80,10 @@ fn diagnostics_default_pile() -> Option<PathBuf> {
     DIAGNOSTICS_PILE_OVERRIDE
         .get()
         .and_then(|path| path.as_ref().cloned())
+}
+
+fn diagnostics_is_headless() -> bool {
+    DIAGNOSTICS_HEADLESS.load(Ordering::Relaxed)
 }
 
 const LOCAL_KIND_MESSAGE_ID: Id = id_hex!("A3556A66B00276797FCE8A2742AB850F");
@@ -145,8 +152,8 @@ impl Default for DashboardConfig {
             local_message_branches: "local-messages".to_string(),
             relations_branches: "relations".to_string(),
             local_sender: "jp".to_string(),
-            local_recipient: "bulti".to_string(),
-            local_reader: "bulti".to_string(),
+            local_recipient: "agent".to_string(),
+            local_reader: "agent".to_string(),
             teams_branches: "teams".to_string(),
         }
     }
@@ -301,8 +308,7 @@ struct BranchSnapshot {
     data: TribleSet,
 }
 
-#[notebook(name = "Playground Diagnostics")]
-pub fn diagnostics(nb: &mut NotebookCtx) {
+fn diagnostics_ui(nb: &mut NotebookCtx) {
     let padding = DEFAULT_CARD_PADDING;
     let dashboard = nb.state(
         "playground-diagnostics",
@@ -354,7 +360,11 @@ _Live view of the agent pile, exec queue, and message activity._"
                 } else {
                     refresh_snapshot(state);
                 }
-                ui.ctx().request_repaint();
+                if diagnostics_is_headless() {
+                    // In headless capture we only need one snapshot.
+                } else {
+                    ui.ctx().request_repaint_after(Duration::from_millis(250));
+                }
             });
         },
     );
@@ -370,6 +380,19 @@ _Live view of the agent pile, exec queue, and message activity._"
                 ui.label(format!("Pile: {}", snapshot.pile_path.display()));
             });
             if !snapshot.branches.is_empty() {
+                let has_branch_warnings = snapshot.branches.iter().any(|branch| {
+                    branch
+                        .name
+                        .as_deref()
+                        .map_or(false, |name| name.starts_with('<'))
+                });
+                if has_branch_warnings {
+                    ui.colored_label(
+                        egui::Color32::RED,
+                        "Some branches have unreadable names. \
+Run: `cargo run --manifest-path trible/Cargo.toml -- pile migrate <pile> run`",
+                    );
+                }
                 ui.label("Branches:");
                 for branch in &snapshot.branches {
                     let label = branch.name.as_deref().unwrap_or("<unnamed>").to_string();
@@ -479,6 +502,32 @@ _Live view of the agent pile, exec queue, and message activity._"
             }
         });
     });
+}
+
+pub fn run_diagnostics(
+    headless: bool,
+    out_dir: Option<PathBuf>,
+    scale: Option<f32>,
+    headless_wait_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    DIAGNOSTICS_HEADLESS.store(headless, Ordering::Relaxed);
+
+    let mut cfg = NotebookConfig::new("Playground Diagnostics");
+    if headless {
+        let out_dir = out_dir.unwrap_or_else(|| PathBuf::from("gorbie_capture"));
+        cfg = if let Some(scale) = scale {
+            cfg.with_headless_capture_scaled(out_dir, scale)
+        } else {
+            cfg.with_headless_capture(out_dir)
+        };
+        if let Some(wait_ms) = headless_wait_ms {
+            cfg = cfg.with_headless_settle_timeout(Duration::from_millis(wait_ms));
+        }
+    }
+
+    cfg.run(|nb| diagnostics_ui(nb))
+        .map_err(|err| anyhow::anyhow!("diagnostics failed: {err:?}"))?;
+    Ok(())
 }
 
 fn snapshot_or_message<'a>(
@@ -710,25 +759,27 @@ fn list_branches(pile: &mut Pile<Blake3>) -> Result<Vec<BranchEntry>, String> {
     let mut branches = Vec::new();
     for branch in iter {
         let branch_id = branch.map_err(|err| err.to_string())?;
-        let name = pile
-            .head(branch_id)
-            .map_err(|err| err.to_string())?
-            .and_then(|head| reader.get::<TribleSet, _>(head).ok())
-            .and_then(|metadata_set: TribleSet| {
-                find!(
-                    (handle: Value<Handle<Blake3, LongString>>),
-                    pattern!(&metadata_set, [{ metadata::name: ?handle }])
-                )
-                .into_iter()
-                .map(|(handle,)| {
-                    reader
-                        .get::<View<str>, _>(handle)
-                        .ok()
-                        .map(|view| view.as_ref().to_string())
-                        .unwrap_or_else(|| handle_prefix(handle))
-                })
-                .next()
-            });
+        let name = match pile.head(branch_id).map_err(|err| err.to_string())? {
+            None => Some("<unnamed>".to_string()),
+            Some(meta_handle) => match reader.get::<TribleSet, _>(meta_handle) {
+                Ok(metadata_set) => {
+                    let mut names = find!(
+                        (handle: Value<Handle<Blake3, LongString>>),
+                        pattern!(&metadata_set, [{ metadata::name: ?handle }])
+                    )
+                    .into_iter();
+                    match (names.next(), names.next()) {
+                        (Some((handle,)), None) => reader
+                            .get::<View<str>, _>(handle)
+                            .ok()
+                            .map(|view| view.as_ref().to_string())
+                            .or_else(|| Some("<unnamed>".to_string())),
+                        _ => Some("<unnamed>".to_string()),
+                    }
+                }
+                Err(_) => Some("<unnamed>".to_string()),
+            },
+        };
         branches.push(BranchEntry {
             id: branch_id,
             name,
@@ -2180,15 +2231,6 @@ fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {
 
 fn id_prefix(id: Id) -> String {
     let raw: [u8; 16] = id.into();
-    let mut out = String::with_capacity(8);
-    for byte in raw.iter().take(4) {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
-}
-
-fn handle_prefix(handle: Value<Handle<Blake3, LongString>>) -> String {
-    let raw = handle.raw;
     let mut out = String::with_capacity(8);
     for byte in raw.iter().take(4) {
         out.push_str(&format!("{byte:02x}"));

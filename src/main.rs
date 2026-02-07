@@ -187,11 +187,17 @@ fn main() -> Result<()> {
             run_llm_worker(config, args)
         }
         CommandMode::Diagnostics(args) => {
-            let _ = args;
+            let DiagnosticsArgs {
+                headless,
+                out_dir,
+                scale,
+                headless_wait_ms,
+            } = args;
             let instance = default_instance_name();
             let pile_path = resolve_pile_path(cli.pile.clone(), instance.as_str());
             diagnostics::set_default_pile(Some(pile_path));
-            diagnostics::diagnostics();
+            diagnostics::run_diagnostics(headless, out_dir, scale, headless_wait_ms)
+                .context("run diagnostics")?;
             Ok(())
         }
         CommandMode::Config { command } => {
