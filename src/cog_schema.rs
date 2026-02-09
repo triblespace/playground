@@ -105,19 +105,10 @@ where
     metadata.union(<NsTAIInterval as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<Handle<Blake3, LongString> as metadata::ConstMetadata>::describe(blobs)?);
 
-    macro_rules! add_attribute {
-        ($attribute:expr, $name:expr) => {
-            metadata.union(describe_attribute(blobs, &$attribute, $name)?);
-        };
-    }
-
-    add_attribute!(playground_cog::kind, "playground_cog_kind");
-    add_attribute!(playground_cog::prompt, "playground_cog_prompt");
-    add_attribute!(playground_cog::created_at, "playground_cog_created_at");
-    add_attribute!(
-        playground_cog::about_exec_result,
-        "playground_cog_about_exec_result"
-    );
+    metadata.union(describe_attribute(blobs, &playground_cog::kind)?);
+    metadata.union(describe_attribute(blobs, &playground_cog::prompt)?);
+    metadata.union(describe_attribute(blobs, &playground_cog::created_at)?);
+    metadata.union(describe_attribute(blobs, &playground_cog::about_exec_result)?);
 
     Ok(metadata)
 }
@@ -125,7 +116,6 @@ where
 fn describe_attribute<B, S>(
     blobs: &mut B,
     attribute: &Attribute<S>,
-    name: &str,
 ) -> std::result::Result<TribleSet, B::PutError>
 where
     B: BlobStore<Blake3>,
@@ -135,7 +125,6 @@ where
 
     let attribute_id = metadata::Metadata::id(attribute);
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::name: blobs.put(name.to_owned())?,
         metadata::tag: playground_cog::tag_attribute,
     };
     Ok(tribles)

@@ -149,52 +149,28 @@ where
     metadata.union(<Handle<Blake3, UnknownBlob> as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<UnknownBlob as metadata::ConstMetadata>::describe(blobs)?);
 
-    macro_rules! add_attribute {
-        ($attribute:expr, $name:expr) => {
-            metadata.union(describe_attribute(blobs, &$attribute, $name)?);
-        };
-    }
-
-    add_attribute!(playground_exec::kind, "playground_exec_kind");
-    add_attribute!(
-        playground_exec::command_text,
-        "playground_exec_command_text"
-    );
-    add_attribute!(playground_exec::cwd, "playground_exec_cwd");
-    add_attribute!(playground_exec::stdin, "playground_exec_stdin");
-    add_attribute!(playground_exec::stdin_text, "playground_exec_stdin_text");
-    add_attribute!(playground_exec::timeout_ms, "playground_exec_timeout_ms");
-    add_attribute!(
-        playground_exec::sandbox_profile,
-        "playground_exec_sandbox_profile"
-    );
-    add_attribute!(
-        playground_exec::requested_at,
-        "playground_exec_requested_at"
-    );
-    add_attribute!(
-        playground_exec::about_request,
-        "playground_exec_about_request"
-    );
-    add_attribute!(
-        playground_exec::about_message,
-        "playground_exec_about_message"
-    );
-    add_attribute!(
-        playground_exec::about_thought,
-        "playground_exec_about_thought"
-    );
-    add_attribute!(playground_exec::worker, "playground_exec_worker");
-    add_attribute!(playground_exec::started_at, "playground_exec_started_at");
-    add_attribute!(playground_exec::attempt, "playground_exec_attempt");
-    add_attribute!(playground_exec::finished_at, "playground_exec_finished_at");
-    add_attribute!(playground_exec::exit_code, "playground_exec_exit_code");
-    add_attribute!(playground_exec::stdout, "playground_exec_stdout");
-    add_attribute!(playground_exec::stderr, "playground_exec_stderr");
-    add_attribute!(playground_exec::stdout_text, "playground_exec_stdout_text");
-    add_attribute!(playground_exec::stderr_text, "playground_exec_stderr_text");
-    add_attribute!(playground_exec::duration_ms, "playground_exec_duration_ms");
-    add_attribute!(playground_exec::error, "playground_exec_error");
+    metadata.union(describe_attribute(blobs, &playground_exec::kind)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::command_text)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::cwd)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::stdin)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::stdin_text)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::timeout_ms)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::sandbox_profile)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::requested_at)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::about_request)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::about_message)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::about_thought)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::worker)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::started_at)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::attempt)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::finished_at)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::exit_code)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::stdout)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::stderr)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::stdout_text)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::stderr_text)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::duration_ms)?);
+    metadata.union(describe_attribute(blobs, &playground_exec::error)?);
 
     Ok(metadata)
 }
@@ -202,7 +178,6 @@ where
 fn describe_attribute<B, S>(
     blobs: &mut B,
     attribute: &Attribute<S>,
-    name: &str,
 ) -> std::result::Result<TribleSet, B::PutError>
 where
     B: BlobStore<Blake3>,
@@ -212,7 +187,6 @@ where
 
     let attribute_id = metadata::Metadata::id(attribute);
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::name: blobs.put(name.to_owned())?,
         metadata::tag: playground_exec::tag_attribute,
     };
     Ok(tribles)

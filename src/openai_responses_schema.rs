@@ -142,51 +142,21 @@ where
     metadata.union(<ShortString as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<Handle<Blake3, LongString> as metadata::ConstMetadata>::describe(blobs)?);
 
-    macro_rules! add_attribute {
-        ($attribute:expr, $name:expr) => {
-            metadata.union(describe_attribute(blobs, &$attribute, $name)?);
-        };
-    }
-
-    add_attribute!(openai_responses::kind, "openai_responses_kind");
-    add_attribute!(
-        openai_responses::about_request,
-        "openai_responses_about_request"
-    );
-    add_attribute!(
-        openai_responses::about_thought,
-        "openai_responses_about_thought"
-    );
-    add_attribute!(openai_responses::model, "openai_responses_model");
-    add_attribute!(openai_responses::prompt, "openai_responses_prompt");
-    add_attribute!(
-        openai_responses::requested_at,
-        "openai_responses_requested_at"
-    );
-    add_attribute!(
-        openai_responses::request_raw,
-        "openai_responses_request_raw"
-    );
-    add_attribute!(openai_responses::worker, "openai_responses_worker");
-    add_attribute!(openai_responses::started_at, "openai_responses_started_at");
-    add_attribute!(openai_responses::attempt, "openai_responses_attempt");
-    add_attribute!(
-        openai_responses::finished_at,
-        "openai_responses_finished_at"
-    );
-    add_attribute!(
-        openai_responses::output_text,
-        "openai_responses_output_text"
-    );
-    add_attribute!(
-        openai_responses::response_raw,
-        "openai_responses_response_raw"
-    );
-    add_attribute!(
-        openai_responses::response_json_root,
-        "openai_responses_response_json_root"
-    );
-    add_attribute!(openai_responses::error, "openai_responses_error");
+    metadata.union(describe_attribute(blobs, &openai_responses::kind)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::about_request)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::about_thought)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::model)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::prompt)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::requested_at)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::request_raw)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::worker)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::started_at)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::attempt)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::finished_at)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::output_text)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::response_raw)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::response_json_root)?);
+    metadata.union(describe_attribute(blobs, &openai_responses::error)?);
 
     Ok(metadata)
 }
@@ -194,7 +164,6 @@ where
 fn describe_attribute<B, S>(
     blobs: &mut B,
     attribute: &Attribute<S>,
-    name: &str,
 ) -> std::result::Result<TribleSet, B::PutError>
 where
     B: BlobStore<Blake3>,
@@ -204,7 +173,6 @@ where
 
     let attribute_id = metadata::Metadata::id(attribute);
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::name: blobs.put(name.to_owned())?,
         metadata::tag: openai_responses::tag_attribute,
     };
     Ok(tribles)

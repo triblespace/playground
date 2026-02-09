@@ -146,30 +146,15 @@ where
     metadata.union(<Handle<Blake3, FileBytes> as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<FileBytes as metadata::ConstMetadata>::describe(blobs)?);
 
-    macro_rules! add_attribute {
-        ($attribute:expr, $name:expr) => {
-            metadata.union(describe_attribute(blobs, &$attribute, $name)?);
-        };
-    }
-
-    add_attribute!(playground_workspace::kind, "playground_workspace_kind");
-    add_attribute!(
-        playground_workspace::created_at,
-        "playground_workspace_created_at"
-    );
-    add_attribute!(
-        playground_workspace::root_path,
-        "playground_workspace_root_path"
-    );
-    add_attribute!(playground_workspace::label, "playground_workspace_label");
-    add_attribute!(playground_workspace::entry, "playground_workspace_entry");
-    add_attribute!(playground_workspace::path, "playground_workspace_path");
-    add_attribute!(playground_workspace::mode, "playground_workspace_mode");
-    add_attribute!(playground_workspace::bytes, "playground_workspace_bytes");
-    add_attribute!(
-        playground_workspace::link_target,
-        "playground_workspace_link_target"
-    );
+    metadata.union(describe_attribute(blobs, &playground_workspace::kind)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::created_at)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::root_path)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::label)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::entry)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::path)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::mode)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::bytes)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::link_target)?);
 
     Ok(metadata)
 }
@@ -177,7 +162,6 @@ where
 fn describe_attribute<B, S>(
     blobs: &mut B,
     attribute: &Attribute<S>,
-    name: &str,
 ) -> std::result::Result<TribleSet, B::PutError>
 where
     B: BlobStore<Blake3>,
@@ -187,7 +171,6 @@ where
 
     let attribute_id = metadata::Metadata::id(attribute);
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::name: blobs.put(name.to_owned())?,
         metadata::tag: playground_workspace::tag_attribute,
     };
     Ok(tribles)

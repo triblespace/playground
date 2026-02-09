@@ -123,57 +123,42 @@ where
     metadata.union(<U256BE as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<Handle<Blake3, LongString> as metadata::ConstMetadata>::describe(blobs)?);
 
-    macro_rules! add_attribute {
-        ($attribute:expr, $name:expr) => {
-            metadata.union(describe_attribute(blobs, &$attribute, $name)?);
-        };
-    }
-
-    add_attribute!(playground_config::kind, "config_kind");
-    add_attribute!(playground_config::updated_at, "config_updated_at");
-    add_attribute!(playground_config::system_prompt, "config_system_prompt");
-    add_attribute!(playground_config::branch, "config_branch");
-    add_attribute!(playground_config::branch_id, "config_branch_id");
-    add_attribute!(
-        playground_config::exec_branch_id,
-        "config_exec_branch_id"
-    );
-    add_attribute!(
-        playground_config::local_messages_branch_id,
-        "config_local_messages_branch_id"
-    );
-    add_attribute!(
-        playground_config::relations_branch_id,
-        "config_relations_branch_id"
-    );
-    add_attribute!(
-        playground_config::teams_branch_id,
-        "config_teams_branch_id"
-    );
-    add_attribute!(
-        playground_config::workspace_branch_id,
-        "config_workspace_branch_id"
-    );
-    add_attribute!(playground_config::author, "config_author");
-    add_attribute!(playground_config::author_role, "config_author_role");
-    add_attribute!(playground_config::persona_id, "config_persona_id");
-    add_attribute!(playground_config::poll_ms, "config_poll_ms");
-    add_attribute!(playground_config::llm_model, "config_llm_model");
-    add_attribute!(playground_config::llm_base_url, "config_llm_base_url");
-    add_attribute!(playground_config::llm_api_key, "config_llm_api_key");
-    add_attribute!(
-        playground_config::llm_reasoning_effort,
-        "config_llm_reasoning_effort"
-    );
-    add_attribute!(playground_config::llm_stream, "config_llm_stream");
-    add_attribute!(
-        playground_config::exec_default_cwd,
-        "config_exec_default_cwd"
-    );
-    add_attribute!(
-        playground_config::exec_sandbox_profile,
-        "config_exec_sandbox_profile"
-    );
+    metadata.union(describe_attribute(blobs, &playground_config::kind)?);
+    metadata.union(describe_attribute(blobs, &playground_config::updated_at)?);
+    metadata.union(describe_attribute(blobs, &playground_config::system_prompt)?);
+    metadata.union(describe_attribute(blobs, &playground_config::branch)?);
+    metadata.union(describe_attribute(blobs, &playground_config::branch_id)?);
+    metadata.union(describe_attribute(blobs, &playground_config::exec_branch_id)?);
+    metadata.union(describe_attribute(
+        blobs,
+        &playground_config::local_messages_branch_id,
+    )?);
+    metadata.union(describe_attribute(
+        blobs,
+        &playground_config::relations_branch_id,
+    )?);
+    metadata.union(describe_attribute(blobs, &playground_config::teams_branch_id)?);
+    metadata.union(describe_attribute(
+        blobs,
+        &playground_config::workspace_branch_id,
+    )?);
+    metadata.union(describe_attribute(blobs, &playground_config::author)?);
+    metadata.union(describe_attribute(blobs, &playground_config::author_role)?);
+    metadata.union(describe_attribute(blobs, &playground_config::persona_id)?);
+    metadata.union(describe_attribute(blobs, &playground_config::poll_ms)?);
+    metadata.union(describe_attribute(blobs, &playground_config::llm_model)?);
+    metadata.union(describe_attribute(blobs, &playground_config::llm_base_url)?);
+    metadata.union(describe_attribute(blobs, &playground_config::llm_api_key)?);
+    metadata.union(describe_attribute(
+        blobs,
+        &playground_config::llm_reasoning_effort,
+    )?);
+    metadata.union(describe_attribute(blobs, &playground_config::llm_stream)?);
+    metadata.union(describe_attribute(blobs, &playground_config::exec_default_cwd)?);
+    metadata.union(describe_attribute(
+        blobs,
+        &playground_config::exec_sandbox_profile,
+    )?);
 
     Ok(metadata)
 }
@@ -181,7 +166,6 @@ where
 fn describe_attribute<B, S>(
     blobs: &mut B,
     attribute: &Attribute<S>,
-    name: &str,
 ) -> std::result::Result<TribleSet, B::PutError>
 where
     B: BlobStore<Blake3>,
@@ -191,7 +175,6 @@ where
 
     let attribute_id = metadata::Metadata::id(attribute);
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::name: blobs.put(name.to_owned())?,
         metadata::tag: playground_config::tag_attribute,
     };
     Ok(tribles)
