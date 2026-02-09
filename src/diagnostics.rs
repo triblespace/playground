@@ -20,7 +20,7 @@ use triblespace::core::value::schemas::hash::{Blake3, Handle};
 use triblespace::core::value::schemas::time::NsTAIInterval;
 use triblespace::macros::{entity, find, id_hex, pattern};
 use triblespace::prelude::valueschemas::U256BE;
-use triblespace::prelude::{BlobStore, BlobStoreGet, BranchStore, ToBlob, ToValue, View};
+use triblespace::prelude::{Attribute, BlobStore, BlobStoreGet, BranchStore, ToBlob, ToValue, View};
 
 use GORBIE::NotebookCtx;
 use GORBIE::NotebookConfig;
@@ -30,6 +30,7 @@ use GORBIE::widgets::{Button, TextField};
 
 use crate::schema::openai_responses;
 use crate::schema::playground_exec;
+use crate::schema::playground_workspace;
 
 mod archive {
     use triblespace::macros::id_hex;
@@ -68,6 +69,9 @@ const LOCAL_COMPOSE_HEIGHT: f32 = 80.0;
 const RELATIONS_SCROLL_HEIGHT: f32 = 260.0;
 const TEAMS_SCROLL_HEIGHT: f32 = 520.0;
 const TEAMS_CHAT_LIST_WIDTH: f32 = 220.0;
+const WORKSPACE_SCROLL_HEIGHT: f32 = 420.0;
+const WORKSPACE_SNAPSHOT_LIMIT: usize = 10;
+const WORKSPACE_ENTRY_PREVIEW_LIMIT: usize = 200;
 
 static DIAGNOSTICS_PILE_OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
 static DIAGNOSTICS_HEADLESS: AtomicBool = AtomicBool::new(false);
@@ -137,6 +141,7 @@ struct DashboardConfig {
     local_me: String,
     local_peer: String,
     teams_branches: String,
+    workspace_branches: String,
 }
 
 impl Default for DashboardConfig {
@@ -153,6 +158,7 @@ impl Default for DashboardConfig {
             local_me: "jp".to_string(),
             local_peer: "agent".to_string(),
             teams_branches: "teams".to_string(),
+            workspace_branches: "workspace".to_string(),
         }
     }
 }
@@ -298,8 +304,35 @@ struct DashboardSnapshot {
     teams_messages: Vec<TeamsMessageRow>,
     teams_chats: Vec<TeamsChatRow>,
     teams_error: Option<String>,
+    workspace_snapshots: Vec<WorkspaceSnapshotRow>,
+    workspace_entries: Vec<WorkspaceEntryRow>,
+    workspace_error: Option<String>,
     labels: HashMap<Id, String>,
     now_key: i128,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceSnapshotRow {
+    id: Id,
+    created_at: Option<i128>,
+    label: Option<String>,
+    root_path: Option<String>,
+    entry_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceEntryRow {
+    kind: WorkspaceEntryKind,
+    path: String,
+    link_target: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceEntryKind {
+    File,
+    Dir,
+    Symlink,
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -373,6 +406,15 @@ _Live view of the agent pile, exec queue, and message activity._"
                         "teams_branch_picker",
                         &picker_branches,
                         &mut state.config.teams_branches,
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Workspace branches");
+                    render_branch_picker(
+                        ui,
+                        "workspace_branch_picker",
+                        &picker_branches,
+                        &mut state.config.workspace_branches,
                     );
                 });
 
@@ -554,6 +596,20 @@ _Live view of the agent pile, exec queue, and message activity._"
             }
         });
     });
+
+    nb.view(move |ui| {
+        let state = dashboard.read(ui);
+        with_padding(ui, padding, |ui| {
+            ui.heading("Workspace");
+            let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
+                return;
+            };
+            if let Some(err) = &snapshot.workspace_error {
+                ui.colored_label(egui::Color32::RED, err);
+            }
+            render_workspace(ui, snapshot.now_key, &snapshot.workspace_snapshots, &snapshot.workspace_entries);
+        });
+    });
 }
 
 pub fn run_diagnostics(
@@ -654,12 +710,14 @@ fn load_snapshot(
     let local_refs = parse_branch_list(&config.local_message_branches);
     let relations_refs = parse_branch_list(&config.relations_branches);
     let teams_refs = parse_branch_list(&config.teams_branches);
+    let workspace_refs = parse_branch_list(&config.workspace_branches);
 
     let mut ensure_refs = Vec::new();
     ensure_refs.extend(exec_refs.iter().cloned());
     ensure_refs.extend(local_refs.iter().cloned());
     ensure_refs.extend(relations_refs.iter().cloned());
     ensure_refs.extend(teams_refs.iter().cloned());
+    ensure_refs.extend(workspace_refs.iter().cloned());
     ensure_named_branches(repo, &mut branches, &ensure_refs)?;
 
     let branch_lookup = BranchLookup::new(&branches);
@@ -667,22 +725,26 @@ fn load_snapshot(
     let local_res = resolve_branch_ids(&branch_lookup, &local_refs);
     let relations_res = resolve_branch_ids(&branch_lookup, &relations_refs);
     let teams_res = resolve_branch_ids(&branch_lookup, &teams_refs);
+    let workspace_res = resolve_branch_ids(&branch_lookup, &workspace_refs);
 
     let exec_error = exec_res.as_ref().err().cloned();
     let local_message_error = local_res.as_ref().err().cloned();
     let relations_error = relations_res.as_ref().err().cloned();
     let teams_error = teams_res.as_ref().err().cloned();
+    let workspace_error = workspace_res.as_ref().err().cloned();
 
     let exec_ids = exec_res.unwrap_or_default();
     let local_ids = local_res.unwrap_or_default();
     let relations_ids = relations_res.unwrap_or_default();
     let teams_ids = teams_res.unwrap_or_default();
+    let workspace_ids = workspace_res.unwrap_or_default();
 
     let mut needed_ids: Vec<Id> = Vec::new();
     extend_unique(&mut needed_ids, &exec_ids);
     extend_unique(&mut needed_ids, &local_ids);
     extend_unique(&mut needed_ids, &relations_ids);
     extend_unique(&mut needed_ids, &teams_ids);
+    extend_unique(&mut needed_ids, &workspace_ids);
 
     let mut branch_data: HashMap<Id, BranchSnapshot> = HashMap::new();
     let mut reader_ws: Option<Workspace<Pile>> = None;
@@ -702,6 +764,7 @@ fn load_snapshot(
     let local_data = union_branches(&branch_data, &local_ids);
     let relations_data = union_branches(&branch_data, &relations_ids);
     let teams_data = union_branches(&branch_data, &teams_ids);
+    let workspace_data = union_branches(&branch_data, &workspace_ids);
 
     let mut reader_ws = if let Some(ws) = reader_ws {
         ws
@@ -730,6 +793,9 @@ fn load_snapshot(
             teams_messages: Vec::new(),
             teams_chats: Vec::new(),
             teams_error,
+            workspace_snapshots: Vec::new(),
+            workspace_entries: Vec::new(),
+            workspace_error,
             labels: HashMap::new(),
             now_key,
         });
@@ -740,6 +806,7 @@ fn load_snapshot(
         local_data,
         relations_data,
         teams_data,
+        workspace_data,
         pile_path,
         branches,
         branch_data,
@@ -747,6 +814,7 @@ fn load_snapshot(
         local_message_error,
         relations_error,
         teams_error,
+        workspace_error,
         config,
         &mut reader_ws,
     ))
@@ -757,6 +825,7 @@ fn build_snapshot(
     local_data: TribleSet,
     relations_data: TribleSet,
     teams_data: TribleSet,
+    workspace_data: TribleSet,
     pile_path: PathBuf,
     branches: Vec<BranchEntry>,
     branch_data: HashMap<Id, BranchSnapshot>,
@@ -764,6 +833,7 @@ fn build_snapshot(
     local_message_error: Option<String>,
     relations_error: Option<String>,
     teams_error: Option<String>,
+    workspace_error: Option<String>,
     config: &DashboardConfig,
     ws: &mut Workspace<Pile>,
 ) -> DashboardSnapshot {
@@ -777,6 +847,10 @@ fn build_snapshot(
     let reasoning_summaries = collect_reasoning_summaries(&exec_data, ws);
     let local_message_rows = collect_local_messages(&local_data, ws, local_me_id, local_peer_id);
     let (teams_messages, teams_chats) = collect_teams_messages(&teams_data, ws);
+    let workspace_snapshots = collect_workspace_snapshots(&workspace_data, ws);
+    let workspace_latest_id = workspace_snapshots.first().map(|row| row.id);
+    let workspace_entries =
+        collect_workspace_entries_preview(&workspace_data, ws, workspace_latest_id);
     let labels = collect_labels(&exec_data, ws);
 
     DashboardSnapshot {
@@ -797,6 +871,9 @@ fn build_snapshot(
         teams_messages,
         teams_chats,
         teams_error,
+        workspace_snapshots,
+        workspace_entries,
+        workspace_error,
         labels,
         now_key,
     }
@@ -1417,6 +1494,157 @@ fn collect_teams_messages(
     chat_list.reverse();
 
     (messages, chat_list)
+}
+
+fn collect_workspace_snapshots(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<WorkspaceSnapshotRow> {
+    let mut rows = Vec::new();
+
+    for (snapshot_id, created_at) in find!(
+        (snapshot_id: Id, created_at: Value<NsTAIInterval>),
+        pattern!(data, [{
+            ?snapshot_id @
+            playground_workspace::kind: playground_workspace::kind_snapshot,
+            playground_workspace::created_at: ?created_at,
+        }])
+    ) {
+        let created_key = interval_key(created_at);
+        let label = load_optional_string_attr(data, ws, snapshot_id, playground_workspace::label);
+        let root_path =
+            load_optional_string_attr(data, ws, snapshot_id, playground_workspace::root_path);
+        let entry_count = count_workspace_entries(data, snapshot_id);
+
+        rows.push(WorkspaceSnapshotRow {
+            id: snapshot_id,
+            created_at: Some(created_key),
+            label,
+            root_path,
+            entry_count,
+        });
+    }
+
+    rows.sort_by_key(|row| row.created_at.unwrap_or(i128::MIN));
+    rows.reverse();
+    rows.truncate(WORKSPACE_SNAPSHOT_LIMIT);
+    rows
+}
+
+fn collect_workspace_entries_preview(
+    data: &TribleSet,
+    ws: &mut Workspace<Pile>,
+    snapshot_id: Option<Id>,
+) -> Vec<WorkspaceEntryRow> {
+    let Some(snapshot_id) = snapshot_id else {
+        return Vec::new();
+    };
+
+    let snapshot_root =
+        load_optional_string_attr(data, ws, snapshot_id, playground_workspace::root_path);
+    let root_prefix = snapshot_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != ".")
+        .map(|value| value.trim_end_matches('/').to_string());
+
+    let entry_ids: Vec<Id> = find!(
+        (entry_id: Id),
+        pattern!(data, [{
+            snapshot_id @
+            playground_workspace::entry: ?entry_id,
+        }])
+    )
+    .into_iter()
+    .map(|(id,)| id)
+    .collect();
+
+    let mut paths: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (entry_id, handle) in find!(
+        (entry_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(data, [{ ?entry_id @ playground_workspace::path: ?handle }])
+    ) {
+        paths.insert(entry_id, handle);
+    }
+
+    let mut kinds: HashMap<Id, Id> = HashMap::new();
+    for (entry_id, kind) in find!(
+        (entry_id: Id, kind: Id),
+        pattern!(data, [{ ?entry_id @ playground_workspace::kind: ?kind }])
+    ) {
+        kinds.insert(entry_id, kind);
+    }
+
+    let mut link_targets: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (entry_id, handle) in find!(
+        (entry_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(data, [{ ?entry_id @ playground_workspace::link_target: ?handle }])
+    ) {
+        link_targets.insert(entry_id, handle);
+    }
+
+    let mut rows = Vec::new();
+    for entry_id in entry_ids {
+        let path = paths
+            .get(&entry_id)
+            .copied()
+            .and_then(|handle| load_text(ws, handle))
+            .unwrap_or_else(|| "<missing>".to_string());
+        let display_path = if let Some(prefix) = root_prefix.as_ref() {
+            format!("{}/{}", prefix, path)
+        } else {
+            path
+        };
+
+        let kind = match kinds.get(&entry_id).copied() {
+            Some(id) if id == playground_workspace::kind_file => WorkspaceEntryKind::File,
+            Some(id) if id == playground_workspace::kind_dir => WorkspaceEntryKind::Dir,
+            Some(id) if id == playground_workspace::kind_symlink => WorkspaceEntryKind::Symlink,
+            Some(_) | None => WorkspaceEntryKind::Unknown,
+        };
+
+        let link_target = link_targets
+            .get(&entry_id)
+            .copied()
+            .and_then(|handle| load_text(ws, handle));
+
+        rows.push(WorkspaceEntryRow {
+            kind,
+            path: display_path,
+            link_target,
+        });
+    }
+
+    rows.sort_by(|a, b| a.path.cmp(&b.path));
+    rows.truncate(WORKSPACE_ENTRY_PREVIEW_LIMIT);
+    rows
+}
+
+fn count_workspace_entries(data: &TribleSet, snapshot_id: Id) -> usize {
+    find!(
+        (entry_id: Id),
+        pattern!(data, [{
+            snapshot_id @
+            playground_workspace::entry: ?entry_id,
+        }])
+    )
+    .into_iter()
+    .count()
+}
+
+fn load_optional_string_attr(
+    data: &TribleSet,
+    ws: &mut Workspace<Pile>,
+    entity_id: Id,
+    attr: Attribute<Handle<Blake3, LongString>>,
+) -> Option<String> {
+    find!(
+        (handle: Value<Handle<Blake3, LongString>>),
+        pattern!(data, [{
+            entity_id @
+            attr: ?handle,
+        }])
+    )
+    .into_iter()
+    .next()
+    .and_then(|(handle,)| load_text(ws, handle))
 }
 
 fn collect_reasoning_summaries(
@@ -2296,6 +2524,74 @@ fn render_relations(ui: &mut egui::Ui, people: &[RelationRow]) {
                 ui.add_space(8.0);
             }
         });
+}
+
+fn render_workspace(
+    ui: &mut egui::Ui,
+    now_key: i128,
+    snapshots: &[WorkspaceSnapshotRow],
+    entries: &[WorkspaceEntryRow],
+) {
+    if snapshots.is_empty() {
+        ui.label("No workspace snapshots.");
+        return;
+    }
+
+    ui.label("Snapshots:");
+    egui::ScrollArea::vertical()
+        .id_salt("workspace_snapshots_scroll")
+        .max_height(180.0)
+        .show(ui, |ui| {
+            egui::Grid::new("workspace_snapshots_grid")
+                .striped(true)
+                .spacing(egui::Vec2::new(12.0, 6.0))
+                .show(ui, |ui| {
+                    ui.label("Age");
+                    ui.label("Id");
+                    ui.label("Label");
+                    ui.label("Root");
+                    ui.label("Entries");
+                    ui.end_row();
+
+                    for row in snapshots {
+                        ui.label(format_age(now_key, row.created_at));
+                        ui.monospace(id_prefix(row.id));
+                        ui.label(row.label.as_deref().unwrap_or("-"));
+                        ui.label(row.root_path.as_deref().unwrap_or("."));
+                        ui.label(row.entry_count.to_string());
+                        ui.end_row();
+                    }
+                });
+        });
+
+    ui.add_space(8.0);
+    ui.label("Latest snapshot entries (preview):");
+    egui::ScrollArea::vertical()
+        .id_salt("workspace_entries_scroll")
+        .max_height(WORKSPACE_SCROLL_HEIGHT)
+        .show(ui, |ui| {
+            for entry in entries {
+                let kind = workspace_kind_tag(entry.kind);
+                if let Some(target) = entry.link_target.as_deref() {
+                    ui.monospace(format!(
+                        "{kind} {} -> {}",
+                        entry.path,
+                        truncate_single_line(target, 80)
+                    ));
+                } else {
+                    ui.monospace(format!("{kind} {}", entry.path));
+                }
+            }
+        });
+}
+
+fn workspace_kind_tag(kind: WorkspaceEntryKind) -> &'static str {
+    match kind {
+        WorkspaceEntryKind::File => "F",
+        WorkspaceEntryKind::Dir => "D",
+        WorkspaceEntryKind::Symlink => "L",
+        WorkspaceEntryKind::Unknown => "?",
+    }
 }
 
 fn parse_response_json(raw: &str) -> Option<JsonValue> {
