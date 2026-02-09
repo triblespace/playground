@@ -198,7 +198,6 @@ struct DashboardState {
     signing_key: SigningKey,
     snapshot: Option<Result<DashboardSnapshot, String>>,
     show_extra_branches: bool,
-    compass_show_done: bool,
     local_draft: String,
     local_send_error: Option<String>,
     local_send_notice: Option<String>,
@@ -227,7 +226,6 @@ impl Default for DashboardState {
             signing_key: random_signing_key(),
             snapshot: None,
             show_extra_branches: false,
-            compass_show_done: false,
             local_draft: String::new(),
             local_send_error: None,
             local_send_notice: None,
@@ -622,7 +620,7 @@ _Live view of the agent pile, exec queue, and message activity._"
     });
 
     nb.view(move |ui| {
-        let mut state = dashboard.read_mut(ui);
+        let state = dashboard.read(ui);
         with_padding(ui, padding, |ui| {
             ui.heading("Compass");
             let snapshot = {
@@ -636,15 +634,11 @@ _Live view of the agent pile, exec queue, and message activity._"
                 return;
             }
 
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut state.compass_show_done, "Show done");
-            });
-
             if snapshot.compass_rows.is_empty() {
                 ui.label("No goals yet.");
                 return;
             }
-            render_compass_tree(ui, &snapshot.compass_rows, state.compass_show_done);
+            render_compass_swimlanes(ui, &snapshot.compass_rows);
         });
     });
 
@@ -3135,64 +3129,80 @@ fn render_reasoning_summaries(ui: &mut egui::Ui, now_key: i128, rows: &[Reasonin
         });
 }
 
-fn render_compass_tree(
-    ui: &mut egui::Ui,
-    rows: &[(CompassTaskRow, usize)],
-    show_done: bool,
-) {
+fn render_compass_swimlanes(ui: &mut egui::Ui, rows: &[(CompassTaskRow, usize)]) {
     if rows.is_empty() {
         ui.label("No goals yet.");
         return;
     }
 
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for (row, _) in rows {
-        if !show_done && row.status == "done" {
-            continue;
-        }
-        *counts.entry(row.status.as_str()).or_insert(0) += 1;
-    }
-
-    if !counts.is_empty() {
-        let mut parts = Vec::new();
-        for status in COMPASS_DEFAULT_STATUSES {
-            if let Some(count) = counts.get(status).copied() {
-                parts.push(format!("{}: {count}", status.to_uppercase()));
+    let render_lanes = |ui: &mut egui::Ui| {
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        let mut extra_statuses: HashSet<&str> = HashSet::new();
+        for (row, _) in rows {
+            *counts.entry(row.status.as_str()).or_insert(0) += 1;
+            if !COMPASS_DEFAULT_STATUSES.contains(&row.status.as_str()) {
+                extra_statuses.insert(row.status.as_str());
             }
         }
-        let mut extras: Vec<(&str, usize)> = counts
-            .iter()
-            .filter_map(|(status, count)| {
-                if COMPASS_DEFAULT_STATUSES.contains(status) {
-                    None
-                } else {
-                    Some((*status, *count))
-                }
-            })
-            .collect();
-        extras.sort_by(|a, b| a.0.cmp(b.0));
-        for (status, count) in extras {
-            parts.push(format!("{}: {count}", status.to_uppercase()));
-        }
-        ui.small(parts.join(" · "));
-        ui.add_space(6.0);
-    }
 
-    // Remap indentation when hiding done rows so visible children do not get
-    // stranded at deep indentation levels.
-    let mut ancestor_visibility: Vec<bool> = Vec::new();
-    for (row, depth) in rows {
-        while ancestor_visibility.len() > *depth {
-            ancestor_visibility.pop();
+        // Always show the canonical lanes (including done) so the UI keeps its shape.
+        let mut statuses: Vec<String> = COMPASS_DEFAULT_STATUSES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let mut extras: Vec<&str> = extra_statuses.into_iter().collect();
+        extras.sort();
+        statuses.extend(extras.into_iter().map(|s| s.to_string()));
+
+        for status in statuses {
+            let count = counts.get(status.as_str()).copied().unwrap_or(0);
+            render_compass_swimlane(ui, rows, &status, count);
+            ui.add_space(10.0);
         }
-        let visible = show_done || row.status != "done";
-        let visible_depth = ancestor_visibility.iter().filter(|v| **v).count();
-        if visible {
-            render_compass_tree_row(ui, row, visible_depth);
-            ui.add_space(6.0);
-        }
-        ancestor_visibility.push(visible);
+    };
+
+    // Headless captures render each card into a GPU texture; clamp height to avoid
+    // exceeding backend texture limits when there are many goals.
+    if diagnostics_is_headless() {
+        egui::ScrollArea::vertical()
+            .id_salt("compass_headless_scroll")
+            .max_height(1600.0)
+            .show(ui, |ui| render_lanes(ui));
+    } else {
+        render_lanes(ui);
     }
+}
+
+fn render_compass_swimlane(
+    ui: &mut egui::Ui,
+    rows: &[(CompassTaskRow, usize)],
+    status: &str,
+    count: usize,
+) {
+    egui::Frame::NONE
+        .fill(egui::Color32::from_gray(58))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.colored_label(
+                status_color(status),
+                egui::RichText::new(format!("{} ({count})", status.to_uppercase())).monospace(),
+            );
+            ui.add_space(8.0);
+
+            if count == 0 {
+                ui.small("(empty)");
+                return;
+            }
+
+            for (row, depth) in rows {
+                if row.status != status {
+                    continue;
+                }
+                render_compass_swimlane_row(ui, row, *depth);
+                ui.add_space(6.0);
+            }
+        });
 }
 
 fn status_color(status: &str) -> egui::Color32 {
@@ -3205,9 +3215,7 @@ fn status_color(status: &str) -> egui::Color32 {
     }
 }
 
-fn render_compass_tree_row(ui: &mut egui::Ui, row: &CompassTaskRow, depth: usize) {
-    let indent = depth as f32 * 14.0;
-
+fn render_compass_swimlane_row(ui: &mut egui::Ui, row: &CompassTaskRow, depth: usize) {
     let mut meta_parts: Vec<String> = Vec::new();
     if row.note_count > 0 {
         let suffix = if row.note_count == 1 { "" } else { "s" };
@@ -3222,29 +3230,51 @@ fn render_compass_tree_row(ui: &mut egui::Ui, row: &CompassTaskRow, depth: usize
                 .join(" "),
         );
     }
+    if let Some(parent) = row.parent {
+        meta_parts.push(format!("child of {}", id_prefix(parent)));
+    }
     let meta = meta_parts.join(" · ");
 
-    ui.horizontal(|ui| {
-        ui.add_space(indent);
-        egui::Frame::NONE
-            .fill(egui::Color32::from_gray(65))
-            .corner_radius(egui::CornerRadius::same(6))
-            .inner_margin(egui::Margin::symmetric(10, 6))
-            .show(ui, |ui| {
-                let title = format!("[{}] {}", row.id_prefix, row.title);
-                ui.add(
-                    egui::Label::new(egui::RichText::new(title).monospace())
-                        .wrap_mode(egui::TextWrapMode::Wrap),
-                );
+    let inner = egui::Frame::NONE
+        .fill(egui::Color32::from_gray(65))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin {
+            // Keep content aligned while reserving a small left gutter for dependency lines.
+            left: 28,
+            right: 10,
+            top: 6,
+            bottom: 6,
+        })
+        .show(ui, |ui| {
+            let title = format!("[{}] {}", row.id_prefix, row.title);
+            ui.add(
+                egui::Label::new(egui::RichText::new(title).monospace())
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+            );
 
-                ui.horizontal(|ui| {
-                    ui.colored_label(status_color(&row.status), row.status.to_uppercase());
-                    if !meta.is_empty() {
-                        ui.small(meta);
-                    }
-                });
+            ui.horizontal(|ui| {
+                ui.colored_label(status_color(&row.status), row.status.to_uppercase());
+                if !meta.is_empty() {
+                    ui.small(meta);
+                }
             });
-    });
+        });
+
+    if depth == 0 {
+        return;
+    }
+
+    // Draw a small "dependency gutter" without indenting content.
+    let rect = inner.response.rect;
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.2, egui::Color32::from_gray(130));
+    let bars = depth.min(3);
+    for idx in 0..bars {
+        let x = rect.left() + 10.0 + (idx as f32 * 4.0);
+        let y1 = rect.top() + 4.0;
+        let y2 = rect.bottom() - 4.0;
+        painter.line_segment([egui::pos2(x, y1), egui::pos2(x, y2)], stroke);
+    }
 }
 
 fn render_local_messages(
