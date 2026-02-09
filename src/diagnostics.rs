@@ -3179,15 +3179,23 @@ fn render_compass_swimlane(
     status: &str,
     count: usize,
 ) {
+    let header_fill = lane_header_fill(status);
     egui::Frame::NONE
-        .fill(egui::Color32::from_gray(58))
+        .fill(lane_fill(status))
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            ui.colored_label(
-                status_color(status),
-                egui::RichText::new(format!("{} ({count})", status.to_uppercase())).monospace(),
-            );
+            egui::Frame::NONE
+                .fill(header_fill)
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{} ({count})", status.to_uppercase()))
+                            .monospace()
+                            .color(egui::Color32::WHITE),
+                    );
+                });
             ui.add_space(8.0);
 
             if count == 0 {
@@ -3205,13 +3213,23 @@ fn render_compass_swimlane(
         });
 }
 
-fn status_color(status: &str) -> egui::Color32 {
+fn lane_fill(status: &str) -> egui::Color32 {
     match status {
-        "todo" => egui::Color32::from_rgb(170, 170, 170),
-        "doing" => egui::Color32::from_rgb(120, 170, 255),
-        "blocked" => egui::Color32::from_rgb(255, 140, 140),
-        "done" => egui::Color32::from_rgb(140, 220, 140),
-        _ => egui::Color32::from_rgb(210, 210, 210),
+        "todo" => egui::Color32::from_rgb(72, 72, 72),
+        "doing" => egui::Color32::from_rgb(45, 70, 105),
+        "blocked" => egui::Color32::from_rgb(105, 55, 55),
+        "done" => egui::Color32::from_rgb(55, 100, 70),
+        _ => egui::Color32::from_rgb(70, 70, 70),
+    }
+}
+
+fn lane_header_fill(status: &str) -> egui::Color32 {
+    match status {
+        "todo" => egui::Color32::from_rgb(95, 95, 95),
+        "doing" => egui::Color32::from_rgb(65, 110, 170),
+        "blocked" => egui::Color32::from_rgb(170, 70, 70),
+        "done" => egui::Color32::from_rgb(70, 150, 95),
+        _ => egui::Color32::from_rgb(95, 95, 95),
     }
 }
 
@@ -3252,12 +3270,9 @@ fn render_compass_swimlane_row(ui: &mut egui::Ui, row: &CompassTaskRow, depth: u
                     .wrap_mode(egui::TextWrapMode::Wrap),
             );
 
-            ui.horizontal(|ui| {
-                ui.colored_label(status_color(&row.status), row.status.to_uppercase());
-                if !meta.is_empty() {
-                    ui.small(meta);
-                }
-            });
+            if !meta.is_empty() {
+                ui.small(meta);
+            }
         });
 
     if depth == 0 {
