@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use triblespace::core::blob::Blob;
@@ -52,10 +52,34 @@ pub fn restore_snapshot(
         return Ok(None);
     };
 
+    let root_path =
+        load_string_attr(&mut ws, &catalog, snapshot_id, playground_workspace::root_path)?;
+    let restore_root = resolve_restore_root(target_root, root_path.as_deref())?;
     let entries = collect_snapshot_entries(&mut ws, &catalog, snapshot_id)?;
-    restore_entries(target_root, &entries, force)?;
+    restore_entries(&restore_root, &entries, force)?;
 
     Ok(Some(snapshot_id))
+}
+
+fn resolve_restore_root(target_root: &Path, root_path: Option<&str>) -> Result<PathBuf> {
+    let Some(root_path) = root_path.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(target_root.to_path_buf());
+    };
+
+    if root_path == "." {
+        return Ok(target_root.to_path_buf());
+    }
+
+    let rel = Path::new(root_path);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| std::matches!(c, Component::ParentDir))
+    {
+        return Err(anyhow!("invalid snapshot root_path: {}", root_path));
+    }
+
+    Ok(target_root.join(rel))
 }
 
 fn latest_snapshot(catalog: &TribleSet) -> Result<Option<Id>> {
