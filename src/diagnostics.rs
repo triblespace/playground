@@ -64,11 +64,31 @@ mod teams {
     }
 }
 
+mod compass {
+    use triblespace::prelude::blobschemas::LongString;
+    use triblespace::prelude::valueschemas::{Blake3, GenId, Handle, ShortString};
+    use triblespace::prelude::*;
+
+    attributes! {
+        "EE18CEC15C18438A2FAB670E2E46E00C" as pub title: Handle<Blake3, LongString>;
+        "F9B56611861316B31A6C510B081C30B3" as pub created_at: ShortString;
+        "5FF4941DCC3F6C35E9B3FD57216F69ED" as pub tag: ShortString;
+        "9D2B6EBDA67E9BB6BE6215959D182041" as pub parent: GenId;
+
+        "C1EAAA039DA7F486E4A54CC87D42E72C" as pub task: GenId;
+        "61C44E0F8A73443ED592A713151E99A4" as pub status: ShortString;
+        "8200ADEDC8D4D3D6D01CDC7396DF9AEC" as pub at: ShortString;
+        "47351DF00B3DDA96CB305157CD53D781" as pub note: Handle<Blake3, LongString>;
+    }
+}
+
 type CommitHandle = Value<Handle<Blake3, SimpleArchive>>;
 const EXEC_SCROLL_HEIGHT: f32 = 260.0;
 const SUMMARY_SCROLL_HEIGHT: f32 = 220.0;
 const LOCAL_MESSAGE_SCROLL_HEIGHT: f32 = 780.0;
 const LOCAL_COMPOSE_HEIGHT: f32 = 80.0;
+const COMPASS_SCROLL_HEIGHT: f32 = 520.0;
+const COMPASS_COLUMN_WIDTH: f32 = 280.0;
 const RELATIONS_SCROLL_HEIGHT: f32 = 260.0;
 const TEAMS_SCROLL_HEIGHT: f32 = 520.0;
 const TEAMS_CHAT_LIST_WIDTH: f32 = 220.0;
@@ -94,6 +114,11 @@ fn diagnostics_is_headless() -> bool {
 const LOCAL_KIND_MESSAGE_ID: Id = id_hex!("A3556A66B00276797FCE8A2742AB850F");
 const LOCAL_KIND_READ_ID: Id = id_hex!("B663C15BB6F2BF591EA870386DD48537");
 const RELATIONS_KIND_PERSON_ID: Id = id_hex!("D8ADDE47121F4E7868017463EC860726");
+const COMPASS_KIND_GOAL_ID: Id = id_hex!("83476541420F46402A6A9911F46FBA3B");
+const COMPASS_KIND_STATUS_ID: Id = id_hex!("89602B3277495F4E214D4A417C8CF260");
+const COMPASS_KIND_NOTE_ID: Id = id_hex!("D4E49A6F02A14E66B62076AE4C01715F");
+
+const COMPASS_DEFAULT_STATUSES: [&str; 4] = ["todo", "doing", "blocked", "done"];
 
 const LOCAL_KIND_SPECS: [(Id, &str); 2] = [
     (LOCAL_KIND_MESSAGE_ID, "local_message"),
@@ -138,6 +163,7 @@ struct DashboardConfig {
     pile_path: String,
     config_branches: String,
     exec_branches: String,
+    compass_branches: String,
     local_message_branches: String,
     relations_branches: String,
     local_me: String,
@@ -156,6 +182,7 @@ impl Default for DashboardConfig {
             pile_path: default_pile.to_string_lossy().to_string(),
             config_branches: "config".to_string(),
             exec_branches: "main".to_string(),
+            compass_branches: "compass".to_string(),
             local_message_branches: "local-messages".to_string(),
             relations_branches: "relations".to_string(),
             local_me: "jp".to_string(),
@@ -173,6 +200,7 @@ struct DashboardState {
     signing_key: SigningKey,
     snapshot: Option<Result<DashboardSnapshot, String>>,
     show_extra_branches: bool,
+    compass_show_done: bool,
     local_draft: String,
     local_send_error: Option<String>,
     local_send_notice: Option<String>,
@@ -201,6 +229,7 @@ impl Default for DashboardState {
             signing_key: random_signing_key(),
             snapshot: None,
             show_extra_branches: false,
+            compass_show_done: false,
             local_draft: String::new(),
             local_send_error: None,
             local_send_notice: None,
@@ -281,6 +310,31 @@ struct ReasoningSummaryRow {
 }
 
 #[derive(Debug, Clone)]
+struct CompassTaskRow {
+    id: Id,
+    id_prefix: String,
+    title: String,
+    tags: Vec<String>,
+    created_at: String,
+    status: String,
+    status_at: Option<String>,
+    note_count: usize,
+    parent: Option<Id>,
+}
+
+impl CompassTaskRow {
+    fn sort_key(&self) -> &str {
+        self.status_at.as_deref().unwrap_or(&self.created_at)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CompassColumn {
+    status: String,
+    rows: Vec<(CompassTaskRow, usize)>,
+}
+
+#[derive(Debug, Clone)]
 struct RelationRow {
     id: Id,
     label: Option<String>,
@@ -330,6 +384,8 @@ struct DashboardSnapshot {
     agent_config: Option<AgentConfigRow>,
     agent_config_error: Option<String>,
     reasoning_summaries: Vec<ReasoningSummaryRow>,
+    compass_columns: Vec<CompassColumn>,
+    compass_error: Option<String>,
     local_message_rows: Vec<LocalMessageRow>,
     local_message_error: Option<String>,
     local_me_id: Option<Id>,
@@ -424,6 +480,15 @@ _Live view of the agent pile, exec queue, and message activity._"
                         "exec_branch_picker",
                         &picker_branches,
                         &mut state.config.exec_branches,
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Compass branches");
+                    render_branch_picker(
+                        ui,
+                        "compass_branch_picker",
+                        &picker_branches,
+                        &mut state.config.compass_branches,
                     );
                 });
                 ui.horizontal(|ui| {
@@ -561,6 +626,33 @@ _Live view of the agent pile, exec queue, and message activity._"
                     snapshot.agent_config.as_ref(),
                 );
             }
+        });
+    });
+
+    nb.view(move |ui| {
+        let mut state = dashboard.read_mut(ui);
+        with_padding(ui, padding, |ui| {
+            ui.heading("Compass");
+            let snapshot = {
+                let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
+                    return;
+                };
+                snapshot.clone()
+            };
+            if let Some(err) = &snapshot.compass_error {
+                ui.colored_label(egui::Color32::RED, err);
+                return;
+            }
+
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut state.compass_show_done, "Show done");
+            });
+
+            if snapshot.compass_columns.is_empty() {
+                ui.label("No goals yet.");
+                return;
+            }
+            render_compass_board(ui, &snapshot.compass_columns, state.compass_show_done);
         });
     });
 
@@ -817,6 +909,7 @@ fn load_snapshot(
 
     let config_refs = parse_branch_list(&config.config_branches);
     let exec_refs = parse_branch_list(&config.exec_branches);
+    let compass_refs = parse_branch_list(&config.compass_branches);
     let local_refs = parse_branch_list(&config.local_message_branches);
     let relations_refs = parse_branch_list(&config.relations_branches);
     let teams_refs = parse_branch_list(&config.teams_branches);
@@ -825,6 +918,7 @@ fn load_snapshot(
     let mut ensure_refs = Vec::new();
     ensure_refs.extend(config_refs.iter().cloned());
     ensure_refs.extend(exec_refs.iter().cloned());
+    ensure_refs.extend(compass_refs.iter().cloned());
     ensure_refs.extend(local_refs.iter().cloned());
     ensure_refs.extend(relations_refs.iter().cloned());
     ensure_refs.extend(teams_refs.iter().cloned());
@@ -834,6 +928,7 @@ fn load_snapshot(
     let branch_lookup = BranchLookup::new(&branches);
     let config_res = resolve_branch_ids(&branch_lookup, &config_refs);
     let exec_res = resolve_branch_ids(&branch_lookup, &exec_refs);
+    let compass_res = resolve_branch_ids(&branch_lookup, &compass_refs);
     let local_res = resolve_branch_ids(&branch_lookup, &local_refs);
     let relations_res = resolve_branch_ids(&branch_lookup, &relations_refs);
     let teams_res = resolve_branch_ids(&branch_lookup, &teams_refs);
@@ -841,6 +936,7 @@ fn load_snapshot(
 
     let agent_config_error = config_res.as_ref().err().cloned();
     let exec_error = exec_res.as_ref().err().cloned();
+    let compass_error = compass_res.as_ref().err().cloned();
     let local_message_error = local_res.as_ref().err().cloned();
     let relations_error = relations_res.as_ref().err().cloned();
     let teams_error = teams_res.as_ref().err().cloned();
@@ -848,6 +944,7 @@ fn load_snapshot(
 
     let config_ids = config_res.unwrap_or_default();
     let exec_ids = exec_res.unwrap_or_default();
+    let compass_ids = compass_res.unwrap_or_default();
     let local_ids = local_res.unwrap_or_default();
     let relations_ids = relations_res.unwrap_or_default();
     let teams_ids = teams_res.unwrap_or_default();
@@ -856,6 +953,7 @@ fn load_snapshot(
     let mut needed_ids: Vec<Id> = Vec::new();
     extend_unique(&mut needed_ids, &config_ids);
     extend_unique(&mut needed_ids, &exec_ids);
+    extend_unique(&mut needed_ids, &compass_ids);
     extend_unique(&mut needed_ids, &local_ids);
     extend_unique(&mut needed_ids, &relations_ids);
     extend_unique(&mut needed_ids, &teams_ids);
@@ -877,6 +975,7 @@ fn load_snapshot(
 
     let config_data = union_branches(&branch_data, &config_ids);
     let exec_data = union_branches(&branch_data, &exec_ids);
+    let compass_data = union_branches(&branch_data, &compass_ids);
     let local_data = union_branches(&branch_data, &local_ids);
     let relations_data = union_branches(&branch_data, &relations_ids);
     let teams_data = union_branches(&branch_data, &teams_ids);
@@ -901,6 +1000,8 @@ fn load_snapshot(
             agent_config: None,
             agent_config_error,
             reasoning_summaries: Vec::new(),
+            compass_columns: Vec::new(),
+            compass_error,
             local_message_rows: Vec::new(),
             local_message_error,
             local_me_id: None,
@@ -922,6 +1023,7 @@ fn load_snapshot(
     Ok(build_snapshot(
         config_data,
         exec_data,
+        compass_data,
         local_data,
         relations_data,
         teams_data,
@@ -931,6 +1033,7 @@ fn load_snapshot(
         branch_data,
         agent_config_error,
         exec_error,
+        compass_error,
         local_message_error,
         relations_error,
         teams_error,
@@ -944,6 +1047,7 @@ fn load_snapshot(
 fn build_snapshot(
     config_data: TribleSet,
     exec_data: TribleSet,
+    compass_data: TribleSet,
     local_data: TribleSet,
     relations_data: TribleSet,
     teams_data: TribleSet,
@@ -953,6 +1057,7 @@ fn build_snapshot(
     branch_data: HashMap<Id, BranchSnapshot>,
     agent_config_error: Option<String>,
     exec_error: Option<String>,
+    compass_error: Option<String>,
     local_message_error: Option<String>,
     relations_error: Option<String>,
     teams_error: Option<String>,
@@ -970,6 +1075,7 @@ fn build_snapshot(
     let exec_rows = collect_exec_rows(&exec_data, ws);
     let exec_summary = summarize_exec(&exec_rows);
     let reasoning_summaries = collect_reasoning_summaries(&exec_data, ws);
+    let compass_columns = collect_compass_columns(&compass_data, ws);
     let local_message_rows = collect_local_messages(&local_data, ws, local_me_id, local_peer_id);
     let (teams_messages, teams_chats) = collect_teams_messages(&teams_data, ws);
     let workspace_snapshots = collect_workspace_snapshots(&workspace_data, ws);
@@ -989,6 +1095,8 @@ fn build_snapshot(
         agent_config,
         agent_config_error,
         reasoning_summaries,
+        compass_columns,
+        compass_error,
         local_message_rows,
         local_message_error,
         local_me_id,
@@ -1909,6 +2017,209 @@ fn collect_reasoning_summaries(
     rows.reverse();
     rows.truncate(10);
     rows
+}
+
+fn collect_compass_columns(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<CompassColumn> {
+    let mut tasks: HashMap<Id, CompassTaskRow> = HashMap::new();
+
+    for (task_id, title_handle, created_at) in find!(
+        (
+            task_id: Id,
+            title_handle: Value<Handle<Blake3, LongString>>,
+            created_at: String
+        ),
+        pattern!(&data, [{
+            ?task_id @
+            metadata::tag: &COMPASS_KIND_GOAL_ID,
+            compass::title: ?title_handle,
+            compass::created_at: ?created_at,
+        }])
+    ) {
+        if tasks.contains_key(&task_id) {
+            continue;
+        }
+        let title = load_text(ws, title_handle).unwrap_or_else(|| "<missing>".to_string());
+        tasks.insert(
+            task_id,
+            CompassTaskRow {
+                id: task_id,
+                id_prefix: id_prefix(task_id),
+                title,
+                tags: Vec::new(),
+                created_at,
+                status: "todo".to_string(),
+                status_at: None,
+                note_count: 0,
+                parent: None,
+            },
+        );
+    }
+
+    for (task_id, tag) in find!(
+        (task_id: Id, tag: String),
+        pattern!(&data, [{ ?task_id @ metadata::tag: &COMPASS_KIND_GOAL_ID, compass::tag: ?tag }])
+    ) {
+        if let Some(task) = tasks.get_mut(&task_id) {
+            task.tags.push(tag);
+        }
+    }
+
+    for (task_id, parent_id) in find!(
+        (task_id: Id, parent_id: Id),
+        pattern!(&data, [{
+            ?task_id @
+            metadata::tag: &COMPASS_KIND_GOAL_ID,
+            compass::parent: ?parent_id,
+        }])
+    ) {
+        if let Some(task) = tasks.get_mut(&task_id) {
+            task.parent = Some(parent_id);
+        }
+    }
+
+    let mut status_map: HashMap<Id, (String, String)> = HashMap::new();
+    for (task_id, status, at) in find!(
+        (task_id: Id, status: String, at: String),
+        pattern!(&data, [{
+            _?event @
+            metadata::tag: &COMPASS_KIND_STATUS_ID,
+            compass::task: ?task_id,
+            compass::status: ?status,
+            compass::at: ?at,
+        }])
+    ) {
+        status_map
+            .entry(task_id)
+            .and_modify(|current| {
+                if at > current.1 {
+                    *current = (status.clone(), at.clone());
+                }
+            })
+            .or_insert_with(|| (status, at));
+    }
+
+    let mut note_counts: HashMap<Id, usize> = HashMap::new();
+    for (task_id,) in find!(
+        (task_id: Id),
+        pattern!(&data, [{
+            _?event @
+            metadata::tag: &COMPASS_KIND_NOTE_ID,
+            compass::task: ?task_id,
+        }])
+    ) {
+        *note_counts.entry(task_id).or_insert(0) += 1;
+    }
+
+    for task in tasks.values_mut() {
+        if let Some((status, at)) = status_map.get(&task.id) {
+            task.status = status.clone();
+            task.status_at = Some(at.clone());
+        }
+        if let Some(count) = note_counts.get(&task.id) {
+            task.note_count = *count;
+        }
+        task.tags.sort();
+        task.tags.dedup();
+    }
+
+    let mut columns: HashMap<String, Vec<CompassTaskRow>> = HashMap::new();
+    for task in tasks.values() {
+        columns.entry(task.status.clone()).or_default().push(task.clone());
+    }
+
+    let mut ordered_statuses = Vec::new();
+    for status in COMPASS_DEFAULT_STATUSES {
+        if columns.contains_key(status) {
+            ordered_statuses.push(status.to_string());
+        }
+    }
+    let mut extras: Vec<String> = columns
+        .keys()
+        .filter(|status| !COMPASS_DEFAULT_STATUSES.contains(&status.as_str()))
+        .cloned()
+        .collect();
+    extras.sort();
+    ordered_statuses.extend(extras);
+
+    let mut out = Vec::new();
+    for status in ordered_statuses {
+        let rows = columns.remove(&status).unwrap_or_default();
+        out.push(CompassColumn {
+            status,
+            rows: order_compass_rows(rows),
+        });
+    }
+    out
+}
+
+fn order_compass_rows(rows: Vec<CompassTaskRow>) -> Vec<(CompassTaskRow, usize)> {
+    let mut by_id: HashMap<Id, CompassTaskRow> = HashMap::new();
+    for row in rows {
+        by_id.insert(row.id, row);
+    }
+    let ids: HashSet<Id> = by_id.keys().copied().collect();
+    let mut children: HashMap<Id, Vec<Id>> = HashMap::new();
+    let mut roots = Vec::new();
+
+    for (id, row) in &by_id {
+        if let Some(parent) = row.parent {
+            if ids.contains(&parent) {
+                children.entry(parent).or_default().push(*id);
+                continue;
+            }
+        }
+        roots.push(*id);
+    }
+
+    let sort_ids = |items: &mut Vec<Id>| {
+        items.sort_by(|a, b| {
+            let a_key = by_id.get(a).map(|row| row.sort_key()).unwrap_or("");
+            let b_key = by_id.get(b).map(|row| row.sort_key()).unwrap_or("");
+            b_key.cmp(a_key)
+        });
+    };
+
+    sort_ids(&mut roots);
+    for kids in children.values_mut() {
+        sort_ids(kids);
+    }
+
+    let mut ordered = Vec::new();
+    let mut visited = HashSet::new();
+
+    fn walk(
+        id: Id,
+        depth: usize,
+        by_id: &HashMap<Id, CompassTaskRow>,
+        children: &HashMap<Id, Vec<Id>>,
+        visited: &mut HashSet<Id>,
+        out: &mut Vec<(CompassTaskRow, usize)>,
+    ) {
+        if !visited.insert(id) {
+            return;
+        }
+        let Some(row) = by_id.get(&id) else {
+            return;
+        };
+        out.push((row.clone(), depth));
+        if let Some(kids) = children.get(&id) {
+            for kid in kids {
+                walk(*kid, depth + 1, by_id, children, visited, out);
+            }
+        }
+    }
+
+    for root in roots {
+        walk(root, 0, &by_id, &children, &mut visited, &mut ordered);
+    }
+
+    for id in by_id.keys() {
+        if !visited.contains(id) {
+            walk(*id, 0, &by_id, &children, &mut visited, &mut ordered);
+        }
+    }
+
+    ordered
 }
 
 fn collect_labels(data: &TribleSet, ws: &mut Workspace<Pile>) -> HashMap<Id, String> {
@@ -2857,6 +3168,87 @@ fn render_reasoning_summaries(ui: &mut egui::Ui, now_key: i128, rows: &[Reasonin
                 ui.add_space(8.0);
             }
         });
+}
+
+fn render_compass_board(ui: &mut egui::Ui, columns: &[CompassColumn], show_done: bool) {
+    egui::ScrollArea::horizontal()
+        .id_salt("compass_board_scroll")
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for column in columns {
+                    if !show_done && column.status == "done" {
+                        continue;
+                    }
+                    render_compass_column(ui, column);
+                    ui.add_space(12.0);
+                }
+            });
+        });
+}
+
+fn render_compass_column(ui: &mut egui::Ui, column: &CompassColumn) {
+    egui::Frame::NONE
+        .fill(egui::Color32::from_gray(65))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_min_width(COMPASS_COLUMN_WIDTH);
+            ui.set_max_width(COMPASS_COLUMN_WIDTH);
+
+            ui.label(format!(
+                "{} ({})",
+                column.status.to_uppercase(),
+                column.rows.len()
+            ));
+            ui.add_space(6.0);
+
+            egui::ScrollArea::vertical()
+                .id_salt(("compass_column_scroll", &column.status))
+                .max_height(COMPASS_SCROLL_HEIGHT)
+                .show(ui, |ui| {
+                    for (row, depth) in &column.rows {
+                        render_compass_task(ui, row, *depth);
+                        ui.add_space(6.0);
+                    }
+                });
+        });
+}
+
+fn render_compass_task(ui: &mut egui::Ui, row: &CompassTaskRow, depth: usize) {
+    let indent = depth as f32 * 14.0;
+    let mut meta_parts: Vec<String> = Vec::new();
+    if !row.tags.is_empty() {
+        meta_parts.push(
+            row.tags
+                .iter()
+                .map(|tag| format!("#{tag}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    if row.note_count > 0 {
+        let suffix = if row.note_count == 1 { "" } else { "s" };
+        meta_parts.push(format!("{} note{suffix}", row.note_count));
+    }
+    let meta = meta_parts.join(" · ");
+
+    ui.horizontal(|ui| {
+        ui.add_space(indent);
+        egui::Frame::NONE
+            .fill(egui::Color32::from_gray(70))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                let title = format!("[{}] {}", row.id_prefix, row.title);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(title).monospace())
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+                if !meta.is_empty() {
+                    ui.small(meta);
+                }
+            });
+    });
 }
 
 fn render_local_messages(
