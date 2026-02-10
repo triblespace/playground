@@ -29,7 +29,7 @@ mounts:
 provision:
   - mode: system
     script: |
-      set -euo pipefail
+      set -eu
       echo "[playground] system provision start"
       apt-get update
       apt-get install -y --no-install-recommends ca-certificates curl build-essential
@@ -39,10 +39,10 @@ provision:
       After=network-online.target
 
       [Service]
-      User=lima
-      Group=lima
+      User=__VM_USER__
+      Group=__VM_USER__
       WorkingDirectory=/opt/playground
-      ExecStart=/bin/bash -lc 'source $HOME/.cargo/env >/dev/null 2>&1 || true; CARGO_TARGET_DIR=/workspace/target cargo run --manifest-path /opt/playground/Cargo.toml -- exec --pile __PILE_PATH__'
+      ExecStart=/bin/bash -lc 'source $HOME/.cargo/env >/dev/null 2>&1 || true; CARGO_TARGET_DIR=/workspace/target cargo run --manifest-path /opt/playground/Cargo.toml --no-default-features -- exec --pile __PILE_PATH__'
       Restart=always
       RestartSec=2
 
@@ -55,9 +55,9 @@ provision:
       echo "[playground] system provision done"
   - mode: user
     script: |
-      set -euo pipefail
+      set -eu
       echo "[playground] user provision start"
-      if [[ ! -x "$HOME/.cargo/bin/rustc" ]]; then
+      if [ ! -x "$HOME/.cargo/bin/rustc" ]; then
         echo "[playground] installing rustup"
         curl https://sh.rustup.rs -sSf | sh -s -- -y
       fi

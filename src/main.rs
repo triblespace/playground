@@ -19,6 +19,7 @@ use triblespace::prelude::*;
 
 mod branch_util;
 mod config;
+#[cfg(feature = "diagnostics")]
 mod diagnostics;
 mod exec_worker;
 mod llm_worker;
@@ -43,6 +44,7 @@ enum CommandMode {
     Exec(WorkerArgs),
     #[command(about = "Run only the LLM worker (host)")]
     Llm(WorkerArgs),
+    #[cfg(feature = "diagnostics")]
     #[command(about = "Open the diagnostics dashboard")]
     Diagnostics(DiagnosticsArgs),
     Config {
@@ -80,6 +82,7 @@ struct WorkerArgs {
 
 #[derive(Args, Debug, Clone)]
 #[command(about = "Diagnostics dashboard settings")]
+#[cfg(feature = "diagnostics")]
 struct DiagnosticsArgs {
     #[arg(long, default_value_t = false)]
     headless: bool,
@@ -190,6 +193,7 @@ fn main() -> Result<()> {
             let config = Config::load(Some(pile_path.as_path())).context("load config")?;
             run_llm_worker(config, args)
         }
+        #[cfg(feature = "diagnostics")]
         CommandMode::Diagnostics(args) => {
             let DiagnosticsArgs {
                 headless,
@@ -467,6 +471,12 @@ fn render_lima_template(
     for (token, path) in replacements {
         text = text.replace(token, &path.to_string_lossy());
     }
+
+    // Lima's default user is typically the host username; allow overriding for portability.
+    let vm_user = env_string("PLAYGROUND_LIMA_USER")
+        .or_else(|| env_string("USER"))
+        .unwrap_or_else(|| "lima".to_string());
+    text = text.replace("__VM_USER__", vm_user.as_str());
 
     fs::write(out_path, text)
         .with_context(|| format!("write Lima config {}", out_path.display()))?;
