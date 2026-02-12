@@ -819,6 +819,7 @@ struct CoreIndex {
     requested_thoughts: HashSet<Id>,
     llm_results: HashMap<Id, LlmResultEntry>,
     command_requests: HashMap<Id, CoreCommandRequest>,
+    command_request_for_thought: HashMap<Id, Id>,
     command_done_requests: HashSet<Id>,
     command_results: HashMap<Id, CommandResultInfo>,
     used_exec_results: HashSet<Id>,
@@ -1292,6 +1293,8 @@ impl CoreIndex {
             if let Some(entry) = self.command_requests.get_mut(&request_id) {
                 entry.about_thought = Some(about_thought);
             }
+            self.command_request_for_thought
+                .insert(about_thought, request_id);
         }
 
         for (request_id, command) in find!(
@@ -1501,6 +1504,10 @@ impl CoreIndex {
             .and_then(|request| request.command)
     }
 
+    fn command_request_for_thought(&self, thought_id: Id) -> Option<Id> {
+        self.command_request_for_thought.get(&thought_id).copied()
+    }
+
     fn latest_command_result(&self, request_id: Id) -> Option<CommandResultInfo> {
         self.command_results
             .values()
@@ -1553,7 +1560,7 @@ fn ensure_command_request(
     core_index.apply_delta(&cached_catalog, &delta);
 
     if let Some(thought_id) = thought_id {
-        if let Some(existing) = core_index.request_for_thought(thought_id) {
+        if let Some(existing) = core_index.command_request_for_thought(thought_id) {
             return Ok(existing);
         }
     }
