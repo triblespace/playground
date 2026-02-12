@@ -145,6 +145,8 @@ enum ConfigField {
     LlmModel,
     LlmBaseUrl,
     LlmApiKey,
+    TavilyApiKey,
+    ExaApiKey,
     LlmReasoningEffort,
     LlmStream,
     ExecDefaultCwd,
@@ -327,6 +329,13 @@ fn apply_config_set(config: &mut Config, args: ConfigSetArgs) -> Result<()> {
         }
         ConfigField::LlmApiKey => {
             config.llm.api_key = load_optional_string_or_file(args.value.as_str(), "llm_api_key")?;
+        }
+        ConfigField::TavilyApiKey => {
+            config.tavily_api_key =
+                load_optional_string_or_file(args.value.as_str(), "tavily_api_key")?;
+        }
+        ConfigField::ExaApiKey => {
+            config.exa_api_key = load_optional_string_or_file(args.value.as_str(), "exa_api_key")?;
         }
         ConfigField::LlmReasoningEffort => {
             config.llm.reasoning_effort =
@@ -691,6 +700,18 @@ fn print_config(config: &Config, show_secrets: bool) {
             .unwrap_or_else(|| "null".to_string())
     );
     println!("stream = {}", config.llm.stream);
+
+    println!("\n[integrations]");
+    match (&config.tavily_api_key, show_secrets) {
+        (Some(key), true) => println!("tavily_api_key = \"{}\"", key),
+        (Some(_), false) => println!("tavily_api_key = \"<redacted>\""),
+        (None, _) => println!("tavily_api_key = null"),
+    }
+    match (&config.exa_api_key, show_secrets) {
+        (Some(key), true) => println!("exa_api_key = \"{}\"", key),
+        (Some(_), false) => println!("exa_api_key = \"<redacted>\""),
+        (None, _) => println!("exa_api_key = null"),
+    }
 
     println!("\n[exec]");
     println!(

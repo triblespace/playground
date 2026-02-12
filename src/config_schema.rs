@@ -26,6 +26,8 @@ pub mod playground_config {
         "85BE7BDA465B3CB0F800F76EEF8FAC9B" as pub llm_model: Handle<Blake3, LongString>;
         "B216CFBBF85AA1350B142D510E26268B" as pub llm_base_url: Handle<Blake3, LongString>;
         "55F3FFD721AF7C1258E45BC91CDBF30F" as pub llm_api_key: Handle<Blake3, LongString>;
+        "328B29CE81665EE719C5A6E91695D4D4" as pub tavily_api_key: Handle<Blake3, LongString>;
+        "AB0DF9F03F28A27A6DB95B693CC0EC53" as pub exa_api_key: Handle<Blake3, LongString>;
         "BA4E05799CA2ACDCF3F9350FC8742F2F" as pub llm_reasoning_effort: Handle<Blake3, LongString>;
         "5F04F7A0EB4EBBE6161022B336F83513" as pub llm_stream: U256BE;
         "120F9C6BBB103FAFFB31A66E2ABC15E6" as pub exec_default_cwd: Handle<Blake3, LongString>;
@@ -163,6 +165,11 @@ where
     metadata.union(describe_attribute(blobs, &playground_config::llm_model)?);
     metadata.union(describe_attribute(blobs, &playground_config::llm_base_url)?);
     metadata.union(describe_attribute(blobs, &playground_config::llm_api_key)?);
+    metadata.union(describe_attribute(
+        blobs,
+        &playground_config::tavily_api_key,
+    )?);
+    metadata.union(describe_attribute(blobs, &playground_config::exa_api_key)?);
     metadata.union(describe_attribute(
         blobs,
         &playground_config::llm_reasoning_effort,

@@ -426,6 +426,8 @@ struct AgentConfigRow {
     llm_reasoning_effort: Option<String>,
     llm_stream: Option<bool>,
     llm_api_key: Option<String>,
+    tavily_api_key: Option<String>,
+    exa_api_key: Option<String>,
     exec_default_cwd: Option<String>,
     exec_sandbox_profile: Option<Id>,
     system_prompt: Option<String>,
@@ -1383,6 +1385,10 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         .map(|value| value != 0);
     let llm_api_key =
         load_optional_string_attr(data, ws, config_id, playground_config::llm_api_key);
+    let tavily_api_key =
+        load_optional_string_attr(data, ws, config_id, playground_config::tavily_api_key);
+    let exa_api_key =
+        load_optional_string_attr(data, ws, config_id, playground_config::exa_api_key);
     let exec_default_cwd =
         load_optional_string_attr(data, ws, config_id, playground_config::exec_default_cwd);
     let exec_sandbox_profile =
@@ -1410,6 +1416,8 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         llm_reasoning_effort,
         llm_stream,
         llm_api_key,
+        tavily_api_key,
+        exa_api_key,
         exec_default_cwd,
         exec_sandbox_profile,
         system_prompt,
@@ -3131,6 +3139,52 @@ fn render_agent_config(
             ui.label("llm.api_key");
             ui.horizontal(|ui| {
                 let Some(key) = config.llm_api_key.as_deref() else {
+                    ui.label("-");
+                    return;
+                };
+                if state.config_reveal_secrets {
+                    ui.monospace(key);
+                } else {
+                    ui.monospace(mask_secret(key));
+                }
+                let button = if state.config_reveal_secrets {
+                    "Hide"
+                } else {
+                    "Reveal"
+                };
+                if ui.add(Button::new(button)).clicked() {
+                    state.config_reveal_secrets = !state.config_reveal_secrets;
+                    ui.ctx().request_repaint();
+                }
+            });
+            ui.end_row();
+
+            ui.label("integrations.tavily_api_key");
+            ui.horizontal(|ui| {
+                let Some(key) = config.tavily_api_key.as_deref() else {
+                    ui.label("-");
+                    return;
+                };
+                if state.config_reveal_secrets {
+                    ui.monospace(key);
+                } else {
+                    ui.monospace(mask_secret(key));
+                }
+                let button = if state.config_reveal_secrets {
+                    "Hide"
+                } else {
+                    "Reveal"
+                };
+                if ui.add(Button::new(button)).clicked() {
+                    state.config_reveal_secrets = !state.config_reveal_secrets;
+                    ui.ctx().request_repaint();
+                }
+            });
+            ui.end_row();
+
+            ui.label("integrations.exa_api_key");
+            ui.horizontal(|ui| {
+                let Some(key) = config.exa_api_key.as_deref() else {
                     ui.label("-");
                     return;
                 };

@@ -37,6 +37,8 @@ const CONFIG_BRANCH: &str = "config";
 pub struct Config {
     pub pile_path: PathBuf,
     pub llm: LlmConfig,
+    pub tavily_api_key: Option<String>,
+    pub exa_api_key: Option<String>,
     pub exec: ExecConfig,
     pub system_prompt: String,
     pub branch_id: Option<Id>,
@@ -116,6 +118,8 @@ fn default_config(pile_path: PathBuf) -> Config {
     Config {
         pile_path,
         llm: LlmConfig::default(),
+        tavily_api_key: None,
+        exa_api_key: None,
         exec: ExecConfig::default(),
         system_prompt: default_system_prompt(),
         branch_id: None,
@@ -241,6 +245,13 @@ fn load_latest_config(
     if let Some(key) = load_string_attr(ws, catalog, config_id, playground_config::llm_api_key)? {
         config.llm.api_key = Some(key);
     }
+    if let Some(key) = load_string_attr(ws, catalog, config_id, playground_config::tavily_api_key)?
+    {
+        config.tavily_api_key = Some(key);
+    }
+    if let Some(key) = load_string_attr(ws, catalog, config_id, playground_config::exa_api_key)? {
+        config.exa_api_key = Some(key);
+    }
     if let Some(cwd) =
         load_string_attr(ws, catalog, config_id, playground_config::exec_default_cwd)?
     {
@@ -343,6 +354,14 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     if let Some(key) = config.llm.api_key.as_ref() {
         let handle = ws.put(key.clone());
         change += entity! { &config_id @ playground_config::llm_api_key: handle };
+    }
+    if let Some(key) = config.tavily_api_key.as_ref() {
+        let handle = ws.put(key.clone());
+        change += entity! { &config_id @ playground_config::tavily_api_key: handle };
+    }
+    if let Some(key) = config.exa_api_key.as_ref() {
+        let handle = ws.put(key.clone());
+        change += entity! { &config_id @ playground_config::exa_api_key: handle };
     }
     if let Some(effort) = config.llm.reasoning_effort.as_ref() {
         let handle = ws.put(effort.clone());
