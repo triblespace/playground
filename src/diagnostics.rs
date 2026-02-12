@@ -84,16 +84,13 @@ mod compass {
 }
 
 type CommitHandle = Value<Handle<Blake3, SimpleArchive>>;
-const EXEC_SCROLL_HEIGHT: f32 = 260.0;
-const COGNITION_TRAIL_HEIGHT: f32 = 320.0;
-const LOCAL_MESSAGE_SCROLL_HEIGHT: f32 = 780.0;
+const ACTIVITY_TIMELINE_HEIGHT: f32 = 620.0;
 const LOCAL_COMPOSE_HEIGHT: f32 = 80.0;
 const RELATIONS_SCROLL_HEIGHT: f32 = 260.0;
 const TEAMS_SCROLL_HEIGHT: f32 = 520.0;
 const TEAMS_CHAT_LIST_WIDTH: f32 = 220.0;
 const WORKSPACE_SNAPSHOT_LIMIT: usize = 10;
-const EXEC_RECENT_LIMIT: usize = 8;
-const COGNITION_TRAIL_LIMIT: usize = 20;
+const ACTIVITY_TIMELINE_LIMIT: usize = 120;
 
 static DIAGNOSTICS_PILE_OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
 static DIAGNOSTICS_HEADLESS: AtomicBool = AtomicBool::new(false);
@@ -204,7 +201,6 @@ struct DashboardState {
     local_draft: String,
     local_send_error: Option<String>,
     local_send_notice: Option<String>,
-    local_read_error: Option<String>,
     config_reveal_secrets: bool,
     config_last_applied_id: Option<Id>,
     compass_expanded_goal: Option<Id>,
@@ -233,7 +229,6 @@ impl Default for DashboardState {
             local_draft: String::new(),
             local_send_error: None,
             local_send_notice: None,
-            local_read_error: None,
             config_reveal_secrets: false,
             config_last_applied_id: None,
             compass_expanded_goal: None,
@@ -270,21 +265,12 @@ enum ExecStatus {
 }
 
 #[derive(Debug, Clone)]
-struct ExecSummary {
-    pending: usize,
-    running: usize,
-    done: usize,
-    failed: usize,
-}
-
-#[derive(Debug, Clone)]
 struct LocalMessageRow {
     id: Id,
     created_at: Option<i128>,
     from_id: Id,
     to_id: Id,
     body: String,
-    read_by_me: bool,
     readers: Vec<Id>,
 }
 
@@ -319,24 +305,21 @@ struct ReasoningSummaryRow {
     summary: String,
 }
 
-#[derive(Debug, Clone)]
-enum CognitionTrailEvent {
-    Command {
-        command: String,
-        status: ExecStatus,
-        exit_code: Option<u64>,
-        worker: Option<Id>,
-        error: Option<String>,
-    },
-    Reasoning {
-        summary: String,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimelineSource {
+    Shell,
+    Cognition,
+    LocalMessages,
+    Teams,
+    Goals,
 }
 
 #[derive(Debug, Clone)]
-struct CognitionTrailRow {
+struct TimelineRow {
     at: Option<i128>,
-    event: CognitionTrailEvent,
+    source: TimelineSource,
+    summary: String,
+    details: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -362,6 +345,13 @@ impl CompassTaskRow {
 struct CompassNoteRow {
     at: String,
     body: String,
+}
+
+#[derive(Debug, Clone)]
+struct CompassStatusRow {
+    task: Id,
+    status: String,
+    at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -409,16 +399,13 @@ struct DashboardSnapshot {
     pile_path: PathBuf,
     branches: Vec<BranchEntry>,
     branch_data: HashMap<Id, BranchSnapshot>,
-    exec_rows: Vec<ExecRow>,
-    exec_summary: ExecSummary,
     exec_error: Option<String>,
     agent_config: Option<AgentConfigRow>,
     agent_config_error: Option<String>,
-    cognition_trail: Vec<CognitionTrailRow>,
+    timeline_rows: Vec<TimelineRow>,
     compass_rows: Vec<(CompassTaskRow, usize)>,
     compass_notes: HashMap<Id, Vec<CompassNoteRow>>,
     compass_error: Option<String>,
-    local_message_rows: Vec<LocalMessageRow>,
     local_message_error: Option<String>,
     local_me_id: Option<Id>,
     local_peer_id: Option<Id>,
@@ -431,7 +418,6 @@ struct DashboardSnapshot {
     workspace_snapshots: Vec<WorkspaceSnapshotRow>,
     workspace_entries: Vec<WorkspaceEntryRow>,
     workspace_error: Option<String>,
-    labels: HashMap<Id, String>,
     now_key: i128,
 }
 
@@ -687,41 +673,17 @@ _Live view of the agent pile, exec queue, and message activity._"
     nb.view(move |ui| {
         let state = dashboard.read(ui);
         with_padding(ui, padding, |ui| {
-            ui.heading("Exec queue");
+            ui.heading("Activity timeline");
             let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
                 return;
             };
             if let Some(err) = &snapshot.exec_error {
-                ui.colored_label(egui::Color32::RED, err);
-            } else {
-                render_exec_summary(ui, &snapshot.exec_summary);
-                render_exec_rows(
-                    ui,
-                    snapshot.now_key,
-                    &snapshot.exec_rows,
-                    &snapshot.labels,
-                    EXEC_RECENT_LIMIT,
-                );
+                ui.colored_label(egui::Color32::RED, format!("Exec branch: {err}"));
             }
-        });
-    });
-
-    nb.view(move |ui| {
-        let state = dashboard.read(ui);
-        with_padding(ui, padding, |ui| {
-            ui.heading("Cognition trail");
-            let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
-                return;
-            };
-            if snapshot.cognition_trail.is_empty() {
-                ui.label("No cognition events yet.");
+            if snapshot.timeline_rows.is_empty() {
+                ui.label("No activity yet.");
             } else {
-                render_cognition_trail(
-                    ui,
-                    snapshot.now_key,
-                    &snapshot.cognition_trail,
-                    &snapshot.labels,
-                );
+                render_activity_timeline(ui, snapshot.now_key, &snapshot.timeline_rows);
             }
         });
     });
@@ -729,7 +691,7 @@ _Live view of the agent pile, exec queue, and message activity._"
     nb.view(move |ui| {
         let mut state = dashboard.read_mut(ui);
         with_padding(ui, padding, |ui| {
-            ui.heading("Local messages");
+            ui.heading("Local message composer");
             let snapshot = {
                 let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
                     return;
@@ -738,20 +700,6 @@ _Live view of the agent pile, exec queue, and message activity._"
             };
             if let Some(err) = &snapshot.local_message_error {
                 ui.colored_label(egui::Color32::RED, err);
-            } else {
-                auto_ack_local_messages(
-                    &mut state,
-                    &snapshot.branches,
-                    &snapshot.local_message_rows,
-                    snapshot.local_me_id,
-                );
-                render_local_messages(
-                    ui,
-                    snapshot.now_key,
-                    &snapshot.local_message_rows,
-                    snapshot.local_me_id,
-                    &snapshot.relations_labels,
-                );
             }
             render_local_composer(ui, &mut state, &snapshot.branches, &snapshot);
         });
@@ -1031,21 +979,13 @@ fn load_snapshot(
             pile_path,
             branches,
             branch_data,
-            exec_rows: Vec::new(),
-            exec_summary: ExecSummary {
-                pending: 0,
-                running: 0,
-                done: 0,
-                failed: 0,
-            },
             exec_error,
             agent_config: None,
             agent_config_error,
-            cognition_trail: Vec::new(),
+            timeline_rows: Vec::new(),
             compass_rows: Vec::new(),
             compass_notes: HashMap::new(),
             compass_error,
-            local_message_rows: Vec::new(),
             local_message_error,
             local_me_id: None,
             local_peer_id: None,
@@ -1058,7 +998,6 @@ fn load_snapshot(
             workspace_snapshots: Vec::new(),
             workspace_entries: Vec::new(),
             workspace_error,
-            labels: HashMap::new(),
             now_key,
         });
     };
@@ -1116,34 +1055,43 @@ fn build_snapshot(
     let local_peer_id = resolve_person_ref(&relations_people, &config.local_peer);
     let agent_config = collect_agent_config(&config_data, ws);
     let exec_rows = collect_exec_rows(&exec_data, ws);
-    let exec_summary = summarize_exec(&exec_rows);
     let reasoning_summaries = collect_reasoning_summaries(&exec_data, ws);
-    let cognition_trail =
-        build_cognition_trail(&exec_rows, &reasoning_summaries, COGNITION_TRAIL_LIMIT);
     let compass_rows = collect_compass_rows(&compass_data, ws);
+    let compass_status_rows = collect_compass_status_rows(&compass_data);
     let compass_notes = collect_compass_notes(&compass_data, ws);
-    let local_message_rows = collect_local_messages(&local_data, ws, local_me_id);
+    let local_message_rows = collect_local_messages(&local_data, ws);
     let (teams_messages, teams_chats) = collect_teams_messages(&teams_data, ws);
     let workspace_snapshots = collect_workspace_snapshots(&workspace_data, ws);
     let workspace_latest_id = workspace_snapshots.first().map(|row| row.id);
     let workspace_preview_id = workspace_selected_snapshot.or(workspace_latest_id);
     let workspace_entries = collect_workspace_entries(&workspace_data, ws, workspace_preview_id);
     let labels = collect_labels(&exec_data, ws);
+    let timeline_rows = build_activity_timeline(
+        &exec_rows,
+        &reasoning_summaries,
+        &local_message_rows,
+        local_me_id,
+        &relations_labels,
+        &teams_messages,
+        &teams_chats,
+        &compass_rows,
+        &compass_status_rows,
+        &compass_notes,
+        &labels,
+        ACTIVITY_TIMELINE_LIMIT,
+    );
 
     DashboardSnapshot {
         pile_path,
         branches,
         branch_data,
-        exec_rows,
-        exec_summary,
         exec_error,
         agent_config,
         agent_config_error,
-        cognition_trail,
+        timeline_rows,
         compass_rows,
         compass_notes,
         compass_error,
-        local_message_rows,
         local_message_error,
         local_me_id,
         local_peer_id,
@@ -1156,7 +1104,6 @@ fn build_snapshot(
         workspace_snapshots,
         workspace_entries,
         workspace_error,
-        labels,
         now_key,
     }
 }
@@ -1525,11 +1472,7 @@ fn collect_exec_rows(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<ExecRow>
     list
 }
 
-fn collect_local_messages(
-    data: &TribleSet,
-    ws: &mut Workspace<Pile>,
-    me_id: Option<Id>,
-) -> Vec<LocalMessageRow> {
+fn collect_local_messages(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<LocalMessageRow> {
     let mut rows = Vec::new();
     for (message_id, from, to, body_handle, created_at) in find!(
         (
@@ -1555,7 +1498,6 @@ fn collect_local_messages(
             from_id: from,
             to_id: to,
             body,
-            read_by_me: false,
             readers: Vec::new(),
         });
     }
@@ -1585,9 +1527,6 @@ fn collect_local_messages(
             let mut reader_list: Vec<Id> = readers.iter().copied().collect();
             reader_list.sort_by_key(|id| format!("{id:x}"));
             row.readers = reader_list;
-            if let Some(me_id) = me_id {
-                row.read_by_me = readers.contains(&me_id);
-            }
         }
     }
 
@@ -2062,43 +2001,161 @@ fn collect_reasoning_summaries(
 
     rows.sort_by_key(|row| row.created_at.unwrap_or(i128::MIN));
     rows.reverse();
-    rows.truncate(10);
     rows
 }
 
-fn build_cognition_trail(
+fn build_activity_timeline(
     exec_rows: &[ExecRow],
     reasoning_rows: &[ReasoningSummaryRow],
+    local_rows: &[LocalMessageRow],
+    local_me_id: Option<Id>,
+    relation_labels: &HashMap<Id, String>,
+    teams_rows: &[TeamsMessageRow],
+    teams_chats: &[TeamsChatRow],
+    compass_rows: &[(CompassTaskRow, usize)],
+    compass_status_rows: &[CompassStatusRow],
+    compass_notes: &HashMap<Id, Vec<CompassNoteRow>>,
+    labels: &HashMap<Id, String>,
     limit: usize,
-) -> Vec<CognitionTrailRow> {
+) -> Vec<TimelineRow> {
     let mut rows = Vec::new();
 
     for row in exec_rows {
-        rows.push(CognitionTrailRow {
+        let mut details: Vec<String> = Vec::new();
+        if let Some(worker_id) = row.worker {
+            details.push(format!("worker {}", format_id(labels, worker_id)));
+        }
+        if let Some(code) = row.exit_code {
+            details.push(format!("exit {code}"));
+        }
+        if let Some(error) = row.error.as_deref() {
+            details.push(format!("error {}", truncate_single_line(error, 160)));
+        }
+
+        rows.push(TimelineRow {
             at: row.finished_at.or(row.started_at).or(row.requested_at),
-            event: CognitionTrailEvent::Command {
-                command: row.command.clone(),
-                status: row.status,
-                exit_code: row.exit_code,
-                worker: row.worker,
-                error: row.error.clone(),
-            },
+            source: TimelineSource::Shell,
+            summary: format!(
+                "{}: {}",
+                exec_status_text(row.status),
+                truncate_single_line(&row.command, 200)
+            ),
+            details: (!details.is_empty()).then_some(details.join(" · ")),
         });
     }
 
     for row in reasoning_rows {
-        rows.push(CognitionTrailRow {
+        rows.push(TimelineRow {
             at: row.created_at,
-            event: CognitionTrailEvent::Reasoning {
-                summary: row.summary.clone(),
-            },
+            source: TimelineSource::Cognition,
+            summary: truncate_single_line(&row.summary, 160),
+            details: Some(row.summary.clone()),
         });
+    }
+
+    for row in local_rows {
+        let from_label = format_id(relation_labels, row.from_id);
+        let to_label = format_id(relation_labels, row.to_id);
+        let status = local_message_status(row, local_me_id, relation_labels);
+        rows.push(TimelineRow {
+            at: row.created_at,
+            source: TimelineSource::LocalMessages,
+            summary: format!("{from_label} → {to_label}"),
+            details: Some(format!(
+                "{} · {}",
+                local_message_status_text(&status),
+                truncate_single_line(&row.body, 240)
+            )),
+        });
+    }
+
+    let mut team_chat_labels: HashMap<Id, String> = HashMap::new();
+    for row in teams_chats {
+        team_chat_labels.insert(row.id, row.label.clone());
+    }
+    for row in teams_rows {
+        let author = row.author_name.as_deref().unwrap_or("unknown");
+        let chat = team_chat_labels
+            .get(&row.chat_id)
+            .cloned()
+            .unwrap_or_else(|| id_prefix(row.chat_id));
+        rows.push(TimelineRow {
+            at: row.created_at,
+            source: TimelineSource::Teams,
+            summary: format!("{author} in {chat}"),
+            details: Some(truncate_single_line(&row.content, 240)),
+        });
+    }
+
+    for (goal, _depth) in compass_rows {
+        let mut details: Vec<String> = Vec::new();
+        details.push(format!("status {}", goal.status));
+        details.push(format!("[{}]", goal.id_prefix));
+        if !goal.tags.is_empty() {
+            details.push(
+                goal.tags
+                    .iter()
+                    .map(|tag| format!("#{tag}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        if let Some(parent) = goal.parent {
+            details.push(format!("child-of {}", id_prefix(parent)));
+        }
+        rows.push(TimelineRow {
+            at: parse_compass_stamp(&goal.created_at),
+            source: TimelineSource::Goals,
+            summary: format!("created goal: {}", truncate_single_line(&goal.title, 160)),
+            details: Some(details.join(" · ")),
+        });
+    }
+
+    let mut goal_titles: HashMap<Id, String> = HashMap::new();
+    for (goal, _depth) in compass_rows {
+        goal_titles.insert(goal.id, goal.title.clone());
+    }
+
+    for status in compass_status_rows {
+        let title = goal_titles
+            .get(&status.task)
+            .cloned()
+            .unwrap_or_else(|| format!("[{}]", id_prefix(status.task)));
+        rows.push(TimelineRow {
+            at: parse_compass_stamp(&status.at),
+            source: TimelineSource::Goals,
+            summary: format!(
+                "status: {} -> {}",
+                truncate_single_line(&title, 120),
+                status.status
+            ),
+            details: Some(format!("[{}]", id_prefix(status.task))),
+        });
+    }
+
+    for (task_id, notes) in compass_notes {
+        let title = goal_titles
+            .get(task_id)
+            .cloned()
+            .unwrap_or_else(|| format!("[{}]", id_prefix(*task_id)));
+        for note in notes {
+            rows.push(TimelineRow {
+                at: parse_compass_stamp(&note.at),
+                source: TimelineSource::Goals,
+                summary: format!("note: {}", truncate_single_line(&title, 120)),
+                details: Some(truncate_single_line(&note.body, 280)),
+            });
+        }
     }
 
     rows.sort_by_key(|row| row.at.unwrap_or(i128::MIN));
     rows.reverse();
     rows.truncate(limit);
     rows
+}
+
+fn parse_compass_stamp(stamp: &str) -> Option<i128> {
+    Epoch::from_gregorian_str(stamp).ok().map(epoch_key)
 }
 
 fn collect_compass_rows(
@@ -2208,6 +2265,28 @@ fn collect_compass_rows(
     }
 
     order_compass_rows(tasks.into_values().collect())
+}
+
+fn collect_compass_status_rows(data: &TribleSet) -> Vec<CompassStatusRow> {
+    let mut rows = Vec::new();
+    for (task_id, status, at) in find!(
+        (task_id: Id, status: String, at: String),
+        pattern!(&data, [{
+            _?event @
+            metadata::tag: &COMPASS_KIND_STATUS_ID,
+            compass::task: ?task_id,
+            compass::status: ?status,
+            compass::at: ?at,
+        }])
+    ) {
+        rows.push(CompassStatusRow {
+            task: task_id,
+            status,
+            at,
+        });
+    }
+    rows.sort_by(|a, b| b.at.cmp(&a.at));
+    rows
 }
 
 fn collect_compass_notes(
@@ -2393,16 +2472,12 @@ fn render_local_composer(
             state.local_draft.clear();
             state.local_send_error = None;
             state.local_send_notice = None;
-            state.local_read_error = None;
         }
         if let Some(note) = &state.local_send_notice {
             ui.label(note);
         }
     });
     if let Some(err) = &state.local_send_error {
-        ui.colored_label(egui::Color32::RED, err);
-    }
-    if let Some(err) = &state.local_read_error {
         ui.colored_label(egui::Color32::RED, err);
     }
 }
@@ -2603,7 +2678,6 @@ fn send_local_message_from_ui(
 ) {
     state.local_send_error = None;
     state.local_send_notice = None;
-    state.local_read_error = None;
 
     let Some(repo) = state.repo.as_mut() else {
         state.local_send_error = Some("Repository not open.".to_string());
@@ -2690,77 +2764,6 @@ fn send_local_message(
     ws.commit(change, None, Some("local message"));
     repo.push(&mut ws)
         .map_err(|err| format!("push message: {err:?}"))?;
-    Ok(())
-}
-
-fn auto_ack_local_messages(
-    state: &mut DashboardState,
-    branches: &[BranchEntry],
-    rows: &[LocalMessageRow],
-    me_id: Option<Id>,
-) {
-    state.local_read_error = None;
-    let Some(me_id) = me_id else {
-        return;
-    };
-    let unread: Vec<Id> = rows
-        .iter()
-        .filter(|row| row.to_id == me_id && !row.read_by_me)
-        .map(|row| row.id)
-        .collect();
-    if unread.is_empty() {
-        return;
-    }
-
-    let Some(repo) = state.repo.as_mut() else {
-        return;
-    };
-    let branch_lookup = BranchLookup::new(branches);
-    let refs = parse_branch_list(&state.config.local_message_branches);
-    let branch_id = match resolve_single_branch(&branch_lookup, &refs) {
-        Ok(branch_id) => branch_id,
-        Err(err) => {
-            state.local_read_error = Some(err);
-            return;
-        }
-    };
-
-    if let Err(err) = ack_local_messages(repo, branch_id, &unread, me_id) {
-        state.local_read_error = Some(err);
-    }
-}
-
-fn ack_local_messages(
-    repo: &mut Repository<Pile>,
-    branch_id: Id,
-    message_ids: &[Id],
-    reader_id: Id,
-) -> Result<(), String> {
-    if message_ids.is_empty() {
-        return Ok(());
-    }
-    let mut ws = repo
-        .pull(branch_id)
-        .map_err(|err| format!("pull branch: {err:?}"))?;
-    let mut change = ensure_local_metadata(&mut ws)?;
-
-    let now = now_epoch();
-    let now_interval: Value<NsTAIInterval> = (now, now).to_value();
-    for message_id in message_ids {
-        let read_id = triblespace::prelude::ufoid();
-        change += entity! { &read_id @
-            metadata::tag: &LOCAL_KIND_READ_ID,
-            local_messages::about_message: *message_id,
-            local_messages::reader: reader_id,
-            local_messages::read_at: now_interval,
-        };
-    }
-
-    if !change.is_empty() {
-        ws.commit(change, None, Some("local message read"));
-        repo.push(&mut ws)
-            .map_err(|err| format!("push read: {err:?}"))?;
-    }
     Ok(())
 }
 
@@ -2957,24 +2960,6 @@ fn latest_results(
             .or_insert(info);
     }
     results
-}
-
-fn summarize_exec(rows: &[ExecRow]) -> ExecSummary {
-    let mut summary = ExecSummary {
-        pending: 0,
-        running: 0,
-        done: 0,
-        failed: 0,
-    };
-    for row in rows {
-        match row.status {
-            ExecStatus::Pending => summary.pending += 1,
-            ExecStatus::Running => summary.running += 1,
-            ExecStatus::Done => summary.done += 1,
-            ExecStatus::Failed => summary.failed += 1,
-        }
-    }
-    summary
 }
 
 fn render_agent_config(
@@ -3190,106 +3175,55 @@ fn mask_secret(secret: &str) -> String {
     format!("{prefix}…{suffix}")
 }
 
-fn render_exec_summary(ui: &mut egui::Ui, summary: &ExecSummary) {
-    ui.horizontal(|ui| {
-        ui.label(format!("Pending: {}", summary.pending));
-        ui.label(format!("Running: {}", summary.running));
-        ui.label(format!("Done: {}", summary.done));
-        ui.label(format!("Failed: {}", summary.failed));
-    });
-}
-
-fn render_exec_rows(
-    ui: &mut egui::Ui,
-    now_key: i128,
-    rows: &[ExecRow],
-    labels: &HashMap<Id, String>,
-    limit: usize,
-) {
-    ui.set_min_height(EXEC_SCROLL_HEIGHT);
-    if rows.len() > limit {
-        ui.small(format!("Showing {limit} of {} commands.", rows.len()));
-    }
-    egui::Grid::new("exec_rows")
-        .striped(true)
-        .spacing(egui::Vec2::new(12.0, 6.0))
-        .show(ui, |ui| {
-            ui.label("Status");
-            ui.label("Age");
-            ui.label("Command");
-            ui.label("Exit");
-            ui.label("Worker");
-            ui.end_row();
-
-            for row in rows.iter().take(limit) {
-                ui.label(status_label(row.status));
-                ui.label(format_age(now_key, row.requested_at));
-                ui.monospace(truncate_single_line(&row.command, 80));
-                ui.label(
-                    row.exit_code
-                        .map(|code| code.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
+fn render_activity_timeline(ui: &mut egui::Ui, now_key: i128, rows: &[TimelineRow]) {
+    let render_rows = |ui: &mut egui::Ui| {
+        for row in rows {
+            let (source_label, source_color) = timeline_source_style(row.source);
+            ui.horizontal_wrapped(|ui| {
+                ui.small(format_age(now_key, row.at));
+                render_timeline_source_chip(ui, source_label, source_color);
+                ui.label(&row.summary);
+            });
+            if let Some(details) = row.details.as_deref() {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(details).monospace())
+                        .wrap_mode(egui::TextWrapMode::Wrap),
                 );
-                ui.label(
-                    row.worker
-                        .map(|id| format_id(labels, id))
-                        .unwrap_or_else(|| "-".to_string()),
-                );
-                ui.end_row();
-
-                if let Some(error) = &row.error {
-                    ui.label("");
-                    ui.label("error");
-                    ui.label(truncate_single_line(error, 120));
-                    ui.label("");
-                    ui.label("");
-                    ui.end_row();
-                }
             }
-        });
-}
-
-fn render_cognition_trail(
-    ui: &mut egui::Ui,
-    now_key: i128,
-    rows: &[CognitionTrailRow],
-    labels: &HashMap<Id, String>,
-) {
-    ui.set_min_height(COGNITION_TRAIL_HEIGHT);
-    for row in rows {
-        match &row.event {
-            CognitionTrailEvent::Command {
-                command,
-                status,
-                exit_code,
-                worker,
-                error,
-            } => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.small(format_age(now_key, row.at));
-                    ui.label(status_label(*status));
-                    if let Some(code) = exit_code {
-                        ui.small(format!("exit:{code}"));
-                    }
-                    if let Some(worker_id) = worker {
-                        ui.small(format!("worker:{}", format_id(labels, *worker_id)));
-                    }
-                });
-                ui.monospace(truncate_single_line(command, 180));
-                if let Some(error) = error {
-                    ui.colored_label(egui::Color32::LIGHT_RED, truncate_single_line(error, 180));
-                }
-            }
-            CognitionTrailEvent::Reasoning { summary } => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.small(format_age(now_key, row.at));
-                    ui.label(egui::RichText::new("reasoning").color(egui::Color32::LIGHT_BLUE));
-                });
-                ui.add(egui::Label::new(summary).wrap_mode(egui::TextWrapMode::Wrap));
-            }
+            ui.add_space(8.0);
         }
-        ui.add_space(8.0);
+    };
+
+    if diagnostics_is_headless() {
+        egui::ScrollArea::vertical()
+            .id_salt("timeline_headless_scroll")
+            .max_height(1800.0)
+            .show(ui, |ui| render_rows(ui));
+    } else {
+        ui.set_min_height(ACTIVITY_TIMELINE_HEIGHT);
+        render_rows(ui);
     }
+}
+
+fn timeline_source_style(source: TimelineSource) -> (&'static str, egui::Color32) {
+    match source {
+        TimelineSource::Shell => ("shell", egui::Color32::from_rgb(92, 132, 201)),
+        TimelineSource::Cognition => ("mind", egui::Color32::from_rgb(123, 107, 168)),
+        TimelineSource::LocalMessages => ("local", egui::Color32::from_rgb(67, 149, 112)),
+        TimelineSource::Teams => ("teams", egui::Color32::from_rgb(69, 124, 184)),
+        TimelineSource::Goals => ("goals", egui::Color32::from_rgb(202, 168, 68)),
+    }
+}
+
+fn render_timeline_source_chip(ui: &mut egui::Ui, label: &str, fill: egui::Color32) {
+    let text_color = colorhash::text_color_on(fill);
+    egui::Frame::NONE
+        .fill(fill)
+        .corner_radius(egui::CornerRadius::same(5))
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(label).small().color(text_color));
+        });
 }
 
 fn render_compass_swimlanes(
@@ -3577,59 +3511,6 @@ fn render_compass_swimlane_row(
     }
 }
 
-fn render_local_messages(
-    ui: &mut egui::Ui,
-    now_key: i128,
-    rows: &[LocalMessageRow],
-    me_id: Option<Id>,
-    labels: &HashMap<Id, String>,
-) {
-    ui.set_min_height(LOCAL_MESSAGE_SCROLL_HEIGHT);
-    let bubble_width = (ui.available_width() * 0.75).max(220.0);
-    for row in rows {
-        let is_sender = me_id.map_or(false, |id| row.from_id == id);
-        let from_label = format_id(labels, row.from_id);
-        let to_label = format_id(labels, row.to_id);
-        let status = local_message_status(row, me_id, labels);
-        let age = format_age(now_key, row.created_at);
-        let meta = format!("{age} · {}", local_message_status_text(&status));
-        let align = if is_sender {
-            egui::Layout::right_to_left(egui::Align::TOP)
-        } else {
-            egui::Layout::left_to_right(egui::Align::TOP)
-        };
-        let from_chip_color = colorhash::ral_categorical(row.from_id.as_ref());
-        let to_chip_color = colorhash::ral_categorical(row.to_id.as_ref());
-        let bubble_color = from_chip_color;
-        let text_color = colorhash::text_color_on(bubble_color);
-
-        ui.with_layout(align, |ui| {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    render_person_chip(ui, &from_label, from_chip_color);
-                    ui.small("→");
-                    render_person_chip(ui, &to_label, to_chip_color);
-                    ui.add_space(6.0);
-                    render_local_status_chip(ui, &status);
-                });
-                egui::Frame::NONE
-                    .fill(bubble_color)
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .inner_margin(egui::Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.add_sized(
-                            [bubble_width, 0.0],
-                            egui::Label::new(egui::RichText::new(&row.body).color(text_color))
-                                .wrap_mode(egui::TextWrapMode::Wrap),
-                        );
-                    });
-                ui.small(meta);
-            });
-        });
-        ui.add_space(6.0);
-    }
-}
-
 fn local_message_status(
     row: &LocalMessageRow,
     me_id: Option<Id>,
@@ -3673,41 +3554,6 @@ fn local_message_status_text(status: &LocalMessageStatus) -> String {
         LocalMessageStatus::ReadBy(label) => format!("read-by:{label}"),
         LocalMessageStatus::Other => "other".to_string(),
     }
-}
-
-fn local_message_status_color(status: &LocalMessageStatus) -> egui::Color32 {
-    match status {
-        LocalMessageStatus::Unread => egui::Color32::from_rgb(202, 118, 45),
-        LocalMessageStatus::Read => egui::Color32::from_rgb(69, 141, 92),
-        LocalMessageStatus::Sent => egui::Color32::from_rgb(107, 118, 130),
-        LocalMessageStatus::ReadBy(_) => egui::Color32::from_rgb(74, 126, 183),
-        LocalMessageStatus::Other => egui::Color32::from_rgb(122, 104, 164),
-    }
-}
-
-fn render_local_status_chip(ui: &mut egui::Ui, status: &LocalMessageStatus) {
-    let fill = local_message_status_color(status);
-    let text_color = colorhash::text_color_on(fill);
-    let label = truncate_single_line(&local_message_status_text(status), 40);
-    egui::Frame::NONE
-        .fill(fill)
-        .corner_radius(egui::CornerRadius::same(5))
-        .inner_margin(egui::Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(label).color(text_color).small());
-        });
-}
-
-fn render_person_chip(ui: &mut egui::Ui, label: &str, fill: egui::Color32) {
-    let text_color = colorhash::text_color_on(fill);
-    let label = truncate_single_line(label, 48);
-    egui::Frame::NONE
-        .fill(fill)
-        .corner_radius(egui::CornerRadius::same(5))
-        .inner_margin(egui::Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(label).color(text_color).small());
-        });
 }
 
 fn render_relations(ui: &mut egui::Ui, people: &[RelationRow]) {
@@ -3991,12 +3837,12 @@ fn extract_reasoning_summaries(response: &JsonValue) -> Vec<String> {
     summaries
 }
 
-fn status_label(status: ExecStatus) -> egui::RichText {
+fn exec_status_text(status: ExecStatus) -> &'static str {
     match status {
-        ExecStatus::Pending => egui::RichText::new("pending").color(egui::Color32::GRAY),
-        ExecStatus::Running => egui::RichText::new("running").color(egui::Color32::LIGHT_BLUE),
-        ExecStatus::Done => egui::RichText::new("done").color(egui::Color32::LIGHT_GREEN),
-        ExecStatus::Failed => egui::RichText::new("failed").color(egui::Color32::LIGHT_RED),
+        ExecStatus::Pending => "pending",
+        ExecStatus::Running => "running",
+        ExecStatus::Done => "done",
+        ExecStatus::Failed => "failed",
     }
 }
 
