@@ -84,7 +84,7 @@ mod compass {
 }
 
 type CommitHandle = Value<Handle<Blake3, SimpleArchive>>;
-const ACTIVITY_TIMELINE_HEIGHT: f32 = 620.0;
+const ACTIVITY_TIMELINE_HEIGHT: f32 = 980.0;
 const LOCAL_COMPOSE_HEIGHT: f32 = 80.0;
 const RELATIONS_SCROLL_HEIGHT: f32 = 260.0;
 const TEAMS_SCROLL_HEIGHT: f32 = 520.0;
@@ -3214,8 +3214,15 @@ fn render_activity_timeline(ui: &mut egui::Ui, now_key: i128, rows: &[TimelineRo
     } else {
         ACTIVITY_TIMELINE_HEIGHT
     };
+    let min_scrolled_height = if diagnostics_is_headless() {
+        320.0
+    } else {
+        ACTIVITY_TIMELINE_HEIGHT
+    };
     egui::ScrollArea::vertical()
         .id_salt("activity_timeline_scroll")
+        .auto_shrink([false, false])
+        .min_scrolled_height(min_scrolled_height)
         .max_height(max_height)
         .show(ui, |ui| render_rows(ui));
 }
