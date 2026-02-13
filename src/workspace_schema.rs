@@ -1,6 +1,6 @@
 use triblespace::core::metadata;
 use triblespace::macros::id_hex;
-use triblespace::prelude::blobschemas::{FileBytes, LongString};
+use triblespace::prelude::blobschemas::{FileBytes, LongString, SimpleArchive};
 use triblespace::prelude::valueschemas::{Blake3, GenId, Handle, NsTAIInterval, U256BE};
 use triblespace::prelude::*;
 
@@ -10,7 +10,9 @@ pub mod playground_workspace {
     attributes! {
         "E39FB34126FE01A32F1D4B3DAD0F1874" as pub kind: GenId;
         "A95E92FB35943C570BE45FF811B0BD07" as pub created_at: NsTAIInterval;
+        "5D36AA8480B30F62394911A003F20DDF" as pub parent_snapshot: GenId;
         "B667B02CEB4493232632473ECB782287" as pub root_path: Handle<Blake3, LongString>;
+        "813B3BFA590103FFAD324FC72CDDC3F5" as pub state: Handle<Blake3, SimpleArchive>;
         "435869D280EC3123D391A32025C6F3CC" as pub label: Handle<Blake3, LongString>;
         "C69E168C68E317858A62BA51FC326E97" as pub entry: GenId;
         "1032F072E6730AB40A6F5F568C4C23EB" as pub path: Handle<Blake3, LongString>;
@@ -143,7 +145,9 @@ where
     metadata.union(<NsTAIInterval as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<U256BE as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<Handle<Blake3, LongString> as metadata::ConstMetadata>::describe(blobs)?);
+    metadata.union(<Handle<Blake3, SimpleArchive> as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<Handle<Blake3, FileBytes> as metadata::ConstMetadata>::describe(blobs)?);
+    metadata.union(<SimpleArchive as metadata::ConstMetadata>::describe(blobs)?);
     metadata.union(<FileBytes as metadata::ConstMetadata>::describe(blobs)?);
 
     metadata.union(describe_attribute(blobs, &playground_workspace::kind)?);
@@ -151,7 +155,12 @@ where
         blobs,
         &playground_workspace::created_at,
     )?);
+    metadata.union(describe_attribute(
+        blobs,
+        &playground_workspace::parent_snapshot,
+    )?);
     metadata.union(describe_attribute(blobs, &playground_workspace::root_path)?);
+    metadata.union(describe_attribute(blobs, &playground_workspace::state)?);
     metadata.union(describe_attribute(blobs, &playground_workspace::label)?);
     metadata.union(describe_attribute(blobs, &playground_workspace::entry)?);
     metadata.union(describe_attribute(blobs, &playground_workspace::path)?);

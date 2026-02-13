@@ -466,6 +466,7 @@ struct WorkspaceSnapshotRow {
     created_at: Option<i128>,
     label: Option<String>,
     root_path: Option<String>,
+    state_handle: Option<Value<Handle<Blake3, SimpleArchive>>>,
     entry_count: usize,
 }
 
@@ -1876,6 +1877,8 @@ fn collect_workspace_snapshots(
         let label = load_optional_string_attr(data, ws, snapshot_id, playground_workspace::label);
         let root_path =
             load_optional_string_attr(data, ws, snapshot_id, playground_workspace::root_path);
+        let state_handle =
+            load_optional_archive_handle_attr(data, snapshot_id, playground_workspace::state);
         let entry_count = count_workspace_entries(data, snapshot_id);
 
         rows.push(WorkspaceSnapshotRow {
@@ -1883,6 +1886,7 @@ fn collect_workspace_snapshots(
             created_at: Some(created_key),
             label,
             root_path,
+            state_handle,
             entry_count,
         });
     }
@@ -2009,6 +2013,23 @@ fn load_optional_string_attr(
     .into_iter()
     .next()
     .and_then(|(handle,)| load_text(ws, handle))
+}
+
+fn load_optional_archive_handle_attr(
+    data: &TribleSet,
+    entity_id: Id,
+    attr: Attribute<Handle<Blake3, SimpleArchive>>,
+) -> Option<Value<Handle<Blake3, SimpleArchive>>> {
+    find!(
+        (handle: Value<Handle<Blake3, SimpleArchive>>),
+        pattern!(data, [{
+            entity_id @
+            attr: ?handle,
+        }])
+    )
+    .into_iter()
+    .next()
+    .map(|(handle,)| handle)
 }
 
 fn collect_reasoning_summaries(
@@ -3874,8 +3895,12 @@ fn render_workspace(
         let age = format_age(now_key, row.created_at);
         let label = row.label.as_deref().unwrap_or("-");
         let root = row.root_path.as_deref().unwrap_or(".");
+        let state_hash = row
+            .state_handle
+            .map(archive_handle_prefix)
+            .unwrap_or_else(|| "-".to_string());
         let text = format!(
-            "{age}  {}  {label}  {root}  ({})",
+            "{age}  {}  {label}  {root}  state:{state_hash}  ({})",
             id_prefix(row.id),
             row.entry_count
         );
@@ -3902,9 +3927,13 @@ fn render_workspace(
                 let age = format_age(now_key, row.created_at);
                 let label = row.label.as_deref().unwrap_or("-");
                 let root = row.root_path.as_deref().unwrap_or(".");
+                let state_hash = row
+                    .state_handle
+                    .map(archive_handle_prefix)
+                    .unwrap_or_else(|| "-".to_string());
                 ui.label(format!(
-                    "Entries for {age} {}  {label}  {root}:",
-                    id_prefix(row.id)
+                    "Entries for {age} {}  {label}  {root}  state:{state_hash}:",
+                    id_prefix(row.id),
                 ));
             } else {
                 ui.label(format!("Entries for {}:", id_prefix(snapshot_id)));
