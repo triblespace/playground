@@ -233,8 +233,7 @@ pub(crate) fn run_llm_loop(
                     let mut importer =
                         JsonObjectImporter::<_, Blake3>::new(&mut import_blobs, None);
                     match importer.import_blob(raw_blob) {
-                        Ok(roots) => {
-                            let data = importer.data().clone();
+                        Ok(fragment) => {
                             let metadata = importer
                                 .metadata()
                                 .context("build response import metadata")?;
@@ -245,13 +244,13 @@ pub(crate) fn run_llm_loop(
                                 ws.put::<UnknownBlob, _>(blob.bytes.clone());
                             }
 
-                            for root in roots {
+                            for root in fragment.exports() {
                                 change += entity! { &result_id @
                                     openai_responses::response_json_root: root,
                                 };
                             }
 
-                            import_data = Some(data);
+                            import_data = Some(fragment.into_facts());
                             import_metadata = Some(metadata);
                         }
                         Err(err) => {

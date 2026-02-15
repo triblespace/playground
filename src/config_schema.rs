@@ -121,10 +121,10 @@ where
 {
     let mut metadata = describe(blobs)?;
 
-    metadata.union(<GenId as metadata::ConstMetadata>::describe(blobs)?);
-    metadata.union(<NsTAIInterval as metadata::ConstMetadata>::describe(blobs)?);
-    metadata.union(<U256BE as metadata::ConstMetadata>::describe(blobs)?);
-    metadata.union(<Handle<Blake3, LongString> as metadata::ConstMetadata>::describe(blobs)?);
+    metadata.union(<GenId as metadata::ConstDescribe>::describe(blobs)?);
+    metadata.union(<NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?);
+    metadata.union(<U256BE as metadata::ConstDescribe>::describe(blobs)?);
+    metadata.union(<Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?);
 
     metadata.union(describe_attribute(blobs, &playground_config::kind)?);
     metadata.union(describe_attribute(blobs, &playground_config::updated_at)?);
@@ -195,9 +195,8 @@ where
     B: BlobStore<Blake3>,
     S: ValueSchema,
 {
-    let mut tribles = metadata::Metadata::describe(attribute, blobs)?;
-
-    let attribute_id = metadata::Metadata::id(attribute);
+    let mut tribles = metadata::Describe::describe(attribute, blobs)?.into_facts();
+    let attribute_id = attribute.id();
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
         metadata::tag: playground_config::tag_attribute,
     };

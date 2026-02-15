@@ -138,11 +138,11 @@ where
 {
     let mut metadata = describe(blobs)?;
 
-    metadata.union(<GenId as metadata::ConstMetadata>::describe(blobs)?);
-    metadata.union(<NsTAIInterval as metadata::ConstMetadata>::describe(blobs)?);
-    metadata.union(<U256BE as metadata::ConstMetadata>::describe(blobs)?);
-    metadata.union(<ShortString as metadata::ConstMetadata>::describe(blobs)?);
-    metadata.union(<Handle<Blake3, LongString> as metadata::ConstMetadata>::describe(blobs)?);
+    metadata.union(<GenId as metadata::ConstDescribe>::describe(blobs)?);
+    metadata.union(<NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?);
+    metadata.union(<U256BE as metadata::ConstDescribe>::describe(blobs)?);
+    metadata.union(<ShortString as metadata::ConstDescribe>::describe(blobs)?);
+    metadata.union(<Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?);
 
     metadata.union(describe_attribute(blobs, &openai_responses::kind)?);
     metadata.union(describe_attribute(blobs, &openai_responses::about_request)?);
@@ -179,9 +179,8 @@ where
     B: BlobStore<Blake3>,
     S: ValueSchema,
 {
-    let mut tribles = metadata::Metadata::describe(attribute, blobs)?;
-
-    let attribute_id = metadata::Metadata::id(attribute);
+    let mut tribles = metadata::Describe::describe(attribute, blobs)?.into_facts();
+    let attribute_id = attribute.id();
     tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
         metadata::tag: openai_responses::tag_attribute,
     };
