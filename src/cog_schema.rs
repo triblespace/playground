@@ -101,17 +101,14 @@ where
 {
     let mut metadata = describe(blobs)?;
 
-    metadata.union(<GenId as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?);
+    metadata += <GenId as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
 
-    metadata.union(describe_attribute(blobs, &playground_cog::kind)?);
-    metadata.union(describe_attribute(blobs, &playground_cog::prompt)?);
-    metadata.union(describe_attribute(blobs, &playground_cog::created_at)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_cog::about_exec_result,
-    )?);
+    metadata += describe_attribute(blobs, &playground_cog::kind)?;
+    metadata += describe_attribute(blobs, &playground_cog::prompt)?;
+    metadata += describe_attribute(blobs, &playground_cog::created_at)?;
+    metadata += describe_attribute(blobs, &playground_cog::about_exec_result)?;
 
     Ok(metadata)
 }

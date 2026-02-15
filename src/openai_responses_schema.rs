@@ -138,35 +138,29 @@ where
 {
     let mut metadata = describe(blobs)?;
 
-    metadata.union(<GenId as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<U256BE as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<ShortString as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?);
+    metadata += <GenId as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <ShortString as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
 
-    metadata.union(describe_attribute(blobs, &openai_responses::kind)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::about_request)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::about_thought)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::model)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::prompt)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &openai_responses::previous_response_id,
-    )?);
-    metadata.union(describe_attribute(blobs, &openai_responses::requested_at)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::request_raw)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::worker)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::started_at)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::attempt)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::finished_at)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::output_text)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::response_id)?);
-    metadata.union(describe_attribute(blobs, &openai_responses::response_raw)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &openai_responses::response_json_root,
-    )?);
-    metadata.union(describe_attribute(blobs, &openai_responses::error)?);
+    metadata += describe_attribute(blobs, &openai_responses::kind)?;
+    metadata += describe_attribute(blobs, &openai_responses::about_request)?;
+    metadata += describe_attribute(blobs, &openai_responses::about_thought)?;
+    metadata += describe_attribute(blobs, &openai_responses::model)?;
+    metadata += describe_attribute(blobs, &openai_responses::prompt)?;
+    metadata += describe_attribute(blobs, &openai_responses::previous_response_id)?;
+    metadata += describe_attribute(blobs, &openai_responses::requested_at)?;
+    metadata += describe_attribute(blobs, &openai_responses::request_raw)?;
+    metadata += describe_attribute(blobs, &openai_responses::worker)?;
+    metadata += describe_attribute(blobs, &openai_responses::started_at)?;
+    metadata += describe_attribute(blobs, &openai_responses::attempt)?;
+    metadata += describe_attribute(blobs, &openai_responses::finished_at)?;
+    metadata += describe_attribute(blobs, &openai_responses::output_text)?;
+    metadata += describe_attribute(blobs, &openai_responses::response_id)?;
+    metadata += describe_attribute(blobs, &openai_responses::response_raw)?;
+    metadata += describe_attribute(blobs, &openai_responses::response_json_root)?;
+    metadata += describe_attribute(blobs, &openai_responses::error)?;
 
     Ok(metadata)
 }

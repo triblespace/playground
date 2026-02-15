@@ -1309,7 +1309,7 @@ fn load_branch_snapshot(
                 Ok(delta) => {
                     let mut data = prev_snapshot.data;
                     if !delta.is_empty() {
-                        data.union(delta);
+                        data += delta;
                     }
                     data
                 }
@@ -1333,7 +1333,7 @@ fn union_branches(branch_data: &HashMap<Id, BranchSnapshot>, ids: &[Id]) -> Trib
     let mut union = TribleSet::new();
     for id in ids {
         if let Some(snapshot) = branch_data.get(id) {
-            union.union(snapshot.data.clone());
+            union += snapshot.data.clone();
         }
     }
     union

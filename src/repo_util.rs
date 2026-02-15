@@ -63,7 +63,7 @@ pub(crate) fn refresh_cached_checkout(
         .checkout(*cached_head..head)
         .context("checkout from cached head to current head")?;
     let mut data = cached_catalog.clone();
-    data.union(delta.clone());
+    data += delta.clone();
 
     *cached_catalog = data;
     *cached_head = head;

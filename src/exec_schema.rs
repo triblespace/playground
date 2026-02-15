@@ -142,38 +142,35 @@ where
 {
     let mut metadata = describe(blobs)?;
 
-    metadata.union(<GenId as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<U256BE as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<Handle<Blake3, UnknownBlob> as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<UnknownBlob as metadata::ConstDescribe>::describe(blobs)?);
+    metadata += <GenId as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <Handle<Blake3, UnknownBlob> as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <UnknownBlob as metadata::ConstDescribe>::describe(blobs)?;
 
-    metadata.union(describe_attribute(blobs, &playground_exec::kind)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::command_text)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::cwd)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::stdin)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::stdin_text)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::timeout_ms)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_exec::sandbox_profile,
-    )?);
-    metadata.union(describe_attribute(blobs, &playground_exec::requested_at)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::about_request)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::about_message)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::about_thought)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::worker)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::started_at)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::attempt)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::finished_at)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::exit_code)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::stdout)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::stderr)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::stdout_text)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::stderr_text)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::duration_ms)?);
-    metadata.union(describe_attribute(blobs, &playground_exec::error)?);
+    metadata += describe_attribute(blobs, &playground_exec::kind)?;
+    metadata += describe_attribute(blobs, &playground_exec::command_text)?;
+    metadata += describe_attribute(blobs, &playground_exec::cwd)?;
+    metadata += describe_attribute(blobs, &playground_exec::stdin)?;
+    metadata += describe_attribute(blobs, &playground_exec::stdin_text)?;
+    metadata += describe_attribute(blobs, &playground_exec::timeout_ms)?;
+    metadata += describe_attribute(blobs, &playground_exec::sandbox_profile)?;
+    metadata += describe_attribute(blobs, &playground_exec::requested_at)?;
+    metadata += describe_attribute(blobs, &playground_exec::about_request)?;
+    metadata += describe_attribute(blobs, &playground_exec::about_message)?;
+    metadata += describe_attribute(blobs, &playground_exec::about_thought)?;
+    metadata += describe_attribute(blobs, &playground_exec::worker)?;
+    metadata += describe_attribute(blobs, &playground_exec::started_at)?;
+    metadata += describe_attribute(blobs, &playground_exec::attempt)?;
+    metadata += describe_attribute(blobs, &playground_exec::finished_at)?;
+    metadata += describe_attribute(blobs, &playground_exec::exit_code)?;
+    metadata += describe_attribute(blobs, &playground_exec::stdout)?;
+    metadata += describe_attribute(blobs, &playground_exec::stderr)?;
+    metadata += describe_attribute(blobs, &playground_exec::stdout_text)?;
+    metadata += describe_attribute(blobs, &playground_exec::stderr_text)?;
+    metadata += describe_attribute(blobs, &playground_exec::duration_ms)?;
+    metadata += describe_attribute(blobs, &playground_exec::error)?;
 
     Ok(metadata)
 }

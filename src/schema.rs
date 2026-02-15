@@ -23,14 +23,10 @@ where
     B: triblespace::prelude::BlobStore<triblespace::prelude::valueschemas::Blake3>,
 {
     let mut metadata = exec_schema::build_playground_exec_metadata(blobs)?;
-    metadata.union(config_schema::build_playground_config_metadata(blobs)?);
-    metadata.union(cog_schema::build_playground_cog_metadata(blobs)?);
-    metadata.union(openai_responses_schema::build_openai_responses_metadata(
-        blobs,
-    )?);
-    metadata.union(workspace_schema::build_playground_workspace_metadata(
-        blobs,
-    )?);
+    metadata += config_schema::build_playground_config_metadata(blobs)?;
+    metadata += cog_schema::build_playground_cog_metadata(blobs)?;
+    metadata += openai_responses_schema::build_openai_responses_metadata(blobs)?;
+    metadata += workspace_schema::build_playground_workspace_metadata(blobs)?;
     Ok(metadata)
 }
 #[path = "config_schema.rs"]

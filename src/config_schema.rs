@@ -121,68 +121,35 @@ where
 {
     let mut metadata = describe(blobs)?;
 
-    metadata.union(<GenId as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<U256BE as metadata::ConstDescribe>::describe(blobs)?);
-    metadata.union(<Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?);
+    metadata += <GenId as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
+    metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
 
-    metadata.union(describe_attribute(blobs, &playground_config::kind)?);
-    metadata.union(describe_attribute(blobs, &playground_config::updated_at)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::system_prompt,
-    )?);
-    metadata.union(describe_attribute(blobs, &playground_config::branch)?);
-    metadata.union(describe_attribute(blobs, &playground_config::branch_id)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::compass_branch_id,
-    )?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::exec_branch_id,
-    )?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::local_messages_branch_id,
-    )?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::relations_branch_id,
-    )?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::teams_branch_id,
-    )?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::workspace_branch_id,
-    )?);
-    metadata.union(describe_attribute(blobs, &playground_config::author)?);
-    metadata.union(describe_attribute(blobs, &playground_config::author_role)?);
-    metadata.union(describe_attribute(blobs, &playground_config::persona_id)?);
-    metadata.union(describe_attribute(blobs, &playground_config::poll_ms)?);
-    metadata.union(describe_attribute(blobs, &playground_config::llm_model)?);
-    metadata.union(describe_attribute(blobs, &playground_config::llm_base_url)?);
-    metadata.union(describe_attribute(blobs, &playground_config::llm_api_key)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::tavily_api_key,
-    )?);
-    metadata.union(describe_attribute(blobs, &playground_config::exa_api_key)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::llm_reasoning_effort,
-    )?);
-    metadata.union(describe_attribute(blobs, &playground_config::llm_stream)?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::exec_default_cwd,
-    )?);
-    metadata.union(describe_attribute(
-        blobs,
-        &playground_config::exec_sandbox_profile,
-    )?);
+    metadata += describe_attribute(blobs, &playground_config::kind)?;
+    metadata += describe_attribute(blobs, &playground_config::updated_at)?;
+    metadata += describe_attribute(blobs, &playground_config::system_prompt)?;
+    metadata += describe_attribute(blobs, &playground_config::branch)?;
+    metadata += describe_attribute(blobs, &playground_config::branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::compass_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::exec_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::local_messages_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::relations_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::teams_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::workspace_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::author)?;
+    metadata += describe_attribute(blobs, &playground_config::author_role)?;
+    metadata += describe_attribute(blobs, &playground_config::persona_id)?;
+    metadata += describe_attribute(blobs, &playground_config::poll_ms)?;
+    metadata += describe_attribute(blobs, &playground_config::llm_model)?;
+    metadata += describe_attribute(blobs, &playground_config::llm_base_url)?;
+    metadata += describe_attribute(blobs, &playground_config::llm_api_key)?;
+    metadata += describe_attribute(blobs, &playground_config::tavily_api_key)?;
+    metadata += describe_attribute(blobs, &playground_config::exa_api_key)?;
+    metadata += describe_attribute(blobs, &playground_config::llm_reasoning_effort)?;
+    metadata += describe_attribute(blobs, &playground_config::llm_stream)?;
+    metadata += describe_attribute(blobs, &playground_config::exec_default_cwd)?;
+    metadata += describe_attribute(blobs, &playground_config::exec_sandbox_profile)?;
 
     Ok(metadata)
 }
