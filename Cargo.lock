@@ -4955,9 +4955,9 @@ dependencies = [
 
 [[package]]
 name = "triblespace"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704c3f052516ca73f782dba39c3e369b96395bd1b8f8af8e14bdb257cf58e817"
+checksum = "03c2f92c88d643812d22c0e958cc019430e69a27228cd57a49299635b4885e3d"
 dependencies = [
  "triblespace-core",
  "triblespace-macros",
@@ -4965,9 +4965,9 @@ dependencies = [
 
 [[package]]
 name = "triblespace-core"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a0846160bee0c56f6ec436164ce98e5ca35f41e2fa726c74ad5f5022b9ec871"
+checksum = "6579537ccbfd7af2059f83adc2dca050b88ca6f77aa659dd0964e36e6e26978e"
 dependencies = [
  "anybytes",
  "arbitrary",
@@ -5016,9 +5016,9 @@ dependencies = [
 
 [[package]]
 name = "triblespace-core-macros"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ac54791eddeffba10331f74703c4fc4435cf334d7c34251b1b446fbd6e11b08"
+checksum = "4e5bcc214cc9ae21ea8980f23e070f8066e6a9da70bcbf388697866744968f6b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5028,9 +5028,9 @@ dependencies = [
 
 [[package]]
 name = "triblespace-macros"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed3a652dc199a709548ba2e330e2488698f173ef92a8c5d47773c3f46bf85c07"
+checksum = "13225a329a401d09bc95bc48c676c868e5b68c64e253dc7c029a3f769d437e12"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -5044,9 +5044,9 @@ dependencies = [
 
 [[package]]
 name = "triblespace-macros-common"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82bd11305c97a7955cf3fe82765b831e62af933f8819fb347b525d74740569a4"
+checksum = "692bf480334f563d9af616d32c3e4cffc34be79b7407105737835ceb3ba276a3"
 dependencies = [
  "proc-macro2",
  "quote",
