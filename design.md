@@ -207,8 +207,8 @@ Suggested layout:
     directory via virtiofs for faster iteration).
 - Guest (Linux VM):
   - Runs the executor worker (single-writer per workspace).
-  - Restores the workspace from the latest pile snapshot when the workspace root
-    is empty (`PLAYGROUND_WORKSPACE_BOOTSTRAP=1`).
+  - Bootstraps `/workspace` by merging the latest snapshot lineage (missing
+    paths are created; conflicting existing paths are preserved).
   - Executes `playground_exec::command_request` against the restored workspace.
   - Writes `playground_exec::command_result` back into the shared pile.
 
@@ -219,9 +219,9 @@ Shared paths (example):
 - VM: `/workspace`
 - VM: `/pile`
 
-The executor only needs access to the pile plus a local workspace root. When
-using snapshots, the workspace contents live entirely inside the VM and can be
-seeded with `./playground/faculties/workspace.rs capture <local> <vm>` on the host. Anything else (network,
+The executor only needs access to the pile plus `/workspace` inside the VM.
+When using snapshots, the workspace contents live entirely inside the VM and
+can be seeded with `./playground/faculties/workspace.rs capture <local> <vm>` on the host. Anything else (network,
 system binaries, secrets) can be mediated by the VM config or a dedicated
 sandbox profile.
 

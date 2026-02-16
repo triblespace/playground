@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +25,7 @@ use crate::repo_util::{
 };
 use crate::schema::playground_exec;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
-use crate::workspace_snapshot::{DEFAULT_WORKSPACE_BRANCH, restore_snapshot};
+use crate::workspace_snapshot::{DEFAULT_WORKSPACE_BRANCH, restore_snapshot_merge};
 
 #[derive(Debug, Clone)]
 struct CommandRequest {
@@ -254,60 +254,34 @@ fn execute_command(command: &str, cwd: Option<&str>, stdin: Option<Bytes>) -> Ex
 }
 
 fn maybe_bootstrap_workspace(repo: &mut Repository<Pile>, config: &Config) -> Result<()> {
-    if !env_flag("PLAYGROUND_WORKSPACE_BOOTSTRAP") {
-        return Ok(());
-    }
-
-    let root = env_path("PLAYGROUND_WORKSPACE_ROOT").unwrap_or_else(|| PathBuf::from("/workspace"));
+    let root = PathBuf::from("/workspace");
     let branch_id = config.workspace_branch_id.ok_or_else(|| {
         anyhow!(
             "config missing workspace_branch_id; run `playground config set workspace-branch-id <ID>`"
         )
     })?;
 
-    if root.exists() {
-        if !dir_is_empty(&root).context("check workspace dir")? {
-            return Ok(());
-        }
-    } else {
+    if !root.exists() {
         fs::create_dir_all(&root)
             .with_context(|| format!("create workspace root {}", root.display()))?;
     }
 
     ensure_branch(repo, branch_id, DEFAULT_WORKSPACE_BRANCH)
         .with_context(|| format!("ensure workspace branch {branch_id:x}"))?;
-    let _ = restore_snapshot(repo, branch_id, None, &root, false)?;
-    Ok(())
-}
-
-fn dir_is_empty(path: &Path) -> Result<bool> {
-    let mut entries = fs::read_dir(path).with_context(|| format!("read dir {}", path.display()))?;
-    Ok(entries.next().is_none())
-}
-
-fn env_flag(key: &str) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|val| {
-            let val = val.trim().to_ascii_lowercase();
-            std::matches!(val.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false)
-}
-
-fn env_string(key: &str) -> Option<String> {
-    std::env::var(key).ok().and_then(|val| {
-        let trimmed = val.trim().to_string();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
+    if let Some(report) = restore_snapshot_merge(repo, branch_id, None, &root)? {
+        if report.created_entries > 0 || report.conflicting_entries > 0 {
+            eprintln!(
+                "workspace bootstrap: snapshot {snapshot:x}, lineage={}, merged={}, created={}, unchanged={}, conflicts={}",
+                report.lineage_len,
+                report.merged_entries,
+                report.created_entries,
+                report.unchanged_entries,
+                report.conflicting_entries,
+                snapshot = report.snapshot_id
+            );
         }
-    })
-}
-
-fn env_path(key: &str) -> Option<PathBuf> {
-    env_string(key).map(PathBuf::from)
+    }
+    Ok(())
 }
 
 impl CommandRequestIndex {

@@ -102,8 +102,11 @@ Restore the latest snapshot into a target directory:
 ./playground/faculties/workspace.rs --pile /path/to/pile/self.pile restore /tmp/workspace
 ```
 
-Snapshots are used by the exec worker to bootstrap a workspace inside the VM when
-`PLAYGROUND_WORKSPACE_BOOTSTRAP=1` and the target directory is empty.
+Snapshots are used by the exec worker to bootstrap `/workspace` on startup.
+Bootstrap now performs a non-destructive merge of the latest snapshot lineage:
+- missing files/dirs/symlinks are created,
+- existing matching entries are kept as-is,
+- conflicting existing paths are left untouched.
 
 ## Running With a VM (exec worker in VM)
 
