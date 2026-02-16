@@ -6,8 +6,8 @@ use rand::rngs::OsRng;
 use triblespace::core::blob::schemas::simplearchive::SimpleArchive;
 use triblespace::core::id::ExclusiveId;
 use triblespace::core::metadata;
-use triblespace::core::repo::pile::Pile;
-use triblespace::core::repo::{Repository, Workspace};
+use triblespace::core::repo::pile::{Pile, ReadError};
+use triblespace::core::repo::{PullError, Repository, Workspace};
 use triblespace::prelude::blobschemas::LongString;
 use triblespace::prelude::valueschemas::{Blake3, Handle};
 use triblespace::prelude::*;
@@ -27,9 +27,7 @@ pub(crate) fn init_repo(config: &Config) -> Result<(Repository<Pile>, Id)> {
     let branch_id = config.branch_id.ok_or_else(|| {
         anyhow!("config is missing branch_id; run `playground config set branch-id <ID>`")
     })?;
-    repo.pull(branch_id)
-        .map(|_| ())
-        .map_err(|err| anyhow!("pull branch {branch_id:x}: {err:?}"))?;
+    pull_workspace(&mut repo, branch_id, &format!("pull branch {branch_id:x}"))?;
 
     Ok((repo, branch_id))
 }
@@ -44,9 +42,21 @@ pub(crate) fn current_branch_head(
     repo: &mut Repository<Pile>,
     branch_id: Id,
 ) -> Result<Option<CommitHandle>> {
-    repo.storage_mut()
-        .head(branch_id)
-        .map_err(|err| anyhow!("read branch head {branch_id:x}: {err:?}"))
+    match repo.storage_mut().head(branch_id) {
+        Ok(head) => Ok(head),
+        Err(ReadError::CorruptPile { valid_length }) => {
+            eprintln!(
+                "warning: read branch head {branch_id:x}: corrupt pile tail (valid_length={valid_length}), restoring and retrying"
+            );
+            repo.storage_mut()
+                .restore()
+                .map_err(|err| anyhow!("restore pile after head corruption: {err:?}"))?;
+            repo.storage_mut()
+                .head(branch_id)
+                .map_err(|err| anyhow!("read branch head {branch_id:x} after restore: {err:?}"))
+        }
+        Err(err) => Err(anyhow!("read branch head {branch_id:x}: {err:?}")),
+    }
 }
 
 pub(crate) fn refresh_cached_checkout(
@@ -92,9 +102,7 @@ pub(crate) fn ensure_worker_name(
     worker_id: Id,
     label: &str,
 ) -> Result<()> {
-    let mut ws = repo
-        .pull(branch_id)
-        .map_err(|err| anyhow!("pull workspace for worker name: {err:?}"))?;
+    let mut ws = pull_workspace(repo, branch_id, "pull workspace for worker name")?;
     let catalog = ws.checkout(..).context("checkout workspace")?;
 
     let exists = find!(
@@ -121,4 +129,37 @@ pub(crate) fn ensure_worker_name(
     ws.commit(change, None, Some("worker name"));
     push_workspace(repo, &mut ws).context("push worker name")?;
     Ok(())
+}
+
+pub(crate) fn pull_workspace(
+    repo: &mut Repository<Pile>,
+    branch_id: Id,
+    context: &str,
+) -> Result<Workspace<Pile>> {
+    match repo.pull(branch_id) {
+        Ok(ws) => Ok(ws),
+        Err(err) => {
+            let Some(valid_length) = pull_corrupt_valid_length(&err) else {
+                return Err(anyhow!("{context}: {err:?}"));
+            };
+            eprintln!(
+                "warning: {context}: corrupt pile tail (valid_length={valid_length}), restoring and retrying"
+            );
+            repo.storage_mut()
+                .restore()
+                .map_err(|restore_err| anyhow!("{context}: restore pile: {restore_err:?}"))?;
+            repo.pull(branch_id)
+                .map_err(|retry_err| anyhow!("{context} after restore: {retry_err:?}"))
+        }
+    }
+}
+
+fn pull_corrupt_valid_length<B: std::error::Error>(
+    err: &PullError<ReadError, ReadError, B>,
+) -> Option<usize> {
+    match err {
+        PullError::BlobReader(ReadError::CorruptPile { valid_length })
+        | PullError::BranchStorage(ReadError::CorruptPile { valid_length }) => Some(*valid_length),
+        _ => None,
+    }
 }

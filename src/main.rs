@@ -32,7 +32,8 @@ mod workspace_snapshot;
 
 use config::Config;
 use repo_util::{
-    close_repo, current_branch_head, init_repo, load_text, push_workspace, refresh_cached_checkout,
+    close_repo, current_branch_head, init_repo, load_text, pull_workspace, push_workspace,
+    refresh_cached_checkout,
 };
 use schema::{openai_responses, playground_cog, playground_exec};
 use time_util::{epoch_interval, interval_key, now_epoch};
@@ -751,7 +752,13 @@ fn run_loop(config: Config) -> Result<()> {
             let llm_result =
                 wait_for_llm_result(&mut repo, branch_id, request_info.id, config.poll_ms)?;
             if let Some(error) = llm_result.error {
-                return Err(anyhow!("llm request failed: {error}"));
+                eprintln!(
+                    "warning: llm request {request_id:x} failed: {error}",
+                    request_id = request_info.id
+                );
+                request_info = ensure_llm_request(&mut repo, branch_id, &config)?;
+                sleep(Duration::from_millis(config.poll_ms));
+                continue;
             }
 
             let command = llm_result.output_text.trim();
@@ -862,9 +869,7 @@ fn ensure_llm_request(
             continue;
         }
 
-        let mut ws = repo
-            .pull(branch_id)
-            .map_err(|err| anyhow!("pull workspace for llm request: {err:?}"))?;
+        let mut ws = pull_workspace(repo, branch_id, "pull workspace for llm request")?;
         let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
         core_index.apply_delta(&cached_catalog, &delta);
 
@@ -921,9 +926,7 @@ fn create_thought_and_request(
     about_exec_result: Option<Id>,
     config: &Config,
 ) -> Result<LlmRequestInfo> {
-    let mut ws = repo
-        .pull(branch_id)
-        .map_err(|err| anyhow!("pull workspace for thought: {err:?}"))?;
+    let mut ws = pull_workspace(repo, branch_id, "pull workspace for thought")?;
     let catalog = ws.checkout(..).context("checkout workspace")?;
     let mut core_index = CoreIndex::default();
     core_index.apply_delta(&catalog, &catalog);
@@ -1050,9 +1053,7 @@ fn wait_for_llm_result(
             continue;
         }
 
-        let mut ws = repo
-            .pull(branch_id)
-            .map_err(|err| anyhow!("pull workspace for llm result: {err:?}"))?;
+        let mut ws = pull_workspace(repo, branch_id, "pull workspace for llm result")?;
         let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
         core_index.apply_delta(&cached_catalog, &delta);
         if !delta_has_llm_result(&cached_catalog, &delta, request_id) {
@@ -1572,9 +1573,7 @@ fn ensure_command_request(
     default_cwd: Option<&str>,
     sandbox_profile: Option<Id>,
 ) -> Result<Id> {
-    let mut ws = repo
-        .pull(branch_id)
-        .map_err(|err| anyhow!("pull workspace for command request: {err:?}"))?;
+    let mut ws = pull_workspace(repo, branch_id, "pull workspace for command request")?;
     let mut cached_head = None;
     let mut cached_catalog = TribleSet::new();
     let mut core_index = CoreIndex::default();
@@ -1627,9 +1626,7 @@ fn wait_for_command_result(
             continue;
         }
 
-        let mut ws = repo
-            .pull(branch_id)
-            .map_err(|err| anyhow!("pull workspace for command result: {err:?}"))?;
+        let mut ws = pull_workspace(repo, branch_id, "pull workspace for command result")?;
         let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
         core_index.apply_delta(&cached_catalog, &delta);
         if !delta_has_command_result(&cached_catalog, &delta, request_id) {

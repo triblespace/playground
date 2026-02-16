@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
 use triblespace::core::repo::pile::Pile;
@@ -20,8 +20,8 @@ use triblespace::prelude::*;
 use crate::branch_util::ensure_branch_id;
 use crate::config::Config;
 use crate::repo_util::{
-    close_repo, current_branch_head, ensure_worker_name, init_repo, load_text, push_workspace,
-    refresh_cached_checkout, seed_metadata,
+    close_repo, current_branch_head, ensure_worker_name, init_repo, load_text, pull_workspace,
+    push_workspace, refresh_cached_checkout, seed_metadata,
 };
 use crate::schema::playground_exec;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
@@ -88,9 +88,7 @@ pub(crate) fn run_exec_loop(
                 continue;
             }
 
-            let mut ws = repo
-                .pull(branch_id)
-                .map_err(|err| anyhow!("pull workspace: {err:?}"))?;
+            let mut ws = pull_workspace(&mut repo, branch_id, "pull workspace")?;
             let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
             request_index.apply_delta(&cached_catalog, &delta, worker_id);
             let Some(request) = request_index.next_pending() else {

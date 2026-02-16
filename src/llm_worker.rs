@@ -20,8 +20,8 @@ use triblespace::prelude::*;
 use crate::blob_refs::{PromptChunk, split_blob_refs, unknown_blob_handle_from_hex};
 use crate::config::Config;
 use crate::repo_util::{
-    close_repo, current_branch_head, ensure_worker_name, init_repo, load_text, push_workspace,
-    refresh_cached_checkout, seed_metadata,
+    close_repo, current_branch_head, ensure_worker_name, init_repo, load_text, pull_workspace,
+    push_workspace, refresh_cached_checkout, seed_metadata,
 };
 use crate::schema::openai_responses;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
@@ -56,8 +56,8 @@ struct ResponsesClient {
     stream: bool,
 }
 
-const SEND_MAX_ATTEMPTS: usize = 3;
-const SEND_RETRY_BASE_MS: u64 = 250;
+const SEND_MAX_ATTEMPTS: usize = 5;
+const SEND_RETRY_BASE_MS: u64 = 500;
 const MAX_INLINE_IMAGES_PER_PROMPT: usize = 4;
 const MAX_INLINE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
@@ -78,9 +78,14 @@ impl ResponsesClient {
             match self.send_payload_once(payload) {
                 Ok(result) => return Ok(result),
                 Err(err) => {
+                    eprintln!(
+                        "warning: llm send attempt {attempt}/{SEND_MAX_ATTEMPTS} to {} failed: {err:#}",
+                        self.base_url
+                    );
                     last_error = Some(err);
                     if attempt < SEND_MAX_ATTEMPTS {
-                        sleep(Duration::from_millis(SEND_RETRY_BASE_MS * attempt as u64));
+                        let backoff_ms = SEND_RETRY_BASE_MS * (1_u64 << (attempt - 1));
+                        sleep(Duration::from_millis(backoff_ms));
                     }
                 }
             }
@@ -149,9 +154,7 @@ pub(crate) fn run_llm_loop(
                 continue;
             }
 
-            let mut ws = repo
-                .pull(branch_id)
-                .map_err(|err| anyhow::anyhow!("pull workspace: {err:?}"))?;
+            let mut ws = pull_workspace(&mut repo, branch_id, "pull workspace")?;
             let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
             request_index.apply_delta(&cached_catalog, &delta, worker_id);
             let Some(request) = request_index.next_pending() else {
