@@ -31,6 +31,7 @@ use GORBIE::md;
 use GORBIE::themes::colorhash;
 use GORBIE::widgets::{Button, TextField};
 
+use crate::blob_refs::{PromptChunk, split_blob_refs};
 use crate::schema::openai_responses;
 use crate::schema::playground_config;
 use crate::schema::playground_exec;
@@ -2719,11 +2720,72 @@ fn render_teams_conversations(
                     format!("{chat_label} · {author} · {age}")
                 };
                 ui.small(meta);
-                ui.label(&row.content);
+                render_blob_aware_text(ui, row.content.as_str(), None, None);
                 ui.add_space(8.0);
             }
         });
     });
+}
+
+fn render_blob_aware_text(
+    ui: &mut egui::Ui,
+    text: &str,
+    text_color: Option<egui::Color32>,
+    max_width: Option<f32>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(max_width) = max_width {
+        ui.set_max_width(max_width);
+    }
+    ui.horizontal_wrapped(|ui| {
+        for chunk in split_blob_refs(text) {
+            match chunk {
+                PromptChunk::Text(text) => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let mut rich = egui::RichText::new(text);
+                    if let Some(color) = text_color {
+                        rich = rich.color(color);
+                    }
+                    ui.add(egui::Label::new(rich).wrap_mode(egui::TextWrapMode::Wrap));
+                }
+                PromptChunk::Blob(blob) => {
+                    render_blob_chip(ui, &blob, text_color);
+                }
+            }
+        }
+    });
+}
+
+fn render_blob_chip(
+    ui: &mut egui::Ui,
+    blob: &crate::blob_refs::BlobRef,
+    text_color: Option<egui::Color32>,
+) {
+    let mut label = format!("blob:{}", short_digest(blob.digest_hex.as_str()));
+    if let Some(mime) = blob.mime.as_deref() {
+        label.push(' ');
+        label.push_str(mime);
+    }
+    let fill = colorhash::ral_categorical(blob.digest_hex.as_bytes());
+    let chip_text = text_color.unwrap_or_else(|| colorhash::text_color_on(fill));
+    egui::Frame::NONE
+        .fill(fill)
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(label).small().color(chip_text));
+        });
+}
+
+fn short_digest(hex: &str) -> String {
+    if hex.len() <= 12 {
+        return hex.to_owned();
+    }
+    format!("{}…{}", &hex[..6], &hex[hex.len() - 4..])
 }
 
 fn send_local_message_from_ui(
@@ -3346,7 +3408,7 @@ fn render_timeline_row(ui: &mut egui::Ui, now_key: i128, row: &TimelineRow) {
             content,
         } => {
             ui.small(format!("{author} in {chat_label}"));
-            ui.add(egui::Label::new(content).wrap_mode(egui::TextWrapMode::Wrap));
+            render_blob_aware_text(ui, content, None, None);
         }
         TimelineEvent::LocalMessage {
             from_id,
@@ -3435,11 +3497,8 @@ fn render_timeline_local_message(
                 .corner_radius(egui::CornerRadius::same(6))
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
-                    ui.add_sized(
-                        [bubble_width, 0.0],
-                        egui::Label::new(egui::RichText::new(body).color(text_color))
-                            .wrap_mode(egui::TextWrapMode::Wrap),
-                    );
+                    ui.set_max_width(bubble_width);
+                    render_blob_aware_text(ui, body, Some(text_color), Some(bubble_width));
                 });
             ui.small(meta);
         });

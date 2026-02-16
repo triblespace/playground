@@ -11,6 +11,7 @@ diagnostics = ["dep:eframe", "dep:GORBIE"]
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 eframe = { version = "0.33", optional = true, features = ["persistence", "wgpu"] }

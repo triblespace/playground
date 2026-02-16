@@ -6,14 +6,18 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
 use reqwest::blocking::Client;
 use serde_json::Value as JsonValue;
+use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
 use triblespace::core::import::json::JsonObjectImporter;
+use triblespace::core::repo::Workspace;
 use triblespace::prelude::blobschemas::LongString;
 use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, ShortString};
 use triblespace::prelude::*;
 
+use crate::blob_refs::{PromptChunk, split_blob_refs, unknown_blob_handle_from_hex};
 use crate::config::Config;
 use crate::repo_util::{
     close_repo, current_branch_head, ensure_worker_name, init_repo, load_text, push_workspace,
@@ -54,6 +58,8 @@ struct ResponsesClient {
 
 const SEND_MAX_ATTEMPTS: usize = 3;
 const SEND_RETRY_BASE_MS: u64 = 250;
+const MAX_INLINE_IMAGES_PER_PROMPT: usize = 4;
+const MAX_INLINE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
 impl ResponsesClient {
     fn new(base_url: &str, api_key: Option<String>, stream: bool) -> Result<Self> {
@@ -168,9 +174,11 @@ pub(crate) fn run_llm_loop(
                 .transpose()
                 .context("load previous_response_id")?;
 
+            let input_content =
+                build_prompt_input_content(&mut ws, model.as_str(), prompt.as_str());
             let payload = build_payload(
                 &model,
-                &prompt,
+                input_content,
                 config.llm.stream,
                 config.llm.reasoning_effort.as_deref(),
                 previous_response_id.as_deref(),
@@ -400,7 +408,7 @@ impl LlmRequestIndex {
 
 fn build_payload(
     model: &str,
-    prompt: &str,
+    input_content: Vec<JsonValue>,
     stream: bool,
     reasoning_effort: Option<&str>,
     previous_response_id: Option<&str>,
@@ -413,7 +421,7 @@ fn build_payload(
     }
     let mut payload = serde_json::json!({
         "model": model,
-        "input": [{"role": "user", "content": prompt}],
+        "input": [{"role": "user", "content": input_content}],
         "reasoning": reasoning,
         "include": ["reasoning.encrypted_content"],
         "stream": stream,
@@ -423,6 +431,129 @@ fn build_payload(
         payload["previous_response_id"] = JsonValue::String(previous_response_id.to_string());
     }
     payload
+}
+
+fn build_prompt_input_content(
+    ws: &mut Workspace<Pile>,
+    model: &str,
+    prompt: &str,
+) -> Vec<JsonValue> {
+    let supports_images = model_supports_images(model);
+    let mut content = Vec::new();
+    let mut images_added = 0usize;
+
+    for chunk in split_blob_refs(prompt) {
+        match chunk {
+            PromptChunk::Text(text) => {
+                if !text.is_empty() {
+                    content.push(serde_json::json!({
+                        "type": "input_text",
+                        "text": text,
+                    }));
+                }
+            }
+            PromptChunk::Blob(blob_ref) => {
+                if !supports_images {
+                    content.push(serde_json::json!({
+                        "type": "input_text",
+                        "text": format_blob_fallback(blob_ref.raw.as_str(), "vision unavailable for current model"),
+                    }));
+                    continue;
+                }
+                if images_added >= MAX_INLINE_IMAGES_PER_PROMPT {
+                    content.push(serde_json::json!({
+                        "type": "input_text",
+                        "text": format_blob_fallback(blob_ref.raw.as_str(), "image limit reached"),
+                    }));
+                    continue;
+                }
+                match resolve_blob_image_data_url(
+                    ws,
+                    &blob_ref.digest_hex,
+                    blob_ref.mime.as_deref(),
+                ) {
+                    Ok(data_url) => {
+                        content.push(serde_json::json!({
+                            "type": "input_image",
+                            "image_url": data_url,
+                        }));
+                        images_added += 1;
+                    }
+                    Err(reason) => {
+                        content.push(serde_json::json!({
+                            "type": "input_text",
+                            "text": format_blob_fallback(blob_ref.raw.as_str(), reason.as_str()),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    if content.is_empty() {
+        content.push(serde_json::json!({
+            "type": "input_text",
+            "text": prompt,
+        }));
+    }
+    content
+}
+
+fn resolve_blob_image_data_url(
+    ws: &mut Workspace<Pile>,
+    digest_hex: &str,
+    mime_hint: Option<&str>,
+) -> std::result::Result<String, String> {
+    let handle =
+        unknown_blob_handle_from_hex(digest_hex).ok_or_else(|| "bad blob digest".to_string())?;
+    let bytes: Bytes = ws
+        .get(handle)
+        .map_err(|_| "blob not found in pile".to_string())?;
+    if bytes.len() > MAX_INLINE_IMAGE_BYTES {
+        return Err(format!(
+            "image too large ({} bytes > {} bytes)",
+            bytes.len(),
+            MAX_INLINE_IMAGE_BYTES
+        ));
+    }
+    let mime = match mime_hint.filter(|mime| mime.starts_with("image/")) {
+        Some(mime) => mime.to_owned(),
+        None => sniff_image_mime(bytes.as_ref())
+            .map(str::to_owned)
+            .ok_or_else(|| "blob is not a supported image format".to_string())?,
+    };
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes.as_ref());
+    Ok(format!("data:{mime};base64,{encoded}"))
+}
+
+fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 8 && bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+    if bytes.len() >= 3 && bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+fn model_supports_images(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    !(model.contains("codex")
+        || model.contains("gpt-oss")
+        || model.contains("llama")
+        || model.contains("qwen")
+        || model.contains("mistral")
+        || model.contains("deepseek"))
+}
+
+fn format_blob_fallback(raw_marker: &str, reason: &str) -> String {
+    format!("[blob omitted: {reason}] {raw_marker}")
 }
 
 fn parse_stream(response: reqwest::blocking::Response) -> Result<OpenAIResult> {

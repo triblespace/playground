@@ -17,6 +17,7 @@ use triblespace::prelude::blobschemas::LongString;
 use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, U256BE};
 use triblespace::prelude::*;
 
+mod blob_refs;
 mod branch_util;
 mod config;
 #[cfg(feature = "diagnostics")]
