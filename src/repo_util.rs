@@ -12,6 +12,7 @@ use triblespace::prelude::blobschemas::LongString;
 use triblespace::prelude::valueschemas::{Blake3, Handle};
 use triblespace::prelude::*;
 
+use crate::branch_util::ensure_branch;
 use crate::config::Config;
 pub(crate) use crate::repo_ops::push_workspace;
 use crate::schema::build_playground_metadata;
@@ -27,6 +28,8 @@ pub(crate) fn init_repo(config: &Config) -> Result<(Repository<Pile>, Id)> {
     let branch_id = config.branch_id.ok_or_else(|| {
         anyhow!("config is missing branch_id; run `playground config set branch-id <ID>`")
     })?;
+    ensure_branch(&mut repo, branch_id, config.branch.as_str())
+        .with_context(|| format!("materialize core branch {branch_id:x}"))?;
     pull_workspace(&mut repo, branch_id, &format!("pull branch {branch_id:x}"))?;
 
     Ok((repo, branch_id))

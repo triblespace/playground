@@ -140,6 +140,9 @@ enum ConfigField {
     RelationsBranchId,
     TeamsBranchId,
     WorkspaceBranchId,
+    ArchiveBranchId,
+    WebBranchId,
+    MediaBranchId,
     Author,
     AuthorRole,
     PersonaId,
@@ -310,6 +313,17 @@ fn apply_config_set(config: &mut Config, args: ConfigSetArgs) -> Result<()> {
         ConfigField::WorkspaceBranchId => {
             config.workspace_branch_id =
                 parse_optional_hex_id(Some(args.value.as_str()), "workspace_branch_id")?;
+        }
+        ConfigField::ArchiveBranchId => {
+            config.archive_branch_id =
+                parse_optional_hex_id(Some(args.value.as_str()), "archive_branch_id")?;
+        }
+        ConfigField::WebBranchId => {
+            config.web_branch_id = parse_optional_hex_id(Some(args.value.as_str()), "web_branch_id")?;
+        }
+        ConfigField::MediaBranchId => {
+            config.media_branch_id =
+                parse_optional_hex_id(Some(args.value.as_str()), "media_branch_id")?;
         }
         ConfigField::Author => {
             config.author = load_value_or_file(args.value.as_str(), "author")?;
@@ -680,6 +694,27 @@ fn print_config(config: &Config, show_secrets: bool) {
         "workspace_branch_id = {}",
         config
             .workspace_branch_id
+            .map(|id| format!("\"{id:x}\""))
+            .unwrap_or_else(|| "null".to_string())
+    );
+    println!(
+        "archive_branch_id = {}",
+        config
+            .archive_branch_id
+            .map(|id| format!("\"{id:x}\""))
+            .unwrap_or_else(|| "null".to_string())
+    );
+    println!(
+        "web_branch_id = {}",
+        config
+            .web_branch_id
+            .map(|id| format!("\"{id:x}\""))
+            .unwrap_or_else(|| "null".to_string())
+    );
+    println!(
+        "media_branch_id = {}",
+        config
+            .media_branch_id
             .map(|id| format!("\"{id:x}\""))
             .unwrap_or_else(|| "null".to_string())
     );

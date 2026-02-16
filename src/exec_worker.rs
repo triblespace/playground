@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
 use triblespace::core::repo::pile::Pile;
@@ -17,7 +17,7 @@ use triblespace::prelude::blobschemas::LongString;
 use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, U256BE};
 use triblespace::prelude::*;
 
-use crate::branch_util::ensure_branch_id;
+use crate::branch_util::ensure_branch;
 use crate::config::Config;
 use crate::repo_util::{
     close_repo, current_branch_head, ensure_worker_name, init_repo, load_text, pull_workspace,
@@ -72,7 +72,7 @@ pub(crate) fn run_exec_loop(
         seed_metadata(&mut repo)?;
         let label = format!("exec-{}", id_prefix(worker_id));
         ensure_worker_name(&mut repo, branch_id, worker_id, &label)?;
-        maybe_bootstrap_workspace(&mut repo)?;
+        maybe_bootstrap_workspace(&mut repo, &config)?;
         let mut cached_head = None;
         let mut cached_catalog = TribleSet::new();
         let mut request_index = CommandRequestIndex::default();
@@ -253,14 +253,17 @@ fn execute_command(command: &str, cwd: Option<&str>, stdin: Option<Bytes>) -> Ex
     }
 }
 
-fn maybe_bootstrap_workspace(repo: &mut Repository<Pile>) -> Result<()> {
+fn maybe_bootstrap_workspace(repo: &mut Repository<Pile>, config: &Config) -> Result<()> {
     if !env_flag("PLAYGROUND_WORKSPACE_BOOTSTRAP") {
         return Ok(());
     }
 
     let root = env_path("PLAYGROUND_WORKSPACE_ROOT").unwrap_or_else(|| PathBuf::from("/workspace"));
-    let branch = env_string("PLAYGROUND_WORKSPACE_BRANCH")
-        .unwrap_or_else(|| DEFAULT_WORKSPACE_BRANCH.to_string());
+    let branch_id = config.workspace_branch_id.ok_or_else(|| {
+        anyhow!(
+            "config missing workspace_branch_id; run `playground config set workspace-branch-id <ID>`"
+        )
+    })?;
 
     if root.exists() {
         if !dir_is_empty(&root).context("check workspace dir")? {
@@ -271,8 +274,8 @@ fn maybe_bootstrap_workspace(repo: &mut Repository<Pile>) -> Result<()> {
             .with_context(|| format!("create workspace root {}", root.display()))?;
     }
 
-    let branch_id = ensure_branch_id(repo, branch.as_str())
-        .with_context(|| format!("ensure workspace branch {branch}"))?;
+    ensure_branch(repo, branch_id, DEFAULT_WORKSPACE_BRANCH)
+        .with_context(|| format!("ensure workspace branch {branch_id:x}"))?;
     let _ = restore_snapshot(repo, branch_id, None, &root, false)?;
     Ok(())
 }

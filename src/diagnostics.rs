@@ -13,7 +13,7 @@ use triblespace::core::blob::schemas::simplearchive::SimpleArchive;
 use triblespace::core::id::{ExclusiveId, Id};
 use triblespace::core::metadata;
 use triblespace::core::repo::pile::Pile;
-use triblespace::core::repo::{Repository, Workspace};
+use triblespace::core::repo::{BlobStoreMeta, Repository, Workspace};
 use triblespace::core::trible::TribleSet;
 use triblespace::core::value::Value;
 use triblespace::core::value::schemas::hash::{Blake3, Handle};
@@ -242,6 +242,7 @@ impl Default for DashboardState {
 struct BranchEntry {
     id: Id,
     name: Option<String>,
+    head_timestamp: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -419,6 +420,9 @@ struct AgentConfigRow {
     relations_branch_id: Option<Id>,
     teams_branch_id: Option<Id>,
     workspace_branch_id: Option<Id>,
+    archive_branch_id: Option<Id>,
+    web_branch_id: Option<Id>,
+    media_branch_id: Option<Id>,
     author: Option<String>,
     author_role: Option<String>,
     poll_ms: Option<u64>,
@@ -931,7 +935,7 @@ fn load_snapshot(
     workspace_selected_snapshot: Option<Id>,
 ) -> Result<DashboardSnapshot, String> {
     let pile_path = PathBuf::from(&config.pile_path);
-    let mut branches = list_branches(repo.storage_mut())?;
+    let branches = list_branches(repo.storage_mut())?;
     let mut previous_map = previous
         .as_ref()
         .filter(|snapshot| snapshot.pile_path == pile_path)
@@ -945,16 +949,6 @@ fn load_snapshot(
     let relations_refs = parse_branch_list(&config.relations_branches);
     let teams_refs = parse_branch_list(&config.teams_branches);
     let workspace_refs = parse_branch_list(&config.workspace_branches);
-
-    let mut ensure_refs = Vec::new();
-    ensure_refs.extend(config_refs.iter().cloned());
-    ensure_refs.extend(exec_refs.iter().cloned());
-    ensure_refs.extend(compass_refs.iter().cloned());
-    ensure_refs.extend(local_refs.iter().cloned());
-    ensure_refs.extend(relations_refs.iter().cloned());
-    ensure_refs.extend(teams_refs.iter().cloned());
-    ensure_refs.extend(workspace_refs.iter().cloned());
-    ensure_named_branches(repo, &mut branches, &ensure_refs)?;
 
     let branch_lookup = BranchLookup::new(&branches);
     let config_res = resolve_branch_ids(&branch_lookup, &config_refs);
@@ -1154,38 +1148,47 @@ fn list_branches(pile: &mut Pile<Blake3>) -> Result<Vec<BranchEntry>, String> {
     let mut branches = Vec::new();
     for branch in iter {
         let branch_id = branch.map_err(|err| err.to_string())?;
-        let name = match pile.head(branch_id).map_err(|err| err.to_string())? {
-            None => Some("<unnamed>".to_string()),
-            Some(meta_handle) => match reader.get::<TribleSet, _>(meta_handle) {
-                Ok(metadata_set) => {
-                    let mut names = find!(
-                        (handle: Value<Handle<Blake3, LongString>>),
-                        pattern!(&metadata_set, [{ metadata::name: ?handle }])
-                    )
-                    .into_iter();
-                    match (names.next(), names.next()) {
-                        (Some((handle,)), None) => reader
-                            .get::<View<str>, _>(handle)
-                            .ok()
-                            .map(|view| view.as_ref().to_string())
-                            .or_else(|| {
-                                Some(format!(
-                                    "<name blob missing ({})>",
-                                    longstring_handle_prefix(handle)
-                                ))
-                            }),
-                        _ => Some("<unnamed>".to_string()),
+        let (name, head_timestamp) = match pile.head(branch_id).map_err(|err| err.to_string())? {
+            None => (Some("<unnamed>".to_string()), None),
+            Some(meta_handle) => {
+                let timestamp = reader
+                    .metadata(meta_handle)
+                    .ok()
+                    .flatten()
+                    .map(|metadata| metadata.timestamp);
+                let name = match reader.get::<TribleSet, _>(meta_handle) {
+                    Ok(metadata_set) => {
+                        let mut names = find!(
+                            (handle: Value<Handle<Blake3, LongString>>),
+                            pattern!(&metadata_set, [{ metadata::name: ?handle }])
+                        )
+                        .into_iter();
+                        match (names.next(), names.next()) {
+                            (Some((handle,)), None) => reader
+                                .get::<View<str>, _>(handle)
+                                .ok()
+                                .map(|view| view.as_ref().to_string())
+                                .or_else(|| {
+                                    Some(format!(
+                                        "<name blob missing ({})>",
+                                        longstring_handle_prefix(handle)
+                                    ))
+                                }),
+                            _ => Some("<unnamed>".to_string()),
+                        }
                     }
-                }
-                Err(_) => Some(format!(
-                    "<metadata blob missing ({})>",
-                    archive_handle_prefix(meta_handle)
-                )),
-            },
+                    Err(_) => Some(format!(
+                        "<metadata blob missing ({})>",
+                        archive_handle_prefix(meta_handle)
+                    )),
+                };
+                (name, timestamp)
+            }
         };
         branches.push(BranchEntry {
             id: branch_id,
             name,
+            head_timestamp,
         });
     }
     Ok(branches)
@@ -1193,21 +1196,88 @@ fn list_branches(pile: &mut Pile<Blake3>) -> Result<Vec<BranchEntry>, String> {
 
 struct BranchLookup {
     by_id: HashSet<Id>,
-    by_name: HashMap<String, Vec<Id>>,
+    by_name: HashMap<String, Vec<BranchNameCandidate>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BranchNameCandidate {
+    id: Id,
+    head_timestamp: Option<u64>,
 }
 
 impl BranchLookup {
     fn new(branches: &[BranchEntry]) -> Self {
         let mut by_id = HashSet::new();
-        let mut by_name: HashMap<String, Vec<Id>> = HashMap::new();
+        let mut by_name: HashMap<String, Vec<BranchNameCandidate>> = HashMap::new();
         for branch in branches {
             by_id.insert(branch.id);
             if let Some(name) = branch.name.clone() {
-                by_name.entry(name).or_default().push(branch.id);
+                by_name.entry(name).or_default().push(BranchNameCandidate {
+                    id: branch.id,
+                    head_timestamp: branch.head_timestamp,
+                });
             }
+        }
+        for candidates in by_name.values_mut() {
+            // Prefer most recently updated branch head for duplicate names.
+            candidates.sort_by(|a, b| {
+                b.head_timestamp
+                    .cmp(&a.head_timestamp)
+                    .then_with(|| format!("{:x}", b.id).cmp(&format!("{:x}", a.id)))
+            });
         }
         Self { by_id, by_name }
     }
+
+    fn resolve_name(&self, name: &str) -> Option<Id> {
+        let candidates = self.by_name.get(name)?;
+        candidates.first().map(|candidate| candidate.id)
+    }
+}
+
+fn candidate_count_for_name(lookup: &BranchLookup, name: &str) -> usize {
+    lookup.by_name.get(name).map_or(0, Vec::len)
+}
+
+fn maybe_disambiguation_note(lookup: &BranchLookup, name: &str) -> Option<String> {
+    let count = candidate_count_for_name(lookup, name);
+    if count <= 1 {
+        None
+    } else {
+        Some(format!(
+            "Branch name '{name}' has {count} matches; using the most recently updated head."
+        ))
+    }
+}
+
+fn resolve_branch_ids_with_notes(
+    lookup: &BranchLookup,
+    refs: &[String],
+) -> Result<(Vec<Id>, Vec<String>), String> {
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    let mut notes = Vec::new();
+    for raw in refs {
+        let trimmed = raw.trim();
+        let id = if trimmed.len() == 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            let id = Id::from_hex(trimmed).ok_or_else(|| "invalid branch id".to_string())?;
+            if !lookup.by_id.contains(&id) {
+                return Err(format!("Branch id {} not found.", trimmed));
+            }
+            id
+        } else if let Some(id) = lookup.resolve_name(trimmed) {
+            if let Some(note) = maybe_disambiguation_note(lookup, trimmed) {
+                notes.push(note);
+            }
+            id
+        } else {
+            return Err(format!("Branch '{}' not found.", trimmed));
+        };
+        if seen.insert(id) {
+            ids.push(id);
+        }
+    }
+    Ok((ids, notes))
 }
 
 fn parse_branch_list(raw: &str) -> Vec<String> {
@@ -1219,70 +1289,8 @@ fn parse_branch_list(raw: &str) -> Vec<String> {
 }
 
 fn resolve_branch_ids(lookup: &BranchLookup, refs: &[String]) -> Result<Vec<Id>, String> {
-    let mut ids = Vec::new();
-    let mut seen = HashSet::new();
-    for raw in refs {
-        let trimmed = raw.trim();
-        let id = if trimmed.len() == 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-            let id = Id::from_hex(trimmed).ok_or_else(|| "invalid branch id".to_string())?;
-            if !lookup.by_id.contains(&id) {
-                return Err(format!("Branch id {} not found.", trimmed));
-            }
-            id
-        } else if let Some(ids_for_name) = lookup.by_name.get(trimmed) {
-            if ids_for_name.len() > 1 {
-                return Err(format!(
-                    "Branch name '{}' is ambiguous ({} matches).",
-                    trimmed,
-                    ids_for_name.len()
-                ));
-            }
-            ids_for_name[0]
-        } else {
-            return Err(format!("Branch '{}' not found.", trimmed));
-        };
-        if seen.insert(id) {
-            ids.push(id);
-        }
-    }
+    let (ids, _) = resolve_branch_ids_with_notes(lookup, refs)?;
     Ok(ids)
-}
-
-fn ensure_named_branches(
-    repo: &mut Repository<Pile>,
-    branches: &mut Vec<BranchEntry>,
-    refs: &[String],
-) -> Result<(), String> {
-    let mut known_names: HashSet<String> = branches
-        .iter()
-        .filter_map(|branch| branch.name.clone())
-        .collect();
-
-    for raw in refs {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let is_hex = trimmed.len() == 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit());
-        if is_hex {
-            continue;
-        }
-        if known_names.contains(trimmed) {
-            continue;
-        }
-
-        let branch_id = repo
-            .create_branch(trimmed, None)
-            .map_err(|err| format!("create branch '{trimmed}': {err:?}"))?
-            .release();
-        branches.push(BranchEntry {
-            id: branch_id,
-            name: Some(trimmed.to_string()),
-        });
-        known_names.insert(trimmed.to_string());
-    }
-
-    Ok(())
 }
 
 fn extend_unique(out: &mut Vec<Id>, ids: &[Id]) {
@@ -1374,6 +1382,12 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         load_optional_id_attr(data, config_id, playground_config::teams_branch_id);
     let workspace_branch_id =
         load_optional_id_attr(data, config_id, playground_config::workspace_branch_id);
+    let archive_branch_id =
+        load_optional_id_attr(data, config_id, playground_config::archive_branch_id);
+    let web_branch_id =
+        load_optional_id_attr(data, config_id, playground_config::web_branch_id);
+    let media_branch_id =
+        load_optional_id_attr(data, config_id, playground_config::media_branch_id);
     let author = load_optional_string_attr(data, ws, config_id, playground_config::author);
     let author_role =
         load_optional_string_attr(data, ws, config_id, playground_config::author_role);
@@ -1410,6 +1424,9 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         relations_branch_id,
         teams_branch_id,
         workspace_branch_id,
+        archive_branch_id,
+        web_branch_id,
+        media_branch_id,
         author,
         author_role,
         poll_ms,
@@ -3176,6 +3193,33 @@ fn render_agent_config(
             ui.monospace(
                 config
                     .workspace_branch_id
+                    .map(|id| format!("{id:x}"))
+                    .unwrap_or_else(|| "-".to_string()),
+            );
+            ui.end_row();
+
+            ui.label("archive_branch_id");
+            ui.monospace(
+                config
+                    .archive_branch_id
+                    .map(|id| format!("{id:x}"))
+                    .unwrap_or_else(|| "-".to_string()),
+            );
+            ui.end_row();
+
+            ui.label("web_branch_id");
+            ui.monospace(
+                config
+                    .web_branch_id
+                    .map(|id| format!("{id:x}"))
+                    .unwrap_or_else(|| "-".to_string()),
+            );
+            ui.end_row();
+
+            ui.label("media_branch_id");
+            ui.monospace(
+                config
+                    .media_branch_id
                     .map(|id| format!("{id:x}"))
                     .unwrap_or_else(|| "-".to_string()),
             );

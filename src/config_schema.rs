@@ -19,6 +19,9 @@ pub mod playground_config {
         "D35F4F02E29825FBC790E324EFCD1B34" as pub relations_branch_id: GenId;
         "22A0E76B8044311563369298306906E3" as pub teams_branch_id: GenId;
         "20D37D92C2AEF5C98899C4C35AA1E35E" as pub workspace_branch_id: GenId;
+        "047112FC535518D289E64FBE0B60F06E" as pub archive_branch_id: GenId;
+        "A4DFF7BE658B1EA16F866E3039FFF8D6" as pub web_branch_id: GenId;
+        "229941B84503AAE4976A49E020D1282B" as pub media_branch_id: GenId;
         "F0F90572249284CD57E48580369DEB6D" as pub author: Handle<Blake3, LongString>;
         "98A194178CFD7CBB915C1BC9EB561A7F" as pub author_role: Handle<Blake3, LongString>;
         "D1DC11B303725409AB8A30C6B59DB2D7" as pub persona_id: GenId;
@@ -137,6 +140,9 @@ where
     metadata += describe_attribute(blobs, &playground_config::relations_branch_id)?;
     metadata += describe_attribute(blobs, &playground_config::teams_branch_id)?;
     metadata += describe_attribute(blobs, &playground_config::workspace_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::archive_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::web_branch_id)?;
+    metadata += describe_attribute(blobs, &playground_config::media_branch_id)?;
     metadata += describe_attribute(blobs, &playground_config::author)?;
     metadata += describe_attribute(blobs, &playground_config::author_role)?;
     metadata += describe_attribute(blobs, &playground_config::persona_id)?;
