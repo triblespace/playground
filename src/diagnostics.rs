@@ -2411,11 +2411,23 @@ fn order_compass_rows(rows: Vec<CompassTaskRow>) -> Vec<(CompassTaskRow, usize)>
         roots.push(*id);
     }
 
+    // Ensure deterministic ordering even when multiple goals share the same
+    // timestamp (created_at/status_at). Without a tie-breaker, stable sort will
+    // preserve HashMap iteration order, which is intentionally randomized.
     let sort_ids = |items: &mut Vec<Id>| {
         items.sort_by(|a, b| {
-            let a_key = by_id.get(a).map(|row| row.sort_key()).unwrap_or("");
-            let b_key = by_id.get(b).map(|row| row.sort_key()).unwrap_or("");
-            b_key.cmp(a_key)
+            let a_row = by_id.get(a);
+            let b_row = by_id.get(b);
+            let a_key = a_row.map(|row| row.sort_key()).unwrap_or("");
+            let b_key = b_row.map(|row| row.sort_key()).unwrap_or("");
+            b_key
+                .cmp(a_key)
+                .then_with(|| {
+                    let a_title = a_row.map(|row| row.title.as_str()).unwrap_or("");
+                    let b_title = b_row.map(|row| row.title.as_str()).unwrap_or("");
+                    a_title.cmp(b_title)
+                })
+                .then_with(|| a.cmp(b))
         });
     };
 
@@ -2453,10 +2465,14 @@ fn order_compass_rows(rows: Vec<CompassTaskRow>) -> Vec<(CompassTaskRow, usize)>
         walk(root, 0, &by_id, &children, &mut visited, &mut ordered);
     }
 
-    for id in by_id.keys() {
-        if !visited.contains(id) {
-            walk(*id, 0, &by_id, &children, &mut visited, &mut ordered);
-        }
+    let mut leftovers: Vec<Id> = by_id
+        .keys()
+        .copied()
+        .filter(|id| !visited.contains(id))
+        .collect();
+    sort_ids(&mut leftovers);
+    for id in leftovers {
+        walk(id, 0, &by_id, &children, &mut visited, &mut ordered);
     }
 
     ordered
