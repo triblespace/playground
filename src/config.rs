@@ -17,7 +17,7 @@ use crate::schema::playground_config;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
 
 const DEFAULT_MODEL: &str = "gpt-oss:120b";
-const DEFAULT_BASE_URL: &str = "http://localhost:11434/v1/responses";
+const DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
 const DEFAULT_STREAM: bool = false;
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a terminal-based agent. Respond with exactly one shell command per turn. Output only raw command text: no markdown fences, no commentary prelude, no channel labels, and no multi-command blocks. Prefer faculties in /workspace/faculties over ad-hoc shell when applicable; run a faculty with no arguments to inspect usage. If unsure what to do next, run `/workspace/faculties/orient.rs show`.";
 // The branch that carries the core cognition loop + exec/LLM request state.

@@ -32,7 +32,7 @@ use GORBIE::themes::colorhash;
 use GORBIE::widgets::{Button, TextField};
 
 use crate::blob_refs::{PromptChunk, split_blob_refs};
-use crate::schema::openai_responses;
+use crate::schema::llm_chat;
 use crate::schema::playground_config;
 use crate::schema::playground_exec;
 use crate::schema::playground_workspace;
@@ -1393,8 +1393,7 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         load_optional_id_attr(data, config_id, playground_config::workspace_branch_id);
     let archive_branch_id =
         load_optional_id_attr(data, config_id, playground_config::archive_branch_id);
-    let web_branch_id =
-        load_optional_id_attr(data, config_id, playground_config::web_branch_id);
+    let web_branch_id = load_optional_id_attr(data, config_id, playground_config::web_branch_id);
     let media_branch_id =
         load_optional_id_attr(data, config_id, playground_config::media_branch_id);
     let author = load_optional_string_attr(data, ws, config_id, playground_config::author);
@@ -2072,9 +2071,9 @@ fn collect_reasoning_summaries(
         ),
         pattern!(data, [{
             ?response_id @
-            openai_responses::kind: openai_responses::kind_result,
-            openai_responses::response_raw: ?raw_handle,
-            openai_responses::finished_at: ?finished_at,
+            llm_chat::kind: llm_chat::kind_result,
+            llm_chat::response_raw: ?raw_handle,
+            llm_chat::finished_at: ?finished_at,
         }])
     ) {
         let raw = load_text(ws, raw_handle).unwrap_or_default();

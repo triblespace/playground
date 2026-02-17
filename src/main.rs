@@ -35,7 +35,7 @@ use repo_util::{
     close_repo, current_branch_head, init_repo, load_text, pull_workspace, push_workspace,
     refresh_cached_checkout,
 };
-use schema::{openai_responses, playground_cog, playground_exec};
+use schema::{llm_chat, playground_cog, playground_exec};
 use time_util::{epoch_interval, interval_key, now_epoch};
 
 #[derive(Subcommand, Debug)]
@@ -319,7 +319,8 @@ fn apply_config_set(config: &mut Config, args: ConfigSetArgs) -> Result<()> {
                 parse_optional_hex_id(Some(args.value.as_str()), "archive_branch_id")?;
         }
         ConfigField::WebBranchId => {
-            config.web_branch_id = parse_optional_hex_id(Some(args.value.as_str()), "web_branch_id")?;
+            config.web_branch_id =
+                parse_optional_hex_id(Some(args.value.as_str()), "web_branch_id")?;
         }
         ConfigField::MediaBranchId => {
             config.media_branch_id =
@@ -870,7 +871,6 @@ struct LlmResultEntry {
     attempt: Option<Value<U256BE>>,
     output_text: Option<Value<Handle<Blake3, LongString>>>,
     error: Option<Value<Handle<Blake3, LongString>>>,
-    response_id: Option<Value<Handle<Blake3, LongString>>>,
 }
 
 #[derive(Default)]
@@ -991,25 +991,14 @@ fn create_thought_and_request(
         change += entity! { &thought_id @ playground_cog::about_exec_result: exec_result_id };
     }
 
-    let previous_response_id = core_index
-        .latest_llm_response_id_handle()
-        .map(|handle| load_text(&mut ws, handle))
-        .transpose()
-        .context("load llm response_id")?;
     let request_id = ufoid();
     change += entity! { &request_id @
-        openai_responses::kind: openai_responses::kind_request,
-        openai_responses::about_thought: *thought_id,
-        openai_responses::prompt: prompt_handle,
-        openai_responses::requested_at: now,
-        openai_responses::model: config.llm.model.as_str(),
+        llm_chat::kind: llm_chat::kind_request,
+        llm_chat::about_thought: *thought_id,
+        llm_chat::prompt: prompt_handle,
+        llm_chat::requested_at: now,
+        llm_chat::model: config.llm.model.as_str(),
     };
-    if let Some(previous_response_id) = previous_response_id {
-        let previous_response_id_handle = ws.put(previous_response_id);
-        change += entity! { &request_id @
-            openai_responses::previous_response_id: previous_response_id_handle,
-        };
-    }
 
     ws.commit(change, None, Some("create thought + llm request"));
     push_workspace(repo, &mut ws).context("push thought + request")?;
@@ -1034,28 +1023,16 @@ fn create_request_for_thought_from_index(
         return Err(anyhow!("thought {thought_id:x} missing prompt"));
     };
 
-    let previous_response_id = core_index
-        .latest_llm_response_id_handle()
-        .map(|handle| load_text(ws, handle))
-        .transpose()
-        .context("load llm response_id")?;
-
     let now = epoch_interval(now_epoch());
     let request_id = ufoid();
     let mut change = TribleSet::new();
     change += entity! { &request_id @
-        openai_responses::kind: openai_responses::kind_request,
-        openai_responses::about_thought: thought_id,
-        openai_responses::prompt: prompt_handle,
-        openai_responses::requested_at: now,
-        openai_responses::model: config.llm.model.as_str(),
+        llm_chat::kind: llm_chat::kind_request,
+        llm_chat::about_thought: thought_id,
+        llm_chat::prompt: prompt_handle,
+        llm_chat::requested_at: now,
+        llm_chat::model: config.llm.model.as_str(),
     };
-    if let Some(previous_response_id) = previous_response_id {
-        let previous_response_id_handle = ws.put(previous_response_id);
-        change += entity! { &request_id @
-            openai_responses::previous_response_id: previous_response_id_handle,
-        };
-    }
     ws.commit(change, None, Some("create llm request"));
     Ok(*request_id)
 }
@@ -1155,7 +1132,7 @@ impl CoreIndex {
         for (request_id,) in find!(
             (request_id: Id),
             pattern_changes!(updated, delta, [{
-                ?request_id @ openai_responses::kind: openai_responses::kind_request
+                ?request_id @ llm_chat::kind: llm_chat::kind_request
             }])
         ) {
             self.llm_requests
@@ -1170,7 +1147,7 @@ impl CoreIndex {
         for (request_id, requested_at) in find!(
             (request_id: Id, requested_at: Value<NsTAIInterval>),
             pattern_changes!(updated, delta, [{
-                ?request_id @ openai_responses::requested_at: ?requested_at
+                ?request_id @ llm_chat::requested_at: ?requested_at
             }])
         ) {
             if let Some(entry) = self.llm_requests.get_mut(&request_id) {
@@ -1181,7 +1158,7 @@ impl CoreIndex {
         for (request_id, thought_id) in find!(
             (request_id: Id, thought_id: Id),
             pattern_changes!(updated, delta, [{
-                ?request_id @ openai_responses::about_thought: ?thought_id
+                ?request_id @ llm_chat::about_thought: ?thought_id
             }])
         ) {
             if let Some(entry) = self.llm_requests.get_mut(&request_id) {
@@ -1241,8 +1218,8 @@ impl CoreIndex {
             (result_id: Id, about_request: Id),
             pattern_changes!(updated, delta, [{
                 ?result_id @
-                openai_responses::kind: openai_responses::kind_result,
-                openai_responses::about_request: ?about_request,
+                llm_chat::kind: llm_chat::kind_result,
+                llm_chat::about_request: ?about_request,
             }])
         ) {
             self.llm_done_requests.insert(about_request);
@@ -1252,7 +1229,6 @@ impl CoreIndex {
                 attempt: None,
                 output_text: None,
                 error: None,
-                response_id: None,
             });
             entry.about_request = Some(about_request);
         }
@@ -1260,7 +1236,7 @@ impl CoreIndex {
         for (result_id, finished_at) in find!(
             (result_id: Id, finished_at: Value<NsTAIInterval>),
             pattern_changes!(updated, delta, [{
-                ?result_id @ openai_responses::finished_at: ?finished_at
+                ?result_id @ llm_chat::finished_at: ?finished_at
             }])
         ) {
             if let Some(entry) = self.llm_results.get_mut(&result_id) {
@@ -1271,7 +1247,7 @@ impl CoreIndex {
         for (result_id, attempt) in find!(
             (result_id: Id, attempt: Value<U256BE>),
             pattern_changes!(updated, delta, [{
-                ?result_id @ openai_responses::attempt: ?attempt
+                ?result_id @ llm_chat::attempt: ?attempt
             }])
         ) {
             if let Some(entry) = self.llm_results.get_mut(&result_id) {
@@ -1282,7 +1258,7 @@ impl CoreIndex {
         for (result_id, output_text) in find!(
             (result_id: Id, output_text: Value<Handle<Blake3, LongString>>),
             pattern_changes!(updated, delta, [{
-                ?result_id @ openai_responses::output_text: ?output_text
+                ?result_id @ llm_chat::output_text: ?output_text
             }])
         ) {
             if let Some(entry) = self.llm_results.get_mut(&result_id) {
@@ -1293,25 +1269,11 @@ impl CoreIndex {
         for (result_id, error) in find!(
             (result_id: Id, error: Value<Handle<Blake3, LongString>>),
             pattern_changes!(updated, delta, [{
-                ?result_id @ openai_responses::error: ?error
+                ?result_id @ llm_chat::error: ?error
             }])
         ) {
             if let Some(entry) = self.llm_results.get_mut(&result_id) {
                 entry.error = Some(error);
-            }
-        }
-
-        for (result_id, response_id) in find!(
-            (
-                result_id: Id,
-                response_id: Value<Handle<Blake3, LongString>>
-            ),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ openai_responses::response_id: ?response_id
-            }])
-        ) {
-            if let Some(entry) = self.llm_results.get_mut(&result_id) {
-                entry.response_id = Some(response_id);
             }
         }
 
@@ -1524,18 +1486,6 @@ impl CoreIndex {
             .and_then(|thought| thought.prompt)
     }
 
-    fn latest_llm_response_id_handle(&self) -> Option<Value<Handle<Blake3, LongString>>> {
-        self.llm_results
-            .values()
-            .filter_map(|result| {
-                result
-                    .response_id
-                    .map(|handle| (result.finished_at.map(interval_key), handle))
-            })
-            .max_by_key(|(finished_at, _)| *finished_at)
-            .map(|(_, handle)| handle)
-    }
-
     fn latest_llm_result(&self, request_id: Id) -> Option<LlmResultInfo> {
         self.llm_results
             .values()
@@ -1684,8 +1634,8 @@ fn delta_has_llm_result(updated: &TribleSet, delta: &TribleSet, request_id: Id) 
         (about_request: Id),
         pattern_changes!(updated, delta, [{
             _?event @
-            openai_responses::kind: openai_responses::kind_result,
-            openai_responses::about_request: ?about_request,
+            llm_chat::kind: llm_chat::kind_result,
+            llm_chat::about_request: ?about_request,
         }])
     )
     .into_iter()

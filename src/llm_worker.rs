@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
-use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use serde_json::Value as JsonValue;
 use triblespace::core::blob::Bytes;
@@ -24,7 +23,7 @@ use crate::repo_util::{
     close_repo, current_branch_head, ensure_worker_name, init_repo, load_text, pull_workspace,
     push_workspace, refresh_cached_checkout, seed_metadata,
 };
-use crate::schema::openai_responses;
+use crate::schema::llm_chat;
 use crate::time_util::{epoch_interval, interval_key, now_epoch};
 
 #[derive(Debug, Clone)]
@@ -32,7 +31,6 @@ struct LlmRequest {
     id: Id,
     prompt: Value<Handle<Blake3, LongString>>,
     model: Option<Value<ShortString>>,
-    previous_response_id: Option<Value<Handle<Blake3, LongString>>>,
     requested_at: Option<Value<NsTAIInterval>>,
 }
 
@@ -50,9 +48,9 @@ struct OpenAIResult {
     response_id: Option<String>,
 }
 
-struct ResponsesClient {
+struct ChatCompletionsClient {
     client: Client,
-    base_url: String,
+    endpoint_url: String,
     api_key: Option<String>,
     stream: bool,
 }
@@ -62,12 +60,24 @@ const SEND_RETRY_BASE_MS: u64 = 500;
 const MAX_INLINE_IMAGES_PER_PROMPT: usize = 4;
 const MAX_INLINE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
-impl ResponsesClient {
-    fn new(base_url: &str, api_key: Option<String>, stream: bool) -> Result<Self> {
+fn chat_completions_url(api_base_url: &str) -> String {
+    let base = api_base_url.trim().trim_end_matches('/');
+    if base.ends_with("/chat/completions") || base.ends_with("/completions") {
+        return base.to_string();
+    }
+    if let Some(base) = base.strip_suffix("/responses") {
+        return format!("{base}/chat/completions");
+    }
+    format!("{base}/chat/completions")
+}
+
+impl ChatCompletionsClient {
+    fn new(api_base_url: &str, api_key: Option<String>, stream: bool) -> Result<Self> {
         let client = Client::builder().build().context("build http client")?;
+        let endpoint_url = chat_completions_url(api_base_url);
         Ok(Self {
             client,
-            base_url: base_url.to_owned(),
+            endpoint_url,
             api_key,
             stream,
         })
@@ -81,7 +91,7 @@ impl ResponsesClient {
                 Err(err) => {
                     eprintln!(
                         "warning: llm send attempt {attempt}/{SEND_MAX_ATTEMPTS} to {} failed: {err:#}",
-                        self.base_url
+                        self.endpoint_url
                     );
                     last_error = Some(err);
                     if attempt < SEND_MAX_ATTEMPTS {
@@ -95,9 +105,7 @@ impl ResponsesClient {
     }
 
     fn send_payload_once(&self, payload: &JsonValue) -> Result<OpenAIResult> {
-        let response = self
-            .send_request(payload)
-            .context("send request")?;
+        let response = self.send_request(payload).context("send request")?;
         if response.status().is_success() {
             return self.parse_response(response);
         }
@@ -108,45 +116,10 @@ impl ResponsesClient {
             .text()
             .unwrap_or_else(|_| "<failed to read error body>".to_string());
 
-        // `previous_response_id` is an optional continuity hint. If the server
-        // no longer recognizes it (or it came from another provider/base_url),
-        // retry once without it so the agent can continue.
-        if payload.get("previous_response_id").is_some()
-            && status == StatusCode::BAD_REQUEST
-            && is_previous_response_not_found(body.as_str())
-        {
-            let mut repaired = payload.clone();
-            if let Some(obj) = repaired.as_object_mut() {
-                obj.remove("previous_response_id");
-            }
-            eprintln!("warning: previous_response_id not found; retrying without continuity hint");
-            let response = self
-                .send_request(&repaired)
-                .context("send request (retry without previous_response_id)")?;
-            if response.status().is_success() {
-                return self.parse_response(response);
-            }
-
-            let status = response.status();
-            let body = response
-                .text()
-                .unwrap_or_else(|_| "<failed to read error body>".to_string());
-            bail!(
-                "request failed: HTTP {} for url ({}){}",
-                status,
-                self.base_url,
-                if body.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!(": {}", body.trim())
-                }
-            );
-        }
-
         bail!(
             "request failed: HTTP {} for url ({}){}",
             status,
-            self.base_url,
+            self.endpoint_url,
             if body.trim().is_empty() {
                 "".to_string()
             } else {
@@ -156,7 +129,7 @@ impl ResponsesClient {
     }
 
     fn send_request(&self, payload: &JsonValue) -> Result<reqwest::blocking::Response> {
-        let mut request = self.client.post(&self.base_url);
+        let mut request = self.client.post(&self.endpoint_url);
         if let Some(api_key) = self.api_key.as_ref() {
             request = request.bearer_auth(api_key);
         }
@@ -180,16 +153,6 @@ impl ResponsesClient {
     }
 }
 
-fn is_previous_response_not_found(body: &str) -> bool {
-    let Ok(json) = serde_json::from_str::<JsonValue>(body) else {
-        return false;
-    };
-    json.get("error")
-        .and_then(|err| err.get("code"))
-        .and_then(JsonValue::as_str)
-        == Some("previous_response_not_found")
-}
-
 pub(crate) fn run_llm_loop(
     config: Config,
     worker_id: Id,
@@ -205,7 +168,7 @@ pub(crate) fn run_llm_loop(
         let mut cached_catalog = TribleSet::new();
         let mut request_index = LlmRequestIndex::default();
 
-        let client = ResponsesClient::new(
+        let client = ChatCompletionsClient::new(
             config.llm.base_url.as_str(),
             config.llm.api_key.clone(),
             config.llm.stream,
@@ -239,21 +202,10 @@ pub(crate) fn run_llm_loop(
                 .model
                 .map(|value| String::from_value(&value))
                 .unwrap_or_else(|| config.llm.model.clone());
-            let previous_response_id = request
-                .previous_response_id
-                .map(|value| load_text(&mut ws, value))
-                .transpose()
-                .context("load previous_response_id")?;
 
             let input_content =
                 build_prompt_input_content(&mut ws, model.as_str(), prompt.as_str());
-            let payload = build_payload(
-                &model,
-                input_content,
-                config.llm.stream,
-                config.llm.reasoning_effort.as_deref(),
-                previous_response_id.as_deref(),
-            );
+            let payload = build_payload(&model, config.llm.stream, input_content);
             let request_raw =
                 serde_json::to_string(&payload).context("serialize request payload")?;
 
@@ -264,16 +216,16 @@ pub(crate) fn run_llm_loop(
 
             let mut change = TribleSet::new();
             change += entity! { ExclusiveId::force_ref(&request.id) @
-                openai_responses::request_raw: request_raw_handle,
+                llm_chat::request_raw: request_raw_handle,
             };
             change += entity! { &in_progress_id @
-                openai_responses::kind: openai_responses::kind_in_progress,
-                openai_responses::about_request: request.id,
-                openai_responses::started_at: started_at,
-                openai_responses::worker: worker_id,
-                openai_responses::attempt: attempt,
+                llm_chat::kind: llm_chat::kind_in_progress,
+                llm_chat::about_request: request.id,
+                llm_chat::started_at: started_at,
+                llm_chat::worker: worker_id,
+                llm_chat::attempt: attempt,
             };
-            ws.commit(change, None, Some("openai_responses in_progress"));
+            ws.commit(change, None, Some("llm_chat in_progress"));
             push_workspace(&mut repo, &mut ws).context("push in_progress")?;
 
             let result = client.send_payload(&payload);
@@ -282,10 +234,10 @@ pub(crate) fn run_llm_loop(
             let result_id = ufoid();
             let mut change = TribleSet::new();
             change += entity! { &result_id @
-                openai_responses::kind: openai_responses::kind_result,
-                openai_responses::about_request: request.id,
-                openai_responses::finished_at: finished_at,
-                openai_responses::attempt: attempt,
+                llm_chat::kind: llm_chat::kind_result,
+                llm_chat::about_request: request.id,
+                llm_chat::finished_at: finished_at,
+                llm_chat::attempt: attempt,
             };
 
             let mut import_data = None;
@@ -298,13 +250,13 @@ pub(crate) fn run_llm_loop(
                     let output_handle = ws.put(result.output_text);
                     let raw_handle = ws.put(result.raw);
                     change += entity! { &result_id @
-                        openai_responses::output_text: output_handle,
-                        openai_responses::response_raw: raw_handle,
+                        llm_chat::output_text: output_handle,
+                        llm_chat::response_raw: raw_handle,
                     };
                     if let Some(response_id) = response_id {
                         let response_id_handle = ws.put(response_id);
                         change += entity! { &result_id @
-                            openai_responses::response_id: response_id_handle,
+                            llm_chat::response_id: response_id_handle,
                         };
                     }
 
@@ -326,7 +278,7 @@ pub(crate) fn run_llm_loop(
 
                             for root in fragment.exports() {
                                 change += entity! { &result_id @
-                                    openai_responses::response_json_root: root,
+                                    llm_chat::response_json_root: root,
                                 };
                             }
 
@@ -341,7 +293,7 @@ pub(crate) fn run_llm_loop(
                 Err(err) => {
                     let handle = ws.put(format!("{err:#}"));
                     change += entity! { &result_id @
-                        openai_responses::error: handle,
+                        llm_chat::error: handle,
                     };
                 }
             }
@@ -349,7 +301,7 @@ pub(crate) fn run_llm_loop(
             if let (Some(data), Some(metadata)) = (import_data, import_metadata) {
                 ws.commit(data, Some(metadata), Some("import response json"));
             }
-            ws.commit(change, None, Some("openai_responses result"));
+            ws.commit(change, None, Some("llm_chat result"));
             push_workspace(&mut repo, &mut ws).context("push result")?;
         }
 
@@ -382,8 +334,8 @@ impl LlmRequestIndex {
             (request_id: Id, prompt: Value<Handle<Blake3, LongString>>),
             pattern_changes!(updated, delta, [{
                 ?request_id @
-                openai_responses::kind: openai_responses::kind_request,
-                openai_responses::prompt: ?prompt,
+                llm_chat::kind: llm_chat::kind_request,
+                llm_chat::prompt: ?prompt,
             }])
         ) {
             self.requests.insert(
@@ -392,7 +344,6 @@ impl LlmRequestIndex {
                     id: request_id,
                     prompt,
                     model: None,
-                    previous_response_id: None,
                     requested_at: None,
                 },
             );
@@ -401,7 +352,7 @@ impl LlmRequestIndex {
         for (request_id, model) in find!(
             (request_id: Id, model: Value<ShortString>),
             pattern_changes!(updated, delta, [{
-                ?request_id @ openai_responses::model: ?model
+                ?request_id @ llm_chat::model: ?model
             }])
         ) {
             if let Some(entry) = self.requests.get_mut(&request_id) {
@@ -412,25 +363,11 @@ impl LlmRequestIndex {
         for (request_id, requested_at) in find!(
             (request_id: Id, requested_at: Value<NsTAIInterval>),
             pattern_changes!(updated, delta, [{
-                ?request_id @ openai_responses::requested_at: ?requested_at
+                ?request_id @ llm_chat::requested_at: ?requested_at
             }])
         ) {
             if let Some(entry) = self.requests.get_mut(&request_id) {
                 entry.requested_at = Some(requested_at);
-            }
-        }
-
-        for (request_id, previous_response_id) in find!(
-            (
-                request_id: Id,
-                previous_response_id: Value<Handle<Blake3, LongString>>
-            ),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ openai_responses::previous_response_id: ?previous_response_id
-            }])
-        ) {
-            if let Some(entry) = self.requests.get_mut(&request_id) {
-                entry.previous_response_id = Some(previous_response_id);
             }
         }
 
@@ -441,9 +378,9 @@ impl LlmRequestIndex {
             ),
             pattern_changes!(updated, delta, [{
                 _?event @
-                openai_responses::kind: openai_responses::kind_in_progress,
-                openai_responses::about_request: ?request_id,
-                openai_responses::worker: ?in_progress_worker_id,
+                llm_chat::kind: llm_chat::kind_in_progress,
+                llm_chat::about_request: ?request_id,
+                llm_chat::worker: ?in_progress_worker_id,
             }])
         ) {
             if in_progress_worker_id == worker_id {
@@ -455,8 +392,8 @@ impl LlmRequestIndex {
             (request_id: Id),
             pattern_changes!(updated, delta, [{
                 _?event @
-                openai_responses::kind: openai_responses::kind_result,
-                openai_responses::about_request: ?request_id,
+                llm_chat::kind: llm_chat::kind_result,
+                llm_chat::about_request: ?request_id,
             }])
         ) {
             self.done.insert(request_id);
@@ -477,31 +414,12 @@ impl LlmRequestIndex {
     }
 }
 
-fn build_payload(
-    model: &str,
-    input_content: Vec<JsonValue>,
-    stream: bool,
-    reasoning_effort: Option<&str>,
-    previous_response_id: Option<&str>,
-) -> JsonValue {
-    let mut reasoning = serde_json::json!({
-        "summary": "detailed",
-    });
-    if let Some(effort) = reasoning_effort {
-        reasoning["effort"] = JsonValue::String(effort.to_string());
-    }
-    let mut payload = serde_json::json!({
+fn build_payload(model: &str, stream: bool, content: Vec<JsonValue>) -> JsonValue {
+    serde_json::json!({
         "model": model,
-        "input": [{"role": "user", "content": input_content}],
-        "reasoning": reasoning,
-        "include": ["reasoning.encrypted_content"],
+        "messages": [{"role": "user", "content": content}],
         "stream": stream,
-        "store": true,
-    });
-    if let Some(previous_response_id) = previous_response_id {
-        payload["previous_response_id"] = JsonValue::String(previous_response_id.to_string());
-    }
-    payload
+    })
 }
 
 fn build_prompt_input_content(
@@ -518,7 +436,7 @@ fn build_prompt_input_content(
             PromptChunk::Text(text) => {
                 if !text.is_empty() {
                     content.push(serde_json::json!({
-                        "type": "input_text",
+                        "type": "text",
                         "text": text,
                     }));
                 }
@@ -526,14 +444,14 @@ fn build_prompt_input_content(
             PromptChunk::Blob(blob_ref) => {
                 if !supports_images {
                     content.push(serde_json::json!({
-                        "type": "input_text",
+                        "type": "text",
                         "text": format_blob_fallback(blob_ref.raw.as_str(), "vision unavailable for current model"),
                     }));
                     continue;
                 }
                 if images_added >= MAX_INLINE_IMAGES_PER_PROMPT {
                     content.push(serde_json::json!({
-                        "type": "input_text",
+                        "type": "text",
                         "text": format_blob_fallback(blob_ref.raw.as_str(), "image limit reached"),
                     }));
                     continue;
@@ -545,14 +463,14 @@ fn build_prompt_input_content(
                 ) {
                     Ok(data_url) => {
                         content.push(serde_json::json!({
-                            "type": "input_image",
-                            "image_url": data_url,
+                            "type": "image_url",
+                            "image_url": {"url": data_url},
                         }));
                         images_added += 1;
                     }
                     Err(reason) => {
                         content.push(serde_json::json!({
-                            "type": "input_text",
+                            "type": "text",
                             "text": format_blob_fallback(blob_ref.raw.as_str(), reason.as_str()),
                         }));
                     }
@@ -563,7 +481,7 @@ fn build_prompt_input_content(
 
     if content.is_empty() {
         content.push(serde_json::json!({
-            "type": "input_text",
+            "type": "text",
             "text": prompt,
         }));
     }
@@ -630,7 +548,7 @@ fn format_blob_fallback(raw_marker: &str, reason: &str) -> String {
 fn parse_stream(response: reqwest::blocking::Response) -> Result<OpenAIResult> {
     let mut output_text = String::new();
     let mut raw_events = Vec::new();
-    let mut completed = None;
+    let mut response_id = None;
 
     let reader = BufReader::new(response);
     for line in reader.lines() {
@@ -648,48 +566,22 @@ fn parse_stream(response: reqwest::blocking::Response) -> Result<OpenAIResult> {
             continue;
         };
 
-        let Some(kind) = event.get("type").and_then(JsonValue::as_str) else {
-            continue;
-        };
+        if response_id.is_none() {
+            response_id = extract_response_id(&event);
+        }
 
-        match kind {
-            "response.output_text.delta" => {
-                if let Some(delta) = event.get("delta").and_then(JsonValue::as_str) {
-                    output_text.push_str(delta);
+        if let Some(choices) = event.get("choices").and_then(JsonValue::as_array) {
+            for choice in choices {
+                if let Some(delta) = choice.get("delta") {
+                    if let Some(content) = delta.get("content").and_then(JsonValue::as_str) {
+                        output_text.push_str(content);
+                    }
                 }
             }
-            "response.completed" => {
-                completed = event.get("response").cloned();
-            }
-            "response.failed" => {
-                let message = event
-                    .get("response")
-                    .and_then(|resp| resp.get("error"))
-                    .and_then(|err| err.get("message"))
-                    .and_then(JsonValue::as_str)
-                    .unwrap_or("response failed");
-                bail!("{message}");
-            }
-            _ => {}
         }
     }
 
-    if output_text.is_empty() {
-        if let Some(response) = completed.as_ref() {
-            output_text = extract_output_text(response);
-        }
-    }
-
-    let raw = if let Some(response) = completed {
-        serde_json::to_string(&response).context("serialize response")?
-    } else {
-        raw_events.join("\n")
-    };
-    let response_id = if let Some(response) = serde_json::from_str::<JsonValue>(&raw).ok() {
-        extract_response_id(&response)
-    } else {
-        None
-    };
+    let raw = raw_events.join("\n");
     Ok(OpenAIResult {
         output_text,
         raw,
@@ -705,37 +597,40 @@ fn extract_response_id(response: &JsonValue) -> Option<String> {
 }
 
 fn extract_output_text(response: &JsonValue) -> String {
-    let mut text = String::new();
+    let Some(choices) = response.get("choices").and_then(JsonValue::as_array) else {
+        return String::new();
+    };
 
-    if let Some(output) = response.get("output").and_then(JsonValue::as_array) {
-        for item in output {
-            if let Some(item_type) = item.get("type").and_then(JsonValue::as_str)
-                && item_type == "output_text"
-                && let Some(content) = item.get("text").and_then(JsonValue::as_str)
-            {
-                text.push_str(content);
+    let Some(first) = choices.first() else {
+        return String::new();
+    };
+
+    // OpenAI-compatible chat completions: choices[0].message.content
+    if let Some(message) = first.get("message") {
+        if let Some(content) = message.get("content") {
+            if let Some(text) = content.as_str() {
+                return text.to_string();
             }
-
-            if let Some(content) = item.get("content").and_then(JsonValue::as_array) {
-                for part in content {
-                    if let Some(part_type) = part.get("type").and_then(JsonValue::as_str)
-                        && part_type == "output_text"
-                        && let Some(content) = part.get("text").and_then(JsonValue::as_str)
+            if let Some(parts) = content.as_array() {
+                let mut out = String::new();
+                for part in parts {
+                    if part.get("type").and_then(JsonValue::as_str) == Some("text")
+                        && let Some(text) = part.get("text").and_then(JsonValue::as_str)
                     {
-                        text.push_str(content);
+                        out.push_str(text);
                     }
                 }
+                return out;
             }
         }
     }
 
-    if text.is_empty()
-        && let Some(output_text) = response.get("output_text").and_then(JsonValue::as_str)
-    {
-        text.push_str(output_text);
-    }
-
-    text
+    // Legacy completions-style fallback: choices[0].text
+    first
+        .get("text")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn id_prefix(id: Id) -> String {

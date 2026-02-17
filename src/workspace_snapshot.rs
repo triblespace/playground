@@ -1,7 +1,7 @@
-use std::fs;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::fs;
 use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use triblespace::core::blob::Blob;
@@ -133,7 +133,9 @@ fn snapshot_lineage_visit(
         return Ok(());
     }
     if !visiting.insert(snapshot_id) {
-        return Err(anyhow!("workspace snapshot parent cycle at {snapshot_id:x}"));
+        return Err(anyhow!(
+            "workspace snapshot parent cycle at {snapshot_id:x}"
+        ));
     }
     for (parent_id,) in find!(
         (parent_id: Id),
@@ -155,7 +157,8 @@ fn merge_lineage_entries(
 ) -> Result<BTreeMap<PathBuf, CapturedEntry>> {
     let mut by_target = BTreeMap::<PathBuf, CapturedEntry>::new();
     for snapshot_id in lineage {
-        let root_path = load_string_attr(ws, catalog, *snapshot_id, playground_workspace::root_path)?;
+        let root_path =
+            load_string_attr(ws, catalog, *snapshot_id, playground_workspace::root_path)?;
         let restore_root = resolve_restore_root(target_root, root_path.as_deref())?;
         let entries = collect_snapshot_entries(ws, catalog, *snapshot_id)?;
         for entry in entries {
@@ -310,8 +313,8 @@ fn apply_merged_entries(entries: &[(PathBuf, CapturedEntry)]) -> Result<(usize, 
 }
 
 fn file_content_matches(path: &Path, expected: &[u8]) -> Result<bool> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("read metadata {}", path.display()))?;
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("read metadata {}", path.display()))?;
     if metadata.len() != expected.len() as u64 {
         return Ok(false);
     }
@@ -381,7 +384,8 @@ fn capture_single_entry(path: &Path, rel_path: String) -> Result<CapturedEntry> 
     let file_type = metadata.file_type();
 
     if file_type.is_symlink() {
-        let target = fs::read_link(path).with_context(|| format!("read link {}", path.display()))?;
+        let target =
+            fs::read_link(path).with_context(|| format!("read link {}", path.display()))?;
         return Ok(CapturedEntry {
             path: rel_path,
             kind: EntryKind::Symlink,
