@@ -26,6 +26,7 @@ pub mod playground_config {
         "98A194178CFD7CBB915C1BC9EB561A7F" as pub author_role: Handle<Blake3, LongString>;
         "D1DC11B303725409AB8A30C6B59DB2D7" as pub persona_id: GenId;
         "79E1B50756FB64A30916E9353225E179" as pub active_llm_profile_id: GenId;
+        "B919F28377B1241E4275808DBB1D423D" as pub active_llm_compaction_profile_id: GenId;
         "698519DFB681FABC3F06160ACAC9DA8E" as pub poll_ms: U256BE;
         "6691CF3F872C6107DCFAD0BCF7CDC1A0" as pub llm_profile_id: GenId;
         "85BE7BDA465B3CB0F800F76EEF8FAC9B" as pub llm_model: Handle<Blake3, LongString>;
@@ -39,6 +40,8 @@ pub mod playground_config {
         "4200F6746B36F2784DEBA1555595D6AC" as pub llm_max_output_tokens: U256BE;
         "1FF004BB48F7A4F8F72541F4D4FA75FF" as pub llm_prompt_safety_margin_tokens: U256BE;
         "095FAECDB8FF205DF591DF594E593B01" as pub llm_prompt_chars_per_token: U256BE;
+        "1844C507906202EFF676D8C561E89704" as pub llm_compaction_prompt: Handle<Blake3, LongString>;
+        "167BABF8DFCD69AB4DB69773AAB18C4B" as pub llm_compaction_reduction_factor: U256BE;
         "120F9C6BBB103FAFFB31A66E2ABC15E6" as pub exec_default_cwd: Handle<Blake3, LongString>;
         "D18A351B6E03A460E4F400D97D285F96" as pub exec_sandbox_profile: GenId;
     }
@@ -165,6 +168,7 @@ where
     metadata += describe_attribute(blobs, &playground_config::author_role)?;
     metadata += describe_attribute(blobs, &playground_config::persona_id)?;
     metadata += describe_attribute(blobs, &playground_config::active_llm_profile_id)?;
+    metadata += describe_attribute(blobs, &playground_config::active_llm_compaction_profile_id)?;
     metadata += describe_attribute(blobs, &playground_config::poll_ms)?;
     metadata += describe_attribute(blobs, &playground_config::llm_profile_id)?;
     metadata += describe_attribute(blobs, &playground_config::llm_model)?;
@@ -178,6 +182,8 @@ where
     metadata += describe_attribute(blobs, &playground_config::llm_max_output_tokens)?;
     metadata += describe_attribute(blobs, &playground_config::llm_prompt_safety_margin_tokens)?;
     metadata += describe_attribute(blobs, &playground_config::llm_prompt_chars_per_token)?;
+    metadata += describe_attribute(blobs, &playground_config::llm_compaction_prompt)?;
+    metadata += describe_attribute(blobs, &playground_config::llm_compaction_reduction_factor)?;
     metadata += describe_attribute(blobs, &playground_config::exec_default_cwd)?;
     metadata += describe_attribute(blobs, &playground_config::exec_sandbox_profile)?;
 

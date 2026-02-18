@@ -195,6 +195,9 @@ enum ConfigField {
     LlmMaxOutputTokens,
     LlmPromptSafetyMarginTokens,
     LlmPromptCharsPerToken,
+    LlmCompactionProfileId,
+    LlmCompactionPrompt,
+    LlmCompactionReductionFactor,
     ExecDefaultCwd,
     ExecSandboxProfile,
 }
@@ -208,6 +211,8 @@ enum OptionalConfigField {
     TavilyApiKey,
     ExaApiKey,
     LlmReasoningEffort,
+    LlmCompactionProfileId,
+    LlmCompactionPrompt,
     ExecDefaultCwd,
     ExecSandboxProfile,
 }
@@ -492,6 +497,25 @@ fn apply_config_set(config: &mut Config, args: ConfigSetArgs) -> Result<()> {
             config.llm.prompt_chars_per_token =
                 parse_u64(args.value.as_str(), "llm_prompt_chars_per_token")?;
         }
+        ConfigField::LlmCompactionProfileId => {
+            config.llm_compaction_profile_id = Some(parse_hex_id(
+                args.value.as_str(),
+                "llm_compaction_profile_id",
+            )?);
+        }
+        ConfigField::LlmCompactionPrompt => {
+            config.llm_compaction_prompt = Some(load_value_or_file(
+                args.value.as_str(),
+                "llm_compaction_prompt",
+            )?);
+        }
+        ConfigField::LlmCompactionReductionFactor => {
+            let factor = parse_u64(args.value.as_str(), "llm_compaction_reduction_factor")?;
+            if factor == 0 {
+                return Err(anyhow!("llm_compaction_reduction_factor must be >= 1"));
+            }
+            config.llm_compaction_reduction_factor = factor;
+        }
         ConfigField::ExecDefaultCwd => {
             let value = load_value_or_file(args.value.as_str(), "exec_default_cwd")?;
             config.exec.default_cwd = Some(PathBuf::from(value.trim()));
@@ -512,6 +536,8 @@ fn apply_config_unset(config: &mut Config, field: OptionalConfigField) -> Result
         OptionalConfigField::TavilyApiKey => config.tavily_api_key = None,
         OptionalConfigField::ExaApiKey => config.exa_api_key = None,
         OptionalConfigField::LlmReasoningEffort => config.llm.reasoning_effort = None,
+        OptionalConfigField::LlmCompactionProfileId => config.llm_compaction_profile_id = None,
+        OptionalConfigField::LlmCompactionPrompt => config.llm_compaction_prompt = None,
         OptionalConfigField::ExecDefaultCwd => config.exec.default_cwd = None,
         OptionalConfigField::ExecSandboxProfile => config.exec.sandbox_profile = None,
     }
@@ -879,6 +905,25 @@ fn print_config(config: &Config, show_secrets: bool) {
     println!(
         "prompt_chars_per_token = {}",
         config.llm.prompt_chars_per_token
+    );
+    println!(
+        "compaction_profile_id = {}",
+        config
+            .llm_compaction_profile_id
+            .map(|id| format!("\"{id:x}\""))
+            .unwrap_or_else(|| "null".to_string())
+    );
+    println!(
+        "compaction_prompt = {}",
+        config
+            .llm_compaction_prompt
+            .as_ref()
+            .map(|value| format!("\"{}\"", value.replace('\"', "\\\"")))
+            .unwrap_or_else(|| "null".to_string())
+    );
+    println!(
+        "compaction_reduction_factor = {}",
+        config.llm_compaction_reduction_factor
     );
 
     println!("\n[integrations]");
@@ -1786,11 +1831,6 @@ fn delta_has_command_result(updated: &TribleSet, delta: &TribleSet, request_id: 
 }
 
 const PROMPT_RECENT_TURN_CAP: usize = 64;
-const PROMPT_RECENT_STDOUT_MAX_CHARS: usize = 4000;
-const PROMPT_RECENT_STDERR_MAX_CHARS: usize = 2000;
-const PROMPT_COMPACT_STDOUT_MAX_CHARS: usize = 1200;
-const PROMPT_COMPACT_STDERR_MAX_CHARS: usize = 800;
-const PROMPT_COMPACT_MAX_CHARS: usize = 6000;
 
 #[derive(Debug, Clone)]
 struct ContextChunk {
@@ -1872,13 +1912,7 @@ fn build_prompt_messages_with_compaction(
                 .context("command result missing finished_at")?;
             let command = load_command_for_result(ws, core_index, result)?;
             let exec_output = load_exec_result(ws, result.clone())?;
-            let leaf_summary = format_exec_output_limited(
-                command.as_str(),
-                exec_output,
-                PROMPT_COMPACT_STDOUT_MAX_CHARS,
-                PROMPT_COMPACT_STDERR_MAX_CHARS,
-            );
-            let leaf_summary = compact_text(leaf_summary.as_str(), PROMPT_COMPACT_MAX_CHARS);
+            let leaf_summary = format_exec_output(command.as_str(), exec_output);
             let leaf_summary_handle = ws.put(leaf_summary);
             let now = epoch_interval(now_epoch());
             let chunk_id = ufoid();
@@ -2023,11 +2057,7 @@ fn build_recent_messages(
         }
         let command = load_command_for_result(ws, core_index, result)?;
         let exec_output = load_exec_result(ws, result.clone())?;
-        let turn_output = format_exec_result_output_limited(
-            exec_output,
-            PROMPT_RECENT_STDOUT_MAX_CHARS,
-            PROMPT_RECENT_STDERR_MAX_CHARS,
-        );
+        let turn_output = format_exec_result_output(exec_output);
 
         let command_len = command.chars().count();
         let output_len = turn_output.chars().count();
@@ -2040,14 +2070,7 @@ fn build_recent_messages(
 
         // Always include the newest turn, even if we have to truncate it hard to fit.
         if turns.is_empty() {
-            if command_len >= remaining {
-                turns.push((compact_text(command.as_str(), remaining), String::new()));
-                remaining = 0;
-                break;
-            }
-            let allowed = remaining.saturating_sub(command_len);
-            let output = compact_text(turn_output.as_str(), allowed);
-            turns.push((command, output));
+            turns.push((command, turn_output));
             remaining = 0;
         }
         break;
@@ -2085,31 +2108,15 @@ fn format_memory_output(ws: &mut Workspace<Pile>, chunk: &ContextChunk) -> Resul
     Ok(format!("{header}\n{}\n", summary.trim_end()))
 }
 
-fn format_exec_result_output_limited(
-    result: ExecResult,
-    stdout_max_chars: usize,
-    stderr_max_chars: usize,
-) -> String {
+fn format_exec_result_output(result: ExecResult) -> String {
     let mut text = String::new();
     let stdout = format_output_text(result.stdout_text, result.stdout);
-    append_section(
-        &mut text,
-        "stdout",
-        compact_text(stdout.as_str(), stdout_max_chars).as_str(),
-    );
+    append_section(&mut text, "stdout", stdout.as_str());
     let stderr = format_output_text(result.stderr_text, result.stderr);
-    append_section(
-        &mut text,
-        "stderr",
-        compact_text(stderr.as_str(), stderr_max_chars).as_str(),
-    );
+    append_section(&mut text, "stderr", stderr.as_str());
 
     if let Some(error) = result.error {
-        append_section(
-            &mut text,
-            "error",
-            compact_text(error.as_str(), stderr_max_chars).as_str(),
-        );
+        append_section(&mut text, "error", error.as_str());
     }
 
     let exit_code = result
@@ -2278,25 +2285,12 @@ fn insert_chunk_with_carry(
             let right_text = load_text(ws, right.summary).context("load right chunk summary")?;
             let merged_text = match semantic {
                 Some(compactor) => compactor
-                    .merge(
-                        left_text.as_str(),
-                        right_text.as_str(),
-                        PROMPT_COMPACT_MAX_CHARS,
-                    )
+                    .merge(left_text.as_str(), right_text.as_str())
                     .unwrap_or_else(|_| {
-                        merge_text_fallback(
-                            left_text.as_str(),
-                            right_text.as_str(),
-                            PROMPT_COMPACT_MAX_CHARS,
-                        )
+                        merge_text_fallback(left_text.as_str(), right_text.as_str())
                     }),
-                None => merge_text_fallback(
-                    left_text.as_str(),
-                    right_text.as_str(),
-                    PROMPT_COMPACT_MAX_CHARS,
-                ),
+                None => merge_text_fallback(left_text.as_str(), right_text.as_str()),
             };
-            let merged_text = compact_text(merged_text.as_str(), PROMPT_COMPACT_MAX_CHARS);
             let merged_handle = ws.put(merged_text);
 
             let now = epoch_interval(now_epoch());
@@ -2344,7 +2338,12 @@ struct SemanticCompactor {
     endpoint_url: String,
     api_key: Option<String>,
     model: String,
+    chars_per_token: u64,
+    reduction_factor: u64,
+    system_prompt: String,
 }
+
+const DEFAULT_COMPACTION_PROMPT: &str = "You are a context compaction module.\n\nGiven two prior memory chunks from a terminal-based agent, write a concise merged summary that preserves:\n- key actions taken\n- important results/outputs\n- errors and their causes\n- paths/ids that matter for follow-up\n\nOutput plain text only (no markdown), no code fences, no tool calls.\n";
 
 impl SemanticCompactor {
     fn new(config: &Config) -> Result<Self> {
@@ -2352,25 +2351,60 @@ impl SemanticCompactor {
             .timeout(Duration::from_secs(60))
             .build()
             .context("build semantic compaction http client")?;
+
+        let mut model = config.llm.model.clone();
+        let mut base_url = config.llm.base_url.clone();
+        let mut api_key = config.llm.api_key.clone();
+        let mut chars_per_token = config.llm.prompt_chars_per_token.max(1);
+        if let Some(profile_id) = config.llm_compaction_profile_id {
+            match config::load_llm_profile(config.pile_path.as_path(), profile_id) {
+                Ok(Some((profile, _name))) => {
+                    model = profile.model;
+                    base_url = profile.base_url;
+                    api_key = profile.api_key;
+                    chars_per_token = profile.prompt_chars_per_token.max(1);
+                }
+                Ok(None) => eprintln!(
+                    "warning: compaction profile {profile_id:x} not found; using active llm profile"
+                ),
+                Err(err) => eprintln!(
+                    "warning: failed to load compaction profile {profile_id:x}: {err:#}; using active llm profile"
+                ),
+            }
+        }
+
         Ok(Self {
             client,
-            endpoint_url: chat_completions_url(config.llm.base_url.as_str()),
-            api_key: config.llm.api_key.clone(),
-            model: config.llm.model.clone(),
+            endpoint_url: chat_completions_url(base_url.as_str()),
+            api_key,
+            model,
+            chars_per_token,
+            reduction_factor: config.llm_compaction_reduction_factor.max(1),
+            system_prompt: config
+                .llm_compaction_prompt
+                .clone()
+                .unwrap_or_else(|| DEFAULT_COMPACTION_PROMPT.to_string()),
         })
     }
 
-    fn merge(&self, left: &str, right: &str, max_chars: usize) -> Result<String> {
-        let system = "You are a context compaction module.\n\nGiven two prior memory chunks from a terminal-based agent, write a concise merged summary that preserves:\n- key actions taken\n- important results/outputs\n- errors and their causes\n- paths/ids that matter for follow-up\n\nOutput plain text only (no markdown), no code fences, no tool calls.\n";
-        let user = format!(
-            "CHUNK A:\n{left}\n\nCHUNK B:\n{right}\n\nWrite a merged summary (preferably <= {max_chars} chars)."
-        );
+    fn merge(&self, left: &str, right: &str) -> Result<String> {
+        let input_chars = left
+            .chars()
+            .count()
+            .saturating_add(right.chars().count())
+            .max(1);
+        let target_chars = input_chars / (self.reduction_factor.max(1) as usize);
+        let target_chars = target_chars.max(1);
+        let max_tokens = target_chars.div_ceil(self.chars_per_token as usize) as u64;
 
-        let max_tokens = ((max_chars as u64) / 4).clamp(64, 1024);
+        let user = format!(
+            "CHUNK A:\n{left}\n\nCHUNK B:\n{right}\n\nMerge them into one summary and compress by ~1/{factor}. Keep critical details; drop repetition.",
+            factor = self.reduction_factor,
+        );
         let payload = serde_json::json!({
             "model": self.model,
             "messages": [
-                {"role": "system", "content": system},
+                {"role": "system", "content": self.system_prompt.as_str()},
                 {"role": "user", "content": user},
             ],
             "stream": false,
@@ -2470,19 +2504,8 @@ fn extract_output_text(json: &serde_json::Value) -> String {
     String::new()
 }
 
-fn merge_text_fallback(left: &str, right: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let sep = "\n\n...\n\n";
-    let sep_len = sep.chars().count();
-    if max_chars <= sep_len + 2 {
-        return compact_text(format!("{left}{sep}{right}").as_str(), max_chars);
-    }
-    let half = (max_chars - sep_len) / 2;
-    let left = compact_text(left, half);
-    let right = compact_text(right, max_chars - sep_len - left.chars().count());
-    format!("{left}{sep}{right}")
+fn merge_text_fallback(left: &str, right: &str) -> String {
+    format!("{left}\n\n...\n\n{right}")
 }
 
 fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Result<ExecResult> {
@@ -2518,33 +2541,16 @@ fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Resu
     })
 }
 
-fn format_exec_output_limited(
-    command: &str,
-    result: ExecResult,
-    stdout_max_chars: usize,
-    stderr_max_chars: usize,
-) -> String {
+fn format_exec_output(command: &str, result: ExecResult) -> String {
     let mut text = String::new();
     append_section(&mut text, "command", command);
     let stdout = format_output_text(result.stdout_text, result.stdout);
-    append_section(
-        &mut text,
-        "stdout",
-        compact_text(stdout.as_str(), stdout_max_chars).as_str(),
-    );
+    append_section(&mut text, "stdout", stdout.as_str());
     let stderr = format_output_text(result.stderr_text, result.stderr);
-    append_section(
-        &mut text,
-        "stderr",
-        compact_text(stderr.as_str(), stderr_max_chars).as_str(),
-    );
+    append_section(&mut text, "stderr", stderr.as_str());
 
     if let Some(error) = result.error {
-        append_section(
-            &mut text,
-            "error",
-            compact_text(error.as_str(), stderr_max_chars).as_str(),
-        );
+        append_section(&mut text, "error", error.as_str());
     }
 
     let exit_code = result
@@ -2573,33 +2579,6 @@ fn format_output_text(text: Option<String>, bytes: Option<Bytes>) -> String {
         return String::from_utf8_lossy(bytes.as_ref()).to_string();
     }
     String::new()
-}
-
-fn compact_text(text: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        return text.to_string();
-    }
-    let marker = "\n...\n";
-    let marker_len = marker.chars().count();
-    if max_chars <= marker_len + 2 {
-        return text.chars().take(max_chars).collect();
-    }
-    let head_len = (max_chars - marker_len) * 2 / 3;
-    let tail_len = max_chars - marker_len - head_len;
-    let head: String = text.chars().take(head_len).collect();
-    let tail: String = text
-        .chars()
-        .rev()
-        .take(tail_len)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("{head}{marker}{tail}")
 }
 
 fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {
