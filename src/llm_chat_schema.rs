@@ -24,6 +24,7 @@ pub mod llm_chat {
         "B1B904590F0FA70AD1BA247F3D23A6CC" as pub output_text: Handle<Blake3, LongString>;
         "9CD6494CB9825D01A2E86C7E2A56CA96" as pub response_id: Handle<Blake3, LongString>;
         "E41A91D2C68640AA86AB31A2CAB2858F" as pub response_raw: Handle<Blake3, LongString>;
+        "567E35DACDB00C799E75AEED0B6EFDF7" as pub intent_text: Handle<Blake3, LongString>;
         "BD1635514288254E9CB0448CC07C8B65" as pub response_json_root: GenId;
         "9E9B829C473E416E9150D4B94A6A2DC4" as pub error: Handle<Blake3, LongString>;
     }
@@ -155,6 +156,7 @@ where
     metadata += describe_attribute(blobs, &llm_chat::output_text)?;
     metadata += describe_attribute(blobs, &llm_chat::response_id)?;
     metadata += describe_attribute(blobs, &llm_chat::response_raw)?;
+    metadata += describe_attribute(blobs, &llm_chat::intent_text)?;
     metadata += describe_attribute(blobs, &llm_chat::response_json_root)?;
     metadata += describe_attribute(blobs, &llm_chat::error)?;
 

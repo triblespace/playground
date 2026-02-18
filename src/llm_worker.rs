@@ -45,6 +45,7 @@ struct LlmRequestIndex {
 #[derive(Debug)]
 struct OpenAIResult {
     output_text: String,
+    intent_text: Option<String>,
     raw: String,
     response_id: Option<String>,
 }
@@ -143,10 +144,12 @@ impl ChatCompletionsClient {
         } else {
             let json: JsonValue = response.json().context("read response json")?;
             let output_text = extract_output_text(&json);
+            let intent_text = extract_intent_text(&json);
             let raw = serde_json::to_string(&json).context("serialize response")?;
             let response_id = extract_response_id(&json);
             Ok(OpenAIResult {
                 output_text,
+                intent_text,
                 raw,
                 response_id,
             })
@@ -278,6 +281,12 @@ pub(crate) fn run_llm_loop(
                         llm_chat::output_text: output_handle,
                         llm_chat::response_raw: raw_handle,
                     };
+                    if let Some(intent_text) = result.intent_text {
+                        let handle = ws.put(intent_text);
+                        change += entity! { &result_id @
+                            llm_chat::intent_text: handle,
+                        };
+                    }
                     if let Some(response_id) = response_id {
                         let response_id_handle = ws.put(response_id);
                         change += entity! { &result_id @
@@ -618,6 +627,7 @@ fn parse_stream(response: reqwest::blocking::Response) -> Result<OpenAIResult> {
     let mut output_text = String::new();
     let mut raw_events = Vec::new();
     let mut response_id = None;
+    let mut intent_parts = Vec::new();
 
     let reader = BufReader::new(response);
     for line in reader.lines() {
@@ -645,14 +655,17 @@ fn parse_stream(response: reqwest::blocking::Response) -> Result<OpenAIResult> {
                     if let Some(content) = delta.get("content").and_then(JsonValue::as_str) {
                         output_text.push_str(content);
                     }
+                    collect_chat_intent_chunks(delta, &mut intent_parts);
                 }
             }
         }
     }
 
     let raw = raw_events.join("\n");
+    let intent_text = normalized_join(intent_parts);
     Ok(OpenAIResult {
         output_text,
+        intent_text,
         raw,
         response_id,
     })
@@ -702,6 +715,101 @@ fn extract_output_text(response: &JsonValue) -> String {
         .to_string()
 }
 
+fn extract_intent_text(response: &JsonValue) -> Option<String> {
+    let mut out = Vec::new();
+
+    // OpenAI responses-style reasoning summaries.
+    if let Some(output) = response.get("output").and_then(JsonValue::as_array) {
+        for item in output {
+            if item.get("type").and_then(JsonValue::as_str) != Some("reasoning") {
+                continue;
+            }
+            if let Some(summary_items) = item.get("summary").and_then(JsonValue::as_array) {
+                for entry in summary_items {
+                    if entry.get("type").and_then(JsonValue::as_str) == Some("summary_text")
+                        && let Some(text) = entry.get("text").and_then(JsonValue::as_str)
+                    {
+                        push_clean(&mut out, text);
+                    }
+                }
+            }
+        }
+    }
+
+    // Chat-completions style (including Mistral reasoning/thinking chunks where present).
+    if let Some(choices) = response.get("choices").and_then(JsonValue::as_array) {
+        for choice in choices {
+            if let Some(message) = choice.get("message") {
+                collect_chat_intent_chunks(message, &mut out);
+            }
+            if let Some(delta) = choice.get("delta") {
+                collect_chat_intent_chunks(delta, &mut out);
+            }
+        }
+    }
+
+    normalized_join(out)
+}
+
+fn collect_chat_intent_chunks(node: &JsonValue, out: &mut Vec<String>) {
+    for key in ["thinking", "reasoning", "reasoning_content"] {
+        if let Some(text) = node.get(key).and_then(JsonValue::as_str) {
+            push_clean(out, text);
+        }
+    }
+
+    if let Some(content) = node.get("content") {
+        if let Some(parts) = content.as_array() {
+            for part in parts {
+                let kind = part
+                    .get("type")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default();
+                if (kind == "thinking"
+                    || kind == "reasoning"
+                    || kind == "reasoning_content"
+                    || kind == "summary_text")
+                    && let Some(text) = part
+                        .get("text")
+                        .and_then(JsonValue::as_str)
+                        .or_else(|| part.get("content").and_then(JsonValue::as_str))
+                {
+                    push_clean(out, text);
+                }
+            }
+        }
+    }
+
+    if let Some(summary_items) = node.get("summary").and_then(JsonValue::as_array) {
+        for entry in summary_items {
+            if entry.get("type").and_then(JsonValue::as_str) == Some("summary_text")
+                && let Some(text) = entry.get("text").and_then(JsonValue::as_str)
+            {
+                push_clean(out, text);
+            }
+        }
+    }
+}
+
+fn push_clean(out: &mut Vec<String>, text: &str) {
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        out.push(trimmed.to_string());
+    }
+}
+
+fn normalized_join(chunks: Vec<String>) -> Option<String> {
+    if chunks.is_empty() {
+        return None;
+    }
+    let joined = chunks.join("\n\n");
+    if joined.trim().is_empty() {
+        None
+    } else {
+        Some(joined)
+    }
+}
+
 fn id_prefix(id: Id) -> String {
     let raw: [u8; 16] = id.into();
     let mut out = String::with_capacity(8);
@@ -709,4 +817,59 @@ fn id_prefix(id: Id) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::extract_intent_text;
+
+    #[test]
+    fn extracts_openai_reasoning_summary() {
+        let response = json!({
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "Investigating branch mismatch"}
+                    ]
+                }
+            ]
+        });
+        let intent = extract_intent_text(&response).expect("intent");
+        assert!(intent.contains("Investigating branch mismatch"));
+    }
+
+    #[test]
+    fn extracts_chat_thinking_chunks() {
+        let response = json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "thinking", "text": "Need to inspect config first"},
+                            {"type": "text", "text": "/workspace/faculties/orient.rs show"}
+                        ]
+                    }
+                }
+            ]
+        });
+        let intent = extract_intent_text(&response).expect("intent");
+        assert_eq!(intent, "Need to inspect config first");
+    }
+
+    #[test]
+    fn ignores_plain_assistant_text_without_thinking_fields() {
+        let response = json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "echo hello"
+                    }
+                }
+            ]
+        });
+        assert!(extract_intent_text(&response).is_none());
+    }
 }

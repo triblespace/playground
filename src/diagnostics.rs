@@ -2307,30 +2307,67 @@ fn collect_reasoning_summaries(
     ws: &mut Workspace<Pile>,
 ) -> Vec<ReasoningSummaryRow> {
     let mut rows = Vec::new();
-    for (_response_id, raw_handle, finished_at) in find!(
+    let mut intent_by_result: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (result_id, intent_handle) in find!(
         (
-            response_id: Id,
-            raw_handle: Value<Handle<Blake3, LongString>>,
-            finished_at: Value<NsTAIInterval>
+            result_id: Id,
+            intent_handle: Value<Handle<Blake3, LongString>>
         ),
         pattern!(data, [{
-            ?response_id @
+            ?result_id @
+            llm_chat::kind: llm_chat::kind_result,
+            llm_chat::intent_text: ?intent_handle,
+        }])
+    ) {
+        intent_by_result.insert(result_id, intent_handle);
+    }
+
+    let mut raw_by_result: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (result_id, raw_handle) in find!(
+        (
+            result_id: Id,
+            raw_handle: Value<Handle<Blake3, LongString>>
+        ),
+        pattern!(data, [{
+            ?result_id @
             llm_chat::kind: llm_chat::kind_result,
             llm_chat::response_raw: ?raw_handle,
+        }])
+    ) {
+        raw_by_result.insert(result_id, raw_handle);
+    }
+
+    for (result_id, finished_at) in find!(
+        (result_id: Id, finished_at: Value<NsTAIInterval>),
+        pattern!(data, [{
+            ?result_id @
+            llm_chat::kind: llm_chat::kind_result,
             llm_chat::finished_at: ?finished_at,
         }])
     ) {
-        let raw = load_text(ws, raw_handle).unwrap_or_default();
-        let Some(response_json) = parse_response_json(&raw) else {
+        let summary = if let Some(handle) = intent_by_result.get(&result_id).copied() {
+            load_text(ws, handle).unwrap_or_default()
+        } else if let Some(handle) = raw_by_result.get(&result_id).copied() {
+            let raw = load_text(ws, handle).unwrap_or_default();
+            let Some(response_json) = parse_response_json(&raw) else {
+                continue;
+            };
+            let summaries = extract_reasoning_summaries(&response_json);
+            if summaries.is_empty() {
+                continue;
+            }
+            summaries.join("\n")
+        } else {
             continue;
         };
-        let summaries = extract_reasoning_summaries(&response_json);
-        if summaries.is_empty() {
+
+        if summary.trim().is_empty() {
             continue;
         }
+
         rows.push(ReasoningSummaryRow {
             created_at: Some(interval_key(finished_at)),
-            summary: summaries.join("\n"),
+            summary,
         });
     }
 
