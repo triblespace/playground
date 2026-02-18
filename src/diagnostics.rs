@@ -475,6 +475,8 @@ struct AgentConfigRow {
     author: Option<String>,
     author_role: Option<String>,
     poll_ms: Option<u64>,
+    llm_profile_id: Option<Id>,
+    llm_profile_name: Option<String>,
     llm_model: Option<String>,
     llm_base_url: Option<String>,
     llm_reasoning_effort: Option<String>,
@@ -1510,29 +1512,49 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
     let author_role =
         load_optional_string_attr(data, ws, config_id, playground_config::author_role);
     let poll_ms = load_optional_u64_attr(data, config_id, playground_config::poll_ms);
-    let llm_model = load_optional_string_attr(data, ws, config_id, playground_config::llm_model);
+    let llm_profile_id =
+        load_optional_id_attr(data, config_id, playground_config::active_llm_profile_id);
+    let (llm_entity_id, llm_profile_name) = if let Some(profile_id) = llm_profile_id {
+        if let Some(entry_id) = latest_llm_profile_entry_id(data, profile_id) {
+            (
+                entry_id,
+                load_optional_string_attr(data, ws, entry_id, metadata::name),
+            )
+        } else {
+            (config_id, None)
+        }
+    } else {
+        (config_id, None)
+    };
+
+    let llm_model =
+        load_optional_string_attr(data, ws, llm_entity_id, playground_config::llm_model);
     let llm_base_url =
-        load_optional_string_attr(data, ws, config_id, playground_config::llm_base_url);
-    let llm_reasoning_effort =
-        load_optional_string_attr(data, ws, config_id, playground_config::llm_reasoning_effort);
-    let llm_stream = load_optional_u64_attr(data, config_id, playground_config::llm_stream)
+        load_optional_string_attr(data, ws, llm_entity_id, playground_config::llm_base_url);
+    let llm_reasoning_effort = load_optional_string_attr(
+        data,
+        ws,
+        llm_entity_id,
+        playground_config::llm_reasoning_effort,
+    );
+    let llm_stream = load_optional_u64_attr(data, llm_entity_id, playground_config::llm_stream)
         .map(|value| value != 0);
     let llm_context_window_tokens = load_optional_u64_attr(
         data,
-        config_id,
+        llm_entity_id,
         playground_config::llm_context_window_tokens,
     );
     let llm_max_output_tokens =
-        load_optional_u64_attr(data, config_id, playground_config::llm_max_output_tokens);
+        load_optional_u64_attr(data, llm_entity_id, playground_config::llm_max_output_tokens);
     let llm_prompt_safety_margin_tokens = load_optional_u64_attr(
         data,
-        config_id,
+        llm_entity_id,
         playground_config::llm_prompt_safety_margin_tokens,
     );
     let llm_prompt_chars_per_token =
-        load_optional_u64_attr(data, config_id, playground_config::llm_prompt_chars_per_token);
+        load_optional_u64_attr(data, llm_entity_id, playground_config::llm_prompt_chars_per_token);
     let llm_api_key =
-        load_optional_string_attr(data, ws, config_id, playground_config::llm_api_key);
+        load_optional_string_attr(data, ws, llm_entity_id, playground_config::llm_api_key);
     let tavily_api_key =
         load_optional_string_attr(data, ws, config_id, playground_config::tavily_api_key);
     let exa_api_key =
@@ -1562,6 +1584,8 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         author,
         author_role,
         poll_ms,
+        llm_profile_id,
+        llm_profile_name,
         llm_model,
         llm_base_url,
         llm_reasoning_effort,
@@ -1577,6 +1601,25 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         exec_sandbox_profile,
         system_prompt,
     })
+}
+
+fn latest_llm_profile_entry_id(data: &TribleSet, profile_id: Id) -> Option<Id> {
+    let mut latest: Option<(Id, i128)> = None;
+    for (entry_id, updated_at) in find!(
+        (entry_id: Id, updated_at: Value<NsTAIInterval>),
+        pattern!(data, [{
+            ?entry_id @
+            playground_config::kind: playground_config::kind_llm_profile,
+            playground_config::updated_at: ?updated_at,
+            playground_config::llm_profile_id: profile_id,
+        }])
+    ) {
+        let key = interval_key(updated_at);
+        if latest.map_or(true, |(_, current)| key > current) {
+            latest = Some((entry_id, key));
+        }
+    }
+    latest.map(|(entry_id, _)| entry_id)
 }
 
 fn load_optional_id_attr(data: &TribleSet, entity_id: Id, attr: Attribute<GenId>) -> Option<Id> {
@@ -3562,6 +3605,15 @@ fn render_agent_config(
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             );
+            ui.end_row();
+
+            ui.label("llm.profile");
+            ui.horizontal(|ui| {
+                ui.label(config.llm_profile_name.as_deref().unwrap_or("-"));
+                if let Some(id) = config.llm_profile_id {
+                    ui.monospace(format!("({id:x})"));
+                }
+            });
             ui.end_row();
 
             ui.label("llm.model");

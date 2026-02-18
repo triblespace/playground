@@ -66,6 +66,27 @@ enum ConfigCommand {
     Set(ConfigSetArgs),
     #[command(about = "Clear an optional config field in the pile")]
     Unset(ConfigUnsetArgs),
+    #[command(about = "Manage LLM profiles (headspaces)")]
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ProfileCommand {
+    #[command(about = "List available profiles")]
+    List,
+    #[command(about = "Create a new profile and make it active")]
+    Add {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    #[command(about = "Switch active profile by id or name")]
+    Use {
+        #[arg(value_name = "PROFILE")]
+        profile: String,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -310,8 +331,56 @@ fn handle_config(pile: Option<&Path>, command: ConfigCommand) -> Result<()> {
             config.store().context("store config")?;
             print_config(&config, false);
         }
+        ConfigCommand::Profile { command } => match command {
+            ProfileCommand::List => {
+                let profiles = config::list_llm_profiles(config.pile_path.as_path())
+                    .context("list profiles")?;
+                for profile in profiles {
+                    let active = (config.llm_profile_id == Some(profile.id)).then_some("*");
+                    let active = active.unwrap_or(" ");
+                    println!("{active} {}\t{:x}", profile.name, profile.id);
+                }
+            }
+            ProfileCommand::Add { name } => {
+                config.llm_profile_id = Some(*genid());
+                config.llm_profile_name = name;
+                config.store().context("store config")?;
+                print_config(&config, false);
+            }
+            ProfileCommand::Use { profile } => {
+                let profile_id = resolve_profile_selector(&config, profile.as_str())?;
+                let Some((llm, name)) =
+                    config::load_llm_profile(config.pile_path.as_path(), profile_id)?
+                else {
+                    return Err(anyhow!("unknown profile {profile_id:x}"));
+                };
+                config.llm_profile_id = Some(profile_id);
+                config.llm_profile_name = name;
+                config.llm = llm;
+                config.store().context("store config")?;
+                print_config(&config, false);
+            }
+        },
     }
     Ok(())
+}
+
+fn resolve_profile_selector(config: &Config, raw: &str) -> Result<Id> {
+    if let Ok(id) = parse_hex_id(raw, "profile_id") {
+        return Ok(id);
+    }
+    let needle = raw.trim().to_lowercase();
+    let profiles = config::list_llm_profiles(config.pile_path.as_path()).context("list profiles")?;
+    let mut matches = profiles
+        .into_iter()
+        .filter(|profile| profile.name.to_lowercase() == needle);
+    let Some(first) = matches.next() else {
+        return Err(anyhow!("unknown profile '{raw}'"));
+    };
+    if matches.next().is_some() {
+        return Err(anyhow!("profile name '{raw}' is ambiguous; use the hex id"));
+    }
+    Ok(first.id)
 }
 
 fn apply_config_set(config: &mut Config, args: ConfigSetArgs) -> Result<()> {
@@ -756,6 +825,14 @@ fn print_config(config: &Config, show_secrets: bool) {
     );
 
     println!("\n[llm]");
+    println!(
+        "profile_id = {}",
+        config
+            .llm_profile_id
+            .map(|id| format!("\"{id:x}\""))
+            .unwrap_or_else(|| "null".to_string())
+    );
+    println!("profile_name = \"{}\"", config.llm_profile_name);
     println!("model = \"{}\"", config.llm.model);
     println!("base_url = \"{}\"", config.llm.base_url);
     match (&config.llm.api_key, show_secrets) {

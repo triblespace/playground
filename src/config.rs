@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use triblespace::core::metadata;
 use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::{Repository, Workspace};
 use triblespace::macros::id_hex;
@@ -47,6 +49,8 @@ const CONFIG_BRANCH_ID: Id = id_hex!("4790808CF044F979FC7C2E47FCCB4A64");
 pub struct Config {
     pub pile_path: PathBuf,
     pub llm: LlmConfig,
+    pub llm_profile_id: Option<Id>,
+    pub llm_profile_name: String,
     pub tavily_api_key: Option<String>,
     pub exa_api_key: Option<String>,
     pub exec: ExecConfig,
@@ -85,6 +89,12 @@ pub struct LlmConfig {
 pub struct ExecConfig {
     pub default_cwd: Option<PathBuf>,
     pub sandbox_profile: Option<Id>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LlmProfileSummary {
+    pub id: Id,
+    pub name: String,
 }
 
 impl Default for ExecConfig {
@@ -145,10 +155,85 @@ impl Config {
     }
 }
 
+pub fn list_llm_profiles(pile_path: &Path) -> Result<Vec<LlmProfileSummary>> {
+    let (mut repo, branch_id) = open_config_repo(pile_path)?;
+    let result = (|| -> Result<Vec<LlmProfileSummary>> {
+        let mut ws = repo
+            .pull(branch_id)
+            .map_err(|err| anyhow!("pull config workspace: {err:?}"))?;
+        let catalog = ws.checkout(..).context("checkout config workspace")?;
+
+        let mut latest: HashMap<Id, (Id, i128)> = HashMap::new();
+        for (entry_id, profile_id, updated_at) in find!(
+            (entry_id: Id, profile_id: Value<GenId>, updated_at: Value<NsTAIInterval>),
+            pattern!(&catalog, [{
+                ?entry_id @
+                playground_config::kind: playground_config::kind_llm_profile,
+                playground_config::updated_at: ?updated_at,
+                playground_config::llm_profile_id: ?profile_id,
+            }])
+        ) {
+            let profile_id = Id::from_value(&profile_id);
+            let key = interval_key(updated_at);
+            latest
+                .entry(profile_id)
+                .and_modify(|slot| {
+                    if key > slot.1 {
+                        *slot = (entry_id, key);
+                    }
+                })
+                .or_insert((entry_id, key));
+        }
+
+        let mut profiles = Vec::new();
+        for (profile_id, (entry_id, _updated_key)) in latest {
+            let name = load_string_attr(&mut ws, &catalog, entry_id, metadata::name)?
+                .unwrap_or_else(|| format!("profile-{profile_id:x}"));
+            profiles.push(LlmProfileSummary {
+                id: profile_id,
+                name,
+            });
+        }
+        profiles.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+        Ok(profiles)
+    })();
+
+    if let Err(err) = close_repo(repo).context("close config pile") {
+        if result.is_ok() {
+            return Err(err);
+        }
+        eprintln!("warning: failed to close pile cleanly: {err:#}");
+    }
+
+    result
+}
+
+pub fn load_llm_profile(pile_path: &Path, profile_id: Id) -> Result<Option<(LlmConfig, String)>> {
+    let (mut repo, branch_id) = open_config_repo(pile_path)?;
+    let result = (|| -> Result<Option<(LlmConfig, String)>> {
+        let mut ws = repo
+            .pull(branch_id)
+            .map_err(|err| anyhow!("pull config workspace: {err:?}"))?;
+        let catalog = ws.checkout(..).context("checkout config workspace")?;
+        load_latest_llm_profile(&mut ws, &catalog, profile_id)
+    })();
+
+    if let Err(err) = close_repo(repo).context("close config pile") {
+        if result.is_ok() {
+            return Err(err);
+        }
+        eprintln!("warning: failed to close pile cleanly: {err:#}");
+    }
+
+    result
+}
+
 fn default_config(pile_path: PathBuf) -> Config {
     Config {
         pile_path,
         llm: LlmConfig::default(),
+        llm_profile_id: None,
+        llm_profile_name: "default".to_string(),
         tavily_api_key: None,
         exa_api_key: None,
         exec: ExecConfig::default(),
@@ -249,11 +334,20 @@ fn ensure_registered_branch_ids(config: &mut Config) -> bool {
     changed |= ensure_registered_branch_id(&mut config.archive_branch_id);
     changed |= ensure_registered_branch_id(&mut config.web_branch_id);
     changed |= ensure_registered_branch_id(&mut config.media_branch_id);
+    changed |= ensure_registered_llm_profile_id(&mut config.llm_profile_id);
 
     changed
 }
 
 fn ensure_registered_branch_id(slot: &mut Option<Id>) -> bool {
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(*genid());
+    true
+}
+
+fn ensure_registered_llm_profile_id(slot: &mut Option<Id>) -> bool {
     if slot.is_some() {
         return false;
     }
@@ -339,6 +433,9 @@ fn load_latest_config(
     }
     if let Some(id) = load_id_attr(catalog, config_id, playground_config::persona_id) {
         config.persona_id = Some(id);
+    }
+    if let Some(id) = load_id_attr(catalog, config_id, playground_config::active_llm_profile_id) {
+        config.llm_profile_id = Some(id);
     }
     if let Some(model) = load_string_attr(ws, catalog, config_id, playground_config::llm_model)? {
         config.llm.model = model;
@@ -448,26 +545,114 @@ fn load_latest_config(
         config.llm.prompt_chars_per_token = chars;
     }
 
+    if let Some(profile_id) = config.llm_profile_id {
+        if let Some((llm, name)) = load_latest_llm_profile(ws, catalog, profile_id)? {
+            config.llm = llm;
+            config.llm_profile_name = name;
+        }
+    }
+
     Ok(Some(config))
+}
+
+fn load_latest_llm_profile(
+    ws: &mut Workspace<Pile>,
+    catalog: &TribleSet,
+    profile_id: Id,
+) -> Result<Option<(LlmConfig, String)>> {
+    let mut latest: Option<(Id, Value<NsTAIInterval>)> = None;
+
+    for (entry_id, updated_at) in find!(
+        (entry_id: Id, updated_at: Value<NsTAIInterval>),
+        pattern!(catalog, [{
+            ?entry_id @
+            playground_config::kind: playground_config::kind_llm_profile,
+            playground_config::updated_at: ?updated_at,
+            playground_config::llm_profile_id: profile_id,
+        }])
+    ) {
+        let key = interval_key(updated_at);
+        match latest {
+            Some((_, current)) if interval_key(current) >= key => {}
+            _ => latest = Some((entry_id, updated_at)),
+        }
+    }
+
+    let Some((entry_id, _)) = latest else {
+        return Ok(None);
+    };
+
+    let mut llm = LlmConfig::default();
+    if let Some(model) = load_string_attr(ws, catalog, entry_id, playground_config::llm_model)? {
+        llm.model = model;
+    }
+    if let Some(url) = load_string_attr(ws, catalog, entry_id, playground_config::llm_base_url)? {
+        llm.base_url = url;
+    }
+    if let Some(effort) = load_string_attr(
+        ws,
+        catalog,
+        entry_id,
+        playground_config::llm_reasoning_effort,
+    )? {
+        llm.reasoning_effort = Some(effort);
+    }
+    if let Some(key) = load_string_attr(ws, catalog, entry_id, playground_config::llm_api_key)? {
+        llm.api_key = Some(key);
+    }
+    if let Some(stream) =
+        load_u256_attr(catalog, entry_id, playground_config::llm_stream).and_then(u256be_to_u64)
+    {
+        llm.stream = stream != 0;
+    }
+    if let Some(tokens) = load_u256_attr(
+        catalog,
+        entry_id,
+        playground_config::llm_context_window_tokens,
+    )
+    .and_then(u256be_to_u64)
+    {
+        llm.context_window_tokens = tokens;
+    }
+    if let Some(tokens) =
+        load_u256_attr(catalog, entry_id, playground_config::llm_max_output_tokens)
+            .and_then(u256be_to_u64)
+    {
+        llm.max_output_tokens = tokens;
+    }
+    if let Some(tokens) = load_u256_attr(
+        catalog,
+        entry_id,
+        playground_config::llm_prompt_safety_margin_tokens,
+    )
+    .and_then(u256be_to_u64)
+    {
+        llm.prompt_safety_margin_tokens = tokens;
+    }
+    if let Some(chars) =
+        load_u256_attr(catalog, entry_id, playground_config::llm_prompt_chars_per_token)
+            .and_then(u256be_to_u64)
+    {
+        llm.prompt_chars_per_token = chars;
+    }
+
+    let name = load_string_attr(ws, catalog, entry_id, metadata::name)?
+        .unwrap_or_else(|| format!("profile-{profile_id:x}"));
+    Ok(Some((llm, name)))
 }
 
 fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     let now = epoch_interval(now_epoch());
     let config_id = ufoid();
+    let profile_id = config
+        .llm_profile_id
+        .ok_or_else(|| anyhow!("config missing active LLM profile id"))?;
 
     let system_prompt = ws.put(config.system_prompt.clone());
     let branch = ws.put(config.branch.clone());
     let author = ws.put(config.author.clone());
     let author_role = ws.put(config.author_role.clone());
-    let llm_model = ws.put(config.llm.model.clone());
-    let llm_base_url = ws.put(config.llm.base_url.clone());
     let poll_ms: Value<U256BE> = config.poll_ms.to_value();
-    let llm_stream: Value<U256BE> = if config.llm.stream { 1u64 } else { 0u64 }.to_value();
-    let llm_context_window_tokens: Value<U256BE> = config.llm.context_window_tokens.to_value();
-    let llm_max_output_tokens: Value<U256BE> = config.llm.max_output_tokens.to_value();
-    let llm_prompt_safety_margin_tokens: Value<U256BE> =
-        config.llm.prompt_safety_margin_tokens.to_value();
-    let llm_prompt_chars_per_token: Value<U256BE> = config.llm.prompt_chars_per_token.to_value();
 
     let mut change = TribleSet::new();
     change += entity! { &config_id @
@@ -478,13 +663,7 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
         playground_config::author: author,
         playground_config::author_role: author_role,
         playground_config::poll_ms: poll_ms,
-        playground_config::llm_model: llm_model,
-        playground_config::llm_base_url: llm_base_url,
-        playground_config::llm_stream: llm_stream,
-        playground_config::llm_context_window_tokens: llm_context_window_tokens,
-        playground_config::llm_max_output_tokens: llm_max_output_tokens,
-        playground_config::llm_prompt_safety_margin_tokens: llm_prompt_safety_margin_tokens,
-        playground_config::llm_prompt_chars_per_token: llm_prompt_chars_per_token,
+        playground_config::active_llm_profile_id: profile_id,
     };
 
     if let Some(id) = config.branch_id {
@@ -520,10 +699,6 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     if let Some(id) = config.persona_id {
         change += entity! { &config_id @ playground_config::persona_id: id };
     }
-    if let Some(key) = config.llm.api_key.as_ref() {
-        let handle = ws.put(key.clone());
-        change += entity! { &config_id @ playground_config::llm_api_key: handle };
-    }
     if let Some(key) = config.tavily_api_key.as_ref() {
         let handle = ws.put(key.clone());
         change += entity! { &config_id @ playground_config::tavily_api_key: handle };
@@ -532,16 +707,46 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
         let handle = ws.put(key.clone());
         change += entity! { &config_id @ playground_config::exa_api_key: handle };
     }
-    if let Some(effort) = config.llm.reasoning_effort.as_ref() {
-        let handle = ws.put(effort.clone());
-        change += entity! { &config_id @ playground_config::llm_reasoning_effort: handle };
-    }
     if let Some(cwd) = config.exec.default_cwd.as_ref() {
         let handle = ws.put(cwd.to_string_lossy().to_string());
         change += entity! { &config_id @ playground_config::exec_default_cwd: handle };
     }
     if let Some(profile) = config.exec.sandbox_profile {
         change += entity! { &config_id @ playground_config::exec_sandbox_profile: profile };
+    }
+
+    let profile_entry_id = ufoid();
+    let profile_name = ws.put(config.llm_profile_name.clone());
+    let llm_model = ws.put(config.llm.model.clone());
+    let llm_base_url = ws.put(config.llm.base_url.clone());
+    let llm_stream: Value<U256BE> = if config.llm.stream { 1u64 } else { 0u64 }.to_value();
+    let llm_context_window_tokens: Value<U256BE> = config.llm.context_window_tokens.to_value();
+    let llm_max_output_tokens: Value<U256BE> = config.llm.max_output_tokens.to_value();
+    let llm_prompt_safety_margin_tokens: Value<U256BE> =
+        config.llm.prompt_safety_margin_tokens.to_value();
+    let llm_prompt_chars_per_token: Value<U256BE> = config.llm.prompt_chars_per_token.to_value();
+
+    change += entity! { &profile_entry_id @
+        playground_config::kind: playground_config::kind_llm_profile,
+        playground_config::updated_at: now,
+        playground_config::llm_profile_id: profile_id,
+        metadata::name: profile_name,
+        playground_config::llm_model: llm_model,
+        playground_config::llm_base_url: llm_base_url,
+        playground_config::llm_stream: llm_stream,
+        playground_config::llm_context_window_tokens: llm_context_window_tokens,
+        playground_config::llm_max_output_tokens: llm_max_output_tokens,
+        playground_config::llm_prompt_safety_margin_tokens: llm_prompt_safety_margin_tokens,
+        playground_config::llm_prompt_chars_per_token: llm_prompt_chars_per_token,
+    };
+
+    if let Some(key) = config.llm.api_key.as_ref() {
+        let handle = ws.put(key.clone());
+        change += entity! { &profile_entry_id @ playground_config::llm_api_key: handle };
+    }
+    if let Some(effort) = config.llm.reasoning_effort.as_ref() {
+        let handle = ws.put(effort.clone());
+        change += entity! { &profile_entry_id @ playground_config::llm_reasoning_effort: handle };
     }
 
     ws.commit(change, None, Some("playground config"));

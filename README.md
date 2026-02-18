@@ -86,6 +86,17 @@ Clear an optional config field:
 cargo run --manifest-path playground/Cargo.toml -- --pile /path/to/pile/self.pile config unset llm-api-key
 ```
 
+Manage LLM profiles (headspaces):
+
+```bash
+cargo run --manifest-path playground/Cargo.toml -- --pile /path/to/pile/self.pile config profile list
+cargo run --manifest-path playground/Cargo.toml -- --pile /path/to/pile/self.pile config profile add "oss-120"
+cargo run --manifest-path playground/Cargo.toml -- --pile /path/to/pile/self.pile config profile use oss-120
+```
+
+LLM settings (`llm-model`, `llm-base-url`, `llm-reasoning-effort`, etc.) are stored on the active
+profile.
+
 ## Workspace snapshots (in the pile)
 
 Capture a curated snapshot of the workspace into the pile (branch `workspace` by default):

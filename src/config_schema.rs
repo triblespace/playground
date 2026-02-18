@@ -25,7 +25,9 @@ pub mod playground_config {
         "F0F90572249284CD57E48580369DEB6D" as pub author: Handle<Blake3, LongString>;
         "98A194178CFD7CBB915C1BC9EB561A7F" as pub author_role: Handle<Blake3, LongString>;
         "D1DC11B303725409AB8A30C6B59DB2D7" as pub persona_id: GenId;
+        "79E1B50756FB64A30916E9353225E179" as pub active_llm_profile_id: GenId;
         "698519DFB681FABC3F06160ACAC9DA8E" as pub poll_ms: U256BE;
+        "6691CF3F872C6107DCFAD0BCF7CDC1A0" as pub llm_profile_id: GenId;
         "85BE7BDA465B3CB0F800F76EEF8FAC9B" as pub llm_model: Handle<Blake3, LongString>;
         "B216CFBBF85AA1350B142D510E26268B" as pub llm_base_url: Handle<Blake3, LongString>;
         "55F3FFD721AF7C1258E45BC91CDBF30F" as pub llm_api_key: Handle<Blake3, LongString>;
@@ -48,6 +50,10 @@ pub mod playground_config {
     /// Tag for configuration entries.
     #[allow(non_upper_case_globals)]
     pub const kind_config: Id = id_hex!("A8DCBFD625F386AA7CDFD62A81183E82");
+
+    /// Tag for LLM profile entries (versioned by `updated_at`).
+    #[allow(non_upper_case_globals)]
+    pub const kind_llm_profile: Id = id_hex!("B08E356C4B08F44AB7EC177D47129447");
 
     /// Tag for playground_config protocol metadata.
     #[allow(non_upper_case_globals)]
@@ -117,6 +123,14 @@ where
         metadata::tag: playground_config::tag_kind,
     };
 
+    tribles += entity! { ExclusiveId::force_ref(&playground_config::kind_llm_profile) @
+        metadata::name: blobs.put("kind_llm_profile".to_string())?,
+        metadata::description: blobs.put(
+            "LLM profile entry entity kind.".to_string(),
+        )?,
+        metadata::tag: playground_config::tag_kind,
+    };
+
     Ok(tribles)
 }
 
@@ -150,7 +164,9 @@ where
     metadata += describe_attribute(blobs, &playground_config::author)?;
     metadata += describe_attribute(blobs, &playground_config::author_role)?;
     metadata += describe_attribute(blobs, &playground_config::persona_id)?;
+    metadata += describe_attribute(blobs, &playground_config::active_llm_profile_id)?;
     metadata += describe_attribute(blobs, &playground_config::poll_ms)?;
+    metadata += describe_attribute(blobs, &playground_config::llm_profile_id)?;
     metadata += describe_attribute(blobs, &playground_config::llm_model)?;
     metadata += describe_attribute(blobs, &playground_config::llm_base_url)?;
     metadata += describe_attribute(blobs, &playground_config::llm_api_key)?;
