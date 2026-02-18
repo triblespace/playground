@@ -35,7 +35,7 @@ use repo_util::{
     close_repo, current_branch_head, init_repo, load_text, pull_workspace, push_workspace,
     refresh_cached_checkout,
 };
-use schema::{llm_chat, playground_cog, playground_exec};
+use schema::{llm_chat, playground_cog, playground_context, playground_exec};
 use time_util::{epoch_interval, interval_key, now_epoch};
 
 #[derive(Subcommand, Debug)]
@@ -810,18 +810,10 @@ fn run_loop(config: Config) -> Result<()> {
                 exec_cwd.as_deref(),
                 exec_profile,
             )?;
-            let command_result =
+            let command_result_id =
                 wait_for_command_result(&mut repo, branch_id, command_request_id, config.poll_ms)?;
-
-            let prompt_body = format_exec_output(command, command_result.result);
-            let prompt = compose_prompt(&config.system_prompt, &prompt_body);
-            request_info = create_thought_and_request(
-                &mut repo,
-                branch_id,
-                &prompt,
-                Some(command_result.id),
-                &config,
-            )?;
+            request_info =
+                create_thought_and_request(&mut repo, branch_id, Some(command_result_id), &config)?;
         }
         Ok(())
     })();
@@ -923,11 +915,8 @@ fn ensure_llm_request(
         }
 
         if let Some(exec_result) = core_index.latest_unprocessed_exec_result() {
-            let prompt =
-                prompt_from_exec_result_with_index(&mut ws, &core_index, &exec_result, config)?;
-            let request =
-                create_thought_and_request(repo, branch_id, &prompt, Some(exec_result.id), config)?;
-            return Ok(request);
+            drop(ws);
+            return create_thought_and_request(repo, branch_id, Some(exec_result.id), config);
         }
 
         if !core_index.has_pending_command_request() {
@@ -957,7 +946,6 @@ fn orient_bootstrap_command(config: &Config) -> String {
 fn create_thought_and_request(
     repo: &mut Repository<Pile>,
     branch_id: Id,
-    prompt: &str,
     about_exec_result: Option<Id>,
     config: &Config,
 ) -> Result<LlmRequestInfo> {
@@ -979,9 +967,15 @@ fn create_thought_and_request(
     }
 
     let now = epoch_interval(now_epoch());
-    let prompt_handle = ws.put(prompt.to_owned());
+    let (prompt, compact_change) = if let Some(exec_result_id) = about_exec_result {
+        prompt_for_exec_result_with_history(&mut ws, &core_index, &catalog, exec_result_id, config)?
+    } else {
+        (config.system_prompt.clone(), TribleSet::new())
+    };
+    let prompt_handle = ws.put(prompt);
     let thought_id = ufoid();
     let mut change = TribleSet::new();
+    change += compact_change;
     change += entity! { &thought_id @
         playground_cog::kind: playground_cog::kind_thought,
         playground_cog::prompt: prompt_handle,
@@ -1115,12 +1109,6 @@ struct CommandResultInfo {
     stderr_text: Option<Value<Handle<Blake3, LongString>>>,
     exit_code: Option<Value<U256BE>>,
     error: Option<Value<Handle<Blake3, LongString>>>,
-}
-
-#[derive(Debug)]
-struct CommandResultOutput {
-    id: Id,
-    result: ExecResult,
 }
 
 impl CoreIndex {
@@ -1600,7 +1588,7 @@ fn wait_for_command_result(
     branch_id: Id,
     request_id: Id,
     poll_ms: u64,
-) -> Result<CommandResultOutput> {
+) -> Result<Id> {
     let mut cached_head = None;
     let mut cached_catalog = TribleSet::new();
     let mut core_index = CoreIndex::default();
@@ -1619,11 +1607,7 @@ fn wait_for_command_result(
             continue;
         }
         if let Some(result) = core_index.latest_command_result(request_id) {
-            let exec_result = load_exec_result(&mut ws, result.clone())?;
-            return Ok(CommandResultOutput {
-                id: result.id,
-                result: exec_result,
-            });
+            return Ok(result.id);
         }
         sleep(Duration::from_millis(poll_ms));
     }
@@ -1655,11 +1639,157 @@ fn delta_has_command_result(updated: &TribleSet, delta: &TribleSet, request_id: 
     .any(|(about_request,)| about_request == request_id)
 }
 
-fn prompt_from_exec_result_with_index(
+const PROMPT_RECENT_TURN_COUNT: usize = 8;
+const PROMPT_RECENT_STDOUT_MAX_CHARS: usize = 4000;
+const PROMPT_RECENT_STDERR_MAX_CHARS: usize = 2000;
+const PROMPT_COMPACT_STDOUT_MAX_CHARS: usize = 1200;
+const PROMPT_COMPACT_STDERR_MAX_CHARS: usize = 800;
+const PROMPT_COMPACT_MAX_CHARS: usize = 6000;
+
+#[derive(Debug, Clone)]
+struct ContextChunk {
+    id: Id,
+    level: u64,
+    summary: Value<Handle<Blake3, LongString>>,
+    start_at: Value<NsTAIInterval>,
+    end_at: Value<NsTAIInterval>,
+}
+
+#[derive(Default)]
+struct ContextChunkIndex {
+    chunks: HashMap<Id, ContextChunk>,
+    // The LSM frontier: one "root" chunk per level (best-effort; if multiple exist, keep the
+    // newest by end_at as the active chunk for merging).
+    root_by_level: HashMap<u64, Id>,
+    // Leaf chunks tie a single exec result to a compacted chunk.
+    chunk_for_exec_result: HashMap<Id, Id>,
+}
+
+fn prompt_for_exec_result_with_history(
+    ws: &mut Workspace<Pile>,
+    core_index: &CoreIndex,
+    catalog: &TribleSet,
+    exec_result_id: Id,
+    config: &Config,
+) -> Result<(String, TribleSet)> {
+    let (body, compact_change) =
+        build_prompt_body_with_compaction(ws, core_index, catalog, exec_result_id)?;
+    Ok((compose_prompt(&config.system_prompt, &body), compact_change))
+}
+
+fn build_prompt_body_with_compaction(
+    ws: &mut Workspace<Pile>,
+    core_index: &CoreIndex,
+    catalog: &TribleSet,
+    exec_result_id: Id,
+) -> Result<(String, TribleSet)> {
+    let mut index = load_context_chunks(catalog);
+
+    // Sort all command results in chronological order (oldest -> newest).
+    let mut results: Vec<CommandResultInfo> =
+        core_index.command_results.values().cloned().collect();
+    results.sort_by_key(|result| result.finished_at.map(interval_key).unwrap_or(i128::MIN));
+    results.retain(|result| result.finished_at.is_some());
+
+    let Some(current_pos) = results
+        .iter()
+        .position(|result| result.id == exec_result_id)
+    else {
+        return Err(anyhow!("exec result {exec_result_id:x} missing from index"));
+    };
+    let results = results[..=current_pos].to_vec();
+
+    let cutoff = results.len().saturating_sub(PROMPT_RECENT_TURN_COUNT);
+    let mut compact_change = TribleSet::new();
+
+    for result in results.iter().take(cutoff) {
+        if index.chunk_for_exec_result.contains_key(&result.id) {
+            continue;
+        }
+        let finished_at = result
+            .finished_at
+            .context("command result missing finished_at")?;
+        let command = load_command_for_result(ws, core_index, result)?;
+        let exec_output = load_exec_result(ws, result.clone())?;
+        let leaf_summary = format_exec_output_limited(
+            command.as_str(),
+            exec_output,
+            PROMPT_COMPACT_STDOUT_MAX_CHARS,
+            PROMPT_COMPACT_STDERR_MAX_CHARS,
+        );
+        let leaf_summary = compact_text(leaf_summary.as_str(), PROMPT_COMPACT_MAX_CHARS);
+        let leaf_summary_handle = ws.put(leaf_summary);
+        let now = epoch_interval(now_epoch());
+        let chunk_id = ufoid();
+
+        compact_change += entity! { &chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::level: 0u64,
+            playground_context::summary: leaf_summary_handle,
+            playground_context::created_at: now,
+            playground_context::start_at: finished_at,
+            playground_context::end_at: finished_at,
+            playground_context::about_exec_result: result.id,
+        };
+
+        let chunk = ContextChunk {
+            id: *chunk_id,
+            level: 0,
+            summary: leaf_summary_handle,
+            start_at: finished_at,
+            end_at: finished_at,
+        };
+        index.chunk_for_exec_result.insert(result.id, chunk.id);
+        insert_chunk_with_carry(ws, &mut index, &mut compact_change, chunk)?;
+    }
+
+    // Build the prompt body from the LSM frontier + the last N raw turns.
+    let mut body = String::new();
+
+    let mut roots: Vec<ContextChunk> = index
+        .root_by_level
+        .values()
+        .filter_map(|id| index.chunks.get(id).cloned())
+        .collect();
+    roots.sort_by_key(|chunk| interval_key(chunk.start_at));
+
+    if !roots.is_empty() {
+        body.push_str("history_compacted:\n\n");
+        for chunk in roots {
+            let summary = load_text(ws, chunk.summary).context("load compacted history chunk")?;
+            body.push_str(summary.trim_end());
+            body.push_str("\n\n");
+        }
+    }
+
+    let recent_results = results.iter().skip(cutoff).cloned().collect::<Vec<_>>();
+
+    if !recent_results.is_empty() {
+        body.push_str("recent:\n\n");
+        for (idx, result) in recent_results.into_iter().enumerate() {
+            let command = load_command_for_result(ws, core_index, &result)?;
+            let exec_output = load_exec_result(ws, result)?;
+            body.push_str(&format!("turn {}:\n", idx + 1));
+            body.push_str(
+                format_exec_output_limited(
+                    command.as_str(),
+                    exec_output,
+                    PROMPT_RECENT_STDOUT_MAX_CHARS,
+                    PROMPT_RECENT_STDERR_MAX_CHARS,
+                )
+                .trim_end(),
+            );
+            body.push_str("\n\n");
+        }
+    }
+
+    Ok((body, compact_change))
+}
+
+fn load_command_for_result(
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     exec_result: &CommandResultInfo,
-    config: &Config,
 ) -> Result<String> {
     let Some(command_handle) = core_index.command_request_command_handle(exec_result.about_request)
     else {
@@ -1668,10 +1798,159 @@ fn prompt_from_exec_result_with_index(
             id = exec_result.about_request
         ));
     };
-    let command = load_text(ws, command_handle).context("load command for exec result")?;
-    let exec_output = load_exec_result(ws, exec_result.clone())?;
-    let body = format_exec_output(&command, exec_output);
-    Ok(compose_prompt(&config.system_prompt, &body))
+    load_text(ws, command_handle).context("load command for exec result")
+}
+
+fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
+    let mut index = ContextChunkIndex::default();
+
+    for (chunk_id, level, summary, start_at, end_at) in find!(
+        (
+            chunk_id: Id,
+            level: Value<U256BE>,
+            summary: Value<Handle<Blake3, LongString>>,
+            start_at: Value<NsTAIInterval>,
+            end_at: Value<NsTAIInterval>
+        ),
+        pattern!(catalog, [{
+            ?chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::level: ?level,
+            playground_context::summary: ?summary,
+            playground_context::start_at: ?start_at,
+            playground_context::end_at: ?end_at,
+        }])
+    ) {
+        let level = u256be_to_u64(level).unwrap_or_default();
+        index.chunks.insert(
+            chunk_id,
+            ContextChunk {
+                id: chunk_id,
+                level,
+                summary,
+                start_at,
+                end_at,
+            },
+        );
+    }
+
+    for (chunk_id, exec_result_id) in find!(
+        (chunk_id: Id, exec_result_id: Id),
+        pattern!(catalog, [{
+            ?chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::about_exec_result: ?exec_result_id,
+        }])
+    ) {
+        index.chunk_for_exec_result.insert(exec_result_id, chunk_id);
+    }
+
+    // Determine the LSM frontier by removing all chunks that are referenced as children.
+    let mut children = HashSet::new();
+    for (child_id,) in find!(
+        (child_id: Id),
+        pattern!(catalog, [{
+            _?parent @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::left: ?child_id,
+        }])
+    ) {
+        children.insert(child_id);
+    }
+    for (child_id,) in find!(
+        (child_id: Id),
+        pattern!(catalog, [{
+            _?parent @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::right: ?child_id,
+        }])
+    ) {
+        children.insert(child_id);
+    }
+
+    for chunk in index.chunks.values() {
+        if children.contains(&chunk.id) {
+            continue;
+        }
+        let end_key = interval_key(chunk.end_at);
+        match index
+            .root_by_level
+            .get(&chunk.level)
+            .and_then(|id| index.chunks.get(id))
+        {
+            Some(existing) if interval_key(existing.end_at) >= end_key => {}
+            _ => {
+                index.root_by_level.insert(chunk.level, chunk.id);
+            }
+        }
+    }
+
+    index
+}
+
+fn insert_chunk_with_carry(
+    ws: &mut Workspace<Pile>,
+    index: &mut ContextChunkIndex,
+    change: &mut TribleSet,
+    mut carry: ContextChunk,
+) -> Result<()> {
+    let mut level = carry.level;
+    loop {
+        if let Some(existing_id) = index.root_by_level.remove(&level) {
+            let existing = index
+                .chunks
+                .get(&existing_id)
+                .cloned()
+                .context("missing existing chunk for carry")?;
+
+            // Order children by time to keep summaries consistent.
+            let (left, right) = if interval_key(existing.start_at) <= interval_key(carry.start_at) {
+                (existing, carry)
+            } else {
+                (carry, existing)
+            };
+
+            let left_text = load_text(ws, left.summary).context("load left chunk summary")?;
+            let right_text = load_text(ws, right.summary).context("load right chunk summary")?;
+            let merged_text = format!("{left_text}\n\n{right_text}");
+            let merged_text = compact_text(merged_text.as_str(), PROMPT_COMPACT_MAX_CHARS);
+            let merged_handle = ws.put(merged_text);
+
+            let now = epoch_interval(now_epoch());
+            let parent_id = ufoid();
+            let parent_level = level + 1;
+            *change += entity! { &parent_id @
+                playground_context::kind: playground_context::kind_chunk,
+                playground_context::level: parent_level,
+                playground_context::summary: merged_handle,
+                playground_context::created_at: now,
+                playground_context::start_at: left.start_at,
+                playground_context::end_at: right.end_at,
+                playground_context::left: left.id,
+                playground_context::right: right.id,
+            };
+
+            carry = ContextChunk {
+                id: *parent_id,
+                level: parent_level,
+                summary: merged_handle,
+                start_at: left.start_at,
+                end_at: right.end_at,
+            };
+
+            // Update chunk index for subsequent carry steps.
+            index.chunks.insert(left.id, left);
+            index.chunks.insert(right.id, right);
+            index.chunks.insert(carry.id, carry.clone());
+
+            level = parent_level;
+            continue;
+        }
+
+        index.root_by_level.insert(level, carry.id);
+        index.chunks.insert(carry.id, carry);
+        return Ok(());
+    }
 }
 
 fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Result<ExecResult> {
@@ -1707,16 +1986,33 @@ fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Resu
     })
 }
 
-fn format_exec_output(command: &str, result: ExecResult) -> String {
+fn format_exec_output_limited(
+    command: &str,
+    result: ExecResult,
+    stdout_max_chars: usize,
+    stderr_max_chars: usize,
+) -> String {
     let mut text = String::new();
     append_section(&mut text, "command", command);
     let stdout = format_output_text(result.stdout_text, result.stdout);
-    append_section(&mut text, "stdout", stdout.as_str());
+    append_section(
+        &mut text,
+        "stdout",
+        compact_text(stdout.as_str(), stdout_max_chars).as_str(),
+    );
     let stderr = format_output_text(result.stderr_text, result.stderr);
-    append_section(&mut text, "stderr", stderr.as_str());
+    append_section(
+        &mut text,
+        "stderr",
+        compact_text(stderr.as_str(), stderr_max_chars).as_str(),
+    );
 
     if let Some(error) = result.error {
-        append_section(&mut text, "error", error.as_str());
+        append_section(
+            &mut text,
+            "error",
+            compact_text(error.as_str(), stderr_max_chars).as_str(),
+        );
     }
 
     let exit_code = result
@@ -1755,6 +2051,33 @@ fn format_output_text(text: Option<String>, bytes: Option<Bytes>) -> String {
         return String::from_utf8_lossy(bytes.as_ref()).to_string();
     }
     String::new()
+}
+
+fn compact_text(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    let marker = "\n...\n";
+    let marker_len = marker.chars().count();
+    if max_chars <= marker_len + 2 {
+        return text.chars().take(max_chars).collect();
+    }
+    let head_len = (max_chars - marker_len) * 2 / 3;
+    let tail_len = max_chars - marker_len - head_len;
+    let head: String = text.chars().take(head_len).collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(tail_len)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}{marker}{tail}")
 }
 
 fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {

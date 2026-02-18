@@ -1,5 +1,7 @@
 #[path = "cog_schema.rs"]
 mod cog_schema;
+#[path = "context_schema.rs"]
+mod context_schema;
 #[path = "exec_schema.rs"]
 mod exec_schema;
 #[path = "llm_chat_schema.rs"]
@@ -9,6 +11,8 @@ mod workspace_schema;
 
 #[allow(unused_imports)]
 pub use cog_schema::playground_cog;
+#[allow(unused_imports)]
+pub use context_schema::playground_context;
 #[allow(unused_imports)]
 pub use exec_schema::playground_exec;
 #[allow(unused_imports)]
@@ -25,6 +29,7 @@ where
     let mut metadata = exec_schema::build_playground_exec_metadata(blobs)?;
     metadata += config_schema::build_playground_config_metadata(blobs)?;
     metadata += cog_schema::build_playground_cog_metadata(blobs)?;
+    metadata += context_schema::build_playground_context_metadata(blobs)?;
     metadata += llm_chat_schema::build_llm_chat_metadata(blobs)?;
     metadata += workspace_schema::build_playground_workspace_metadata(blobs)?;
     Ok(metadata)
