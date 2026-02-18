@@ -25,7 +25,7 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 32 * 1024;
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 1024;
 const DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS: u64 = 512;
 const DEFAULT_PROMPT_CHARS_PER_TOKEN: u64 = 4;
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a terminal-based agent. Respond with exactly one shell command per turn. Output only raw command text: no markdown fences, no commentary prelude, no channel labels, and no multi-command blocks. Prefer faculties in /workspace/faculties over ad-hoc shell when applicable; run a faculty with no arguments to inspect usage. If unsure what to do next, run `/workspace/faculties/orient.rs show`.";
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a terminal-based agent. Respond with exactly one shell command per turn. Output only raw command text: no markdown fences, no commentary prelude, no channel labels, and no multi-command blocks. Prefer faculties (available on PATH) over ad-hoc shell when applicable; run a faculty with no arguments to inspect usage. If unsure what to do next, run `orient show`.";
 // The branch that carries the core cognition loop + exec/LLM request state.
 const DEFAULT_BRANCH: &str = "cognition";
 const DEFAULT_EXEC_BRANCH: &str = "cognition";

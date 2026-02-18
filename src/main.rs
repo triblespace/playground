@@ -1059,7 +1059,7 @@ fn ensure_llm_request(
 
 fn orient_bootstrap_command(config: &Config) -> String {
     let _ = config;
-    "/workspace/faculties/orient.rs show".to_string()
+    "orient show".to_string()
 }
 
 fn create_thought_and_request(

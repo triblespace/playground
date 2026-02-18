@@ -195,6 +195,16 @@ fn stop_requested(stop: &Option<Arc<AtomicBool>>) -> bool {
 fn execute_command(command: &str, cwd: Option<&str>, stdin: Option<Bytes>) -> ExecOutput {
     let mut cmd = Command::new("sh");
     cmd.arg("-lc").arg(command);
+    // Make faculties available as plain commands (e.g. `orient`, `memory`) without requiring
+    // hard-coded absolute paths.
+    let base_path = std::env::var("PATH").unwrap_or_default();
+    let extra_path = "/workspace/faculties:/opt/playground/faculties";
+    let merged_path = if base_path.trim().is_empty() {
+        extra_path.to_string()
+    } else {
+        format!("{extra_path}:{base_path}")
+    };
+    cmd.env("PATH", merged_path);
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
