@@ -1202,14 +1202,13 @@ fn build_snapshot(
     let exec_rows = collect_exec_rows(&exec_data, ws);
     let reasoning_summaries = collect_reasoning_summaries(&exec_data, ws);
     let context_chunks = collect_context_chunks(&exec_data);
-    let context_selected =
-        build_context_selected(
-            ws,
-            &context_chunks,
-            context_selected_chunk,
-            context_show_children,
-            context_show_origins,
-        );
+    let context_selected = build_context_selected(
+        ws,
+        &context_chunks,
+        context_selected_chunk,
+        context_show_children,
+        context_show_origins,
+    );
     let compass_rows = collect_compass_rows(&compass_data, ws);
     let compass_status_rows = collect_compass_status_rows(&compass_data);
     let compass_notes = collect_compass_notes(&compass_data, ws);
@@ -1544,15 +1543,21 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         llm_entity_id,
         playground_config::llm_context_window_tokens,
     );
-    let llm_max_output_tokens =
-        load_optional_u64_attr(data, llm_entity_id, playground_config::llm_max_output_tokens);
+    let llm_max_output_tokens = load_optional_u64_attr(
+        data,
+        llm_entity_id,
+        playground_config::llm_max_output_tokens,
+    );
     let llm_prompt_safety_margin_tokens = load_optional_u64_attr(
         data,
         llm_entity_id,
         playground_config::llm_prompt_safety_margin_tokens,
     );
-    let llm_prompt_chars_per_token =
-        load_optional_u64_attr(data, llm_entity_id, playground_config::llm_prompt_chars_per_token);
+    let llm_prompt_chars_per_token = load_optional_u64_attr(
+        data,
+        llm_entity_id,
+        playground_config::llm_prompt_chars_per_token,
+    );
     let llm_api_key =
         load_optional_string_attr(data, ws, llm_entity_id, playground_config::llm_api_key);
     let tavily_api_key =
@@ -3871,14 +3876,7 @@ fn render_context_compaction(
         .max_height(max_height)
         .show(ui, |ui| {
             for root in roots {
-                render_context_chunk_node(
-                    ui,
-                    state,
-                    now_key,
-                    &by_id,
-                    root.id,
-                    &mut leaf_counts,
-                );
+                render_context_chunk_node(ui, state, now_key, &by_id, root.id, &mut leaf_counts);
                 ui.add_space(6.0);
             }
         });
@@ -3905,7 +3903,10 @@ fn context_leaf_count(
         return 1;
     }
 
-    let left = node.left.map(|id| context_leaf_count(id, by_id, memo)).unwrap_or(0);
+    let left = node
+        .left
+        .map(|id| context_leaf_count(id, by_id, memo))
+        .unwrap_or(0);
     let right = node
         .right
         .map(|id| context_leaf_count(id, by_id, memo))
@@ -3977,7 +3978,10 @@ fn render_context_selected_details(
     let Some(node) = by_id.get(&selected_id) else {
         ui.colored_label(
             egui::Color32::RED,
-            format!("Selected chunk {} is missing from catalog.", id_prefix(selected_id)),
+            format!(
+                "Selected chunk {} is missing from catalog.",
+                id_prefix(selected_id)
+            ),
         );
         return;
     };
@@ -4067,7 +4071,10 @@ fn render_context_selected_details(
             let child_end = format_age(now_key, child_node.end_at);
 
             egui::Frame::NONE
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(210, 210, 210)))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgb(210, 210, 210),
+                ))
                 .inner_margin(egui::Margin::symmetric(10, 8))
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
@@ -4110,8 +4117,7 @@ fn render_context_selected_details(
     ui.add_space(8.0);
     ui.small(format!(
         "leaves: {} leaf chunk(s) (showing up to {})",
-        selected.origins_total,
-        CONTEXT_ORIGIN_LIMIT
+        selected.origins_total, CONTEXT_ORIGIN_LIMIT
     ));
 
     for origin in &selected.origins {

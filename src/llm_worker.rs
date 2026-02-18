@@ -18,6 +18,7 @@ use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, ShortStr
 use triblespace::prelude::*;
 
 use crate::blob_refs::{PromptChunk, split_blob_refs, unknown_blob_handle_from_hex};
+use crate::chat_prompt::{ChatMessage, ChatRole};
 use crate::config::Config;
 use crate::repo_util::{
     close_repo, current_branch_head, ensure_worker_name, init_repo, load_text, pull_workspace,
@@ -203,13 +204,14 @@ pub(crate) fn run_llm_loop(
                 .map(|value| String::from_value(&value))
                 .unwrap_or_else(|| config.llm.model.clone());
 
-            let input_content =
-                build_prompt_input_content(&mut ws, model.as_str(), prompt.as_str());
+            let messages: Vec<ChatMessage> =
+                serde_json::from_str(prompt.as_str()).context("parse chat prompt")?;
+            let payload_messages = build_payload_messages(&mut ws, model.as_str(), &messages);
             let payload = build_payload(
                 &model,
                 config.llm.stream,
                 config.llm.max_output_tokens,
-                input_content,
+                payload_messages,
             );
             let request_raw =
                 serde_json::to_string(&payload).context("serialize request payload")?;
@@ -419,11 +421,53 @@ impl LlmRequestIndex {
     }
 }
 
-fn build_payload(model: &str, stream: bool, max_tokens: u64, content: Vec<JsonValue>) -> JsonValue {
+fn build_payload_messages(
+    ws: &mut Workspace<Pile>,
+    model: &str,
+    messages: &[ChatMessage],
+) -> Vec<JsonValue> {
+    let supports_images = model_supports_images(model);
+    let mut out = Vec::new();
+
+    for message in messages {
+        let role = match message.role {
+            ChatRole::System => "system",
+            ChatRole::User => "user",
+            ChatRole::Assistant => "assistant",
+        };
+
+        if message.role == ChatRole::User && supports_images {
+            let chunks = split_blob_refs(message.content.as_str());
+            let has_blob = chunks.iter().any(|chunk| {
+                if let PromptChunk::Blob(_) = chunk {
+                    true
+                } else {
+                    false
+                }
+            });
+            if has_blob {
+                let content = build_prompt_input_content(ws, model, message.content.as_str());
+                out.push(serde_json::json!({ "role": role, "content": content }));
+                continue;
+            }
+        }
+
+        out.push(serde_json::json!({ "role": role, "content": message.content.as_str() }));
+    }
+
+    out
+}
+
+fn build_payload(
+    model: &str,
+    stream: bool,
+    max_tokens: u64,
+    messages: Vec<JsonValue>,
+) -> JsonValue {
     let max_tokens = max_tokens.max(1);
     serde_json::json!({
         "model": model,
-        "messages": [{"role": "user", "content": content}],
+        "messages": messages,
         "stream": stream,
         "max_tokens": max_tokens,
     })

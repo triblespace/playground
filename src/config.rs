@@ -379,8 +379,12 @@ fn ensure_registered_branches_exist(repo: &mut Repository<Pile>, config: &Config
 
     // Optional integrations: allow a persona to omit the branch id to disable the facility.
     if let Some(id) = config.teams_branch_id {
-        ensure_branch(repo, id, DEFAULT_TEAMS_BRANCH)
-            .with_context(|| format!("materialize branch '{name}' ({id:x})", name = DEFAULT_TEAMS_BRANCH))?;
+        ensure_branch(repo, id, DEFAULT_TEAMS_BRANCH).with_context(|| {
+            format!(
+                "materialize branch '{name}' ({id:x})",
+                name = DEFAULT_TEAMS_BRANCH
+            )
+        })?;
     }
     Ok(())
 }
@@ -538,9 +542,12 @@ fn load_latest_config(
     {
         config.llm.prompt_safety_margin_tokens = tokens;
     }
-    if let Some(chars) =
-        load_u256_attr(catalog, config_id, playground_config::llm_prompt_chars_per_token)
-            .and_then(u256be_to_u64)
+    if let Some(chars) = load_u256_attr(
+        catalog,
+        config_id,
+        playground_config::llm_prompt_chars_per_token,
+    )
+    .and_then(u256be_to_u64)
     {
         config.llm.prompt_chars_per_token = chars;
     }
@@ -629,9 +636,12 @@ fn load_latest_llm_profile(
     {
         llm.prompt_safety_margin_tokens = tokens;
     }
-    if let Some(chars) =
-        load_u256_attr(catalog, entry_id, playground_config::llm_prompt_chars_per_token)
-            .and_then(u256be_to_u64)
+    if let Some(chars) = load_u256_attr(
+        catalog,
+        entry_id,
+        playground_config::llm_prompt_chars_per_token,
+    )
+    .and_then(u256be_to_u64)
     {
         llm.prompt_chars_per_token = chars;
     }
