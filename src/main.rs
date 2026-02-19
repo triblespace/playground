@@ -12,12 +12,14 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use reqwest::blocking::Client;
 use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
+use triblespace::core::metadata;
 use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::{Repository, Workspace};
 use triblespace::prelude::blobschemas::LongString;
 use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, U256BE};
 use triblespace::prelude::*;
 
+mod archive_schema;
 mod blob_refs;
 mod branch_util;
 mod chat_prompt;
@@ -26,14 +28,17 @@ mod config;
 mod diagnostics;
 mod exec_worker;
 mod llm_worker;
+mod relations_schema;
 mod repo_ops;
 mod repo_util;
 mod schema;
 mod time_util;
 mod workspace_snapshot;
 
+use archive_schema::{playground_archive, playground_archive_import};
 use chat_prompt::ChatMessage;
 use config::Config;
+use relations_schema::playground_relations;
 use repo_util::{
     close_repo, current_branch_head, init_repo, load_text, pull_workspace, push_workspace,
     refresh_cached_checkout,
@@ -1155,8 +1160,26 @@ fn create_thought_and_request(
     }
 
     let now = epoch_interval(now_epoch());
+    let archive_catalog = load_optional_catalog(
+        repo,
+        config.archive_branch_id,
+        "pull archive workspace for context history",
+    )?;
+    let relations_catalog = load_optional_catalog(
+        repo,
+        config.relations_branch_id,
+        "pull relations workspace for context history",
+    )?;
     let (prompt, compact_change) = if let Some(exec_result_id) = about_exec_result {
-        prompt_for_exec_result_with_history(&mut ws, &core_index, &catalog, exec_result_id, config)?
+        prompt_for_exec_result_with_history(
+            &mut ws,
+            &core_index,
+            &catalog,
+            &archive_catalog,
+            &relations_catalog,
+            exec_result_id,
+            config,
+        )?
     } else {
         (
             serde_json::to_string(&[ChatMessage::system(config.system_prompt.clone())])
@@ -1851,6 +1874,18 @@ fn delta_has_command_result(updated: &TribleSet, delta: &TribleSet, request_id: 
     .any(|(about_request,)| about_request == request_id)
 }
 
+fn load_optional_catalog(
+    repo: &mut Repository<Pile>,
+    branch_id: Option<Id>,
+    context: &str,
+) -> Result<TribleSet> {
+    let Some(branch_id) = branch_id else {
+        return Ok(TribleSet::new());
+    };
+    let mut ws = pull_workspace(repo, branch_id, context)?;
+    ws.checkout(..).context("checkout optional branch")
+}
+
 const PROMPT_RECENT_TURN_CAP: usize = 64;
 
 #[derive(Debug, Clone)]
@@ -1863,6 +1898,12 @@ struct ContextChunk {
     left: Option<Id>,
     right: Option<Id>,
     about_exec_result: Option<Id>,
+    about_archive_message: Option<Id>,
+    archive_author: Option<Id>,
+    archive_person: Option<Id>,
+    archive_thread_root: Option<Id>,
+    archive_conversation: Option<Value<Handle<Blake3, LongString>>>,
+    archive_source_format: Option<String>,
 }
 
 #[derive(Default)]
@@ -1873,17 +1914,49 @@ struct ContextChunkIndex {
     root_by_level: HashMap<u64, Id>,
     // Leaf chunks tie a single exec result to a compacted chunk.
     chunk_for_exec_result: HashMap<Id, Id>,
+    // Leaf chunks tie a single imported archive message to a compacted chunk.
+    chunk_for_archive_message: HashMap<Id, Id>,
+}
+
+#[derive(Debug, Clone)]
+struct ArchiveMessageInfo {
+    id: Id,
+    author_id: Id,
+    author_name: Option<Value<Handle<Blake3, LongString>>>,
+    content: Value<Handle<Blake3, LongString>>,
+    created_at: Value<NsTAIInterval>,
+    thread_root_id: Id,
+    conversation_id: Option<Value<Handle<Blake3, LongString>>>,
+    source_format: Option<String>,
+    source_message_id: Option<Value<Handle<Blake3, LongString>>>,
+    source_author: Option<Value<Handle<Blake3, LongString>>>,
+    source_role: Option<Value<Handle<Blake3, LongString>>>,
+}
+
+#[derive(Default)]
+struct RelationsIndex {
+    key_to_person_id: HashMap<String, Id>,
+    person_label: HashMap<Id, String>,
 }
 
 fn prompt_for_exec_result_with_history(
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     catalog: &TribleSet,
+    archive_catalog: &TribleSet,
+    relations_catalog: &TribleSet,
     exec_result_id: Id,
     config: &Config,
 ) -> Result<(String, TribleSet)> {
-    let (mut messages, compact_change) =
-        build_prompt_messages_with_compaction(ws, core_index, catalog, exec_result_id, config)?;
+    let (mut messages, compact_change) = build_prompt_messages_with_compaction(
+        ws,
+        core_index,
+        catalog,
+        archive_catalog,
+        relations_catalog,
+        exec_result_id,
+        config,
+    )?;
     // Store the system prompt as an actual system role message instead of concatenating into a
     // monolithic user prompt string.
     messages.insert(0, ChatMessage::system(config.system_prompt.clone()));
@@ -1895,6 +1968,8 @@ fn build_prompt_messages_with_compaction(
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     catalog: &TribleSet,
+    archive_catalog: &TribleSet,
+    relations_catalog: &TribleSet,
     exec_result_id: Id,
     config: &Config,
 ) -> Result<(Vec<ChatMessage>, TribleSet)> {
@@ -1914,12 +1989,103 @@ fn build_prompt_messages_with_compaction(
     else {
         return Err(anyhow!("exec result {exec_result_id:x} missing from index"));
     };
+    let current_finished_at = results[current_pos]
+        .finished_at
+        .context("exec result missing finished_at")?;
+    let current_finished_key = interval_key(current_finished_at);
     let results = results[..=current_pos].to_vec();
+    let relations = load_relations_index(ws, relations_catalog)?;
+    let archive_messages = load_archive_messages(archive_catalog);
 
     let mut compact_change = TribleSet::new();
     let mut cutoff = 0usize;
     let mut compacted_messages: Vec<ChatMessage> = Vec::new();
     let mut recent_messages: Vec<ChatMessage> = Vec::new();
+
+    // Archive leaves are always represented as memory chunks (never as raw shell turns).
+    for message in archive_messages
+        .iter()
+        .filter(|message| interval_key(message.created_at) <= current_finished_key)
+    {
+        if index.chunk_for_archive_message.contains_key(&message.id) {
+            continue;
+        }
+        let author_name = load_optional_text(ws, message.author_name)?;
+        let source_author = load_optional_text(ws, message.source_author)?;
+        let source_role = load_optional_text(ws, message.source_role)?;
+        let source_message_id = load_optional_text(ws, message.source_message_id)?;
+        let conversation_id = load_optional_text(ws, message.conversation_id)?;
+        let content = load_text(ws, message.content).context("load archive message content")?;
+        let resolved_person =
+            resolve_archive_person(&relations, author_name.as_deref(), source_author.as_deref());
+        let leaf_summary = format_archive_output(
+            message,
+            author_name.as_deref(),
+            source_author.as_deref(),
+            source_role.as_deref(),
+            source_message_id.as_deref(),
+            conversation_id.as_deref(),
+            content.as_str(),
+            resolved_person
+                .and_then(|person_id| relations.person_label.get(&person_id).map(|s| s.as_str())),
+            resolved_person,
+        );
+        let leaf_summary_handle = ws.put(leaf_summary);
+        let now = epoch_interval(now_epoch());
+        let chunk_id = ufoid();
+
+        compact_change += entity! { &chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::level: 0u64,
+            playground_context::summary: leaf_summary_handle,
+            playground_context::created_at: now,
+            playground_context::start_at: message.created_at,
+            playground_context::end_at: message.created_at,
+            playground_context::about_archive_message: message.id,
+            playground_context::archive_author: message.author_id,
+            playground_context::archive_thread_root: message.thread_root_id,
+        };
+        if let Some(person_id) = resolved_person {
+            compact_change += entity! { &chunk_id @
+                playground_context::archive_person: person_id,
+            };
+        }
+        if let Some(conversation_id) = message.conversation_id {
+            compact_change += entity! { &chunk_id @
+                playground_context::archive_conversation: conversation_id,
+            };
+        }
+        if let Some(source_format) = message.source_format.as_deref() {
+            compact_change += entity! { &chunk_id @
+                playground_context::archive_source_format: source_format,
+            };
+        }
+
+        let chunk = ContextChunk {
+            id: *chunk_id,
+            level: 0,
+            summary: leaf_summary_handle,
+            start_at: message.created_at,
+            end_at: message.created_at,
+            left: None,
+            right: None,
+            about_exec_result: None,
+            about_archive_message: Some(message.id),
+            archive_author: Some(message.author_id),
+            archive_person: resolved_person,
+            archive_thread_root: Some(message.thread_root_id),
+            archive_conversation: message.conversation_id,
+            archive_source_format: message.source_format.clone(),
+        };
+        index.chunk_for_archive_message.insert(message.id, chunk.id);
+        insert_chunk_with_carry(
+            ws,
+            &mut index,
+            &mut compact_change,
+            chunk,
+            semantic_compactor.as_ref(),
+        )?;
+    }
 
     // Iterate until the budget-derived cutoff stabilizes. Each iteration may compact additional
     // older turns into the LSM frontier, which can slightly change the compacted section size.
@@ -1959,6 +2125,12 @@ fn build_prompt_messages_with_compaction(
                 left: None,
                 right: None,
                 about_exec_result: Some(result.id),
+                about_archive_message: None,
+                archive_author: None,
+                archive_person: None,
+                archive_thread_root: None,
+                archive_conversation: None,
+                archive_source_format: None,
             };
             index.chunk_for_exec_result.insert(result.id, chunk.id);
             insert_chunk_with_carry(
@@ -2120,6 +2292,18 @@ fn format_memory_output(ws: &mut Workspace<Pile>, chunk: &ContextChunk) -> Resul
     if let Some(exec_id) = chunk.about_exec_result {
         header.push_str(&format!(" exec={}", id_prefix(exec_id)));
     }
+    if let Some(message_id) = chunk.about_archive_message {
+        header.push_str(&format!(" archive_msg={}", id_prefix(message_id)));
+    }
+    if let Some(author_id) = chunk.archive_author {
+        header.push_str(&format!(" archive_author={}", id_prefix(author_id)));
+    }
+    if let Some(person_id) = chunk.archive_person {
+        header.push_str(&format!(" person={}", id_prefix(person_id)));
+    }
+    if let Some(thread_root_id) = chunk.archive_thread_root {
+        header.push_str(&format!(" thread={}", id_prefix(thread_root_id)));
+    }
     if let (Some(left), Some(right)) = (chunk.left, chunk.right) {
         header.push_str(&format!(
             " children={} {}",
@@ -2127,8 +2311,19 @@ fn format_memory_output(ws: &mut Workspace<Pile>, chunk: &ContextChunk) -> Resul
             id_prefix(right)
         ));
     }
+    if let Some(source_format) = chunk.archive_source_format.as_deref() {
+        header.push_str(&format!(" source={source_format}"));
+    }
 
     let summary = load_text(ws, chunk.summary).context("load compacted history chunk")?;
+    if let Some(conversation) = chunk.archive_conversation {
+        let conversation_id =
+            load_text(ws, conversation).context("load archive conversation id")?;
+        return Ok(format!(
+            "{header}\nconversation: {conversation_id}\n{}\n",
+            summary.trim_end()
+        ));
+    }
     Ok(format!("{header}\n{}\n", summary.trim_end()))
 }
 
@@ -2202,6 +2397,374 @@ fn load_reasoning_for_exec_result(
     Ok(Some(reasoning_text))
 }
 
+fn load_archive_messages(catalog: &TribleSet) -> Vec<ArchiveMessageInfo> {
+    let mut reply_to: HashMap<Id, Id> = HashMap::new();
+    for (message_id, parent_id) in find!(
+        (message_id: Id, parent_id: Id),
+        pattern!(catalog, [{
+            ?message_id @ playground_archive::reply_to: ?parent_id,
+        }])
+    ) {
+        reply_to.insert(message_id, parent_id);
+    }
+
+    let mut author_name_by_author: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (author_id, author_name) in find!(
+        (author_id: Id, author_name: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?author_id @ playground_archive::author_name: ?author_name,
+        }])
+    ) {
+        author_name_by_author.insert(author_id, author_name);
+    }
+
+    let mut batch_by_message: HashMap<Id, Id> = HashMap::new();
+    for (message_id, batch_id) in find!(
+        (message_id: Id, batch_id: Id),
+        pattern!(catalog, [{
+            ?message_id @ playground_archive_import::batch: ?batch_id,
+        }])
+    ) {
+        batch_by_message.insert(message_id, batch_id);
+    }
+
+    let mut source_format_by_batch: HashMap<Id, String> = HashMap::new();
+    for (batch_id, source_format) in find!(
+        (batch_id: Id, source_format: String),
+        pattern!(catalog, [{
+            ?batch_id @ playground_archive_import::source_format: ?source_format,
+        }])
+    ) {
+        source_format_by_batch.insert(batch_id, source_format);
+    }
+
+    let mut conversation_by_batch: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (batch_id, conversation_id) in find!(
+        (batch_id: Id, conversation_id: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?batch_id @ playground_archive_import::source_conversation_id: ?conversation_id,
+        }])
+    ) {
+        conversation_by_batch.insert(batch_id, conversation_id);
+    }
+
+    let mut source_message_id_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>> =
+        HashMap::new();
+    for (message_id, source_message_id) in find!(
+        (message_id: Id, source_message_id: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?message_id @ playground_archive_import::source_message_id: ?source_message_id,
+        }])
+    ) {
+        source_message_id_by_message.insert(message_id, source_message_id);
+    }
+
+    let mut source_author_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>> =
+        HashMap::new();
+    for (message_id, source_author) in find!(
+        (message_id: Id, source_author: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?message_id @ playground_archive_import::source_author: ?source_author,
+        }])
+    ) {
+        source_author_by_message.insert(message_id, source_author);
+    }
+
+    let mut source_role_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (message_id, source_role) in find!(
+        (message_id: Id, source_role: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?message_id @ playground_archive_import::source_role: ?source_role,
+        }])
+    ) {
+        source_role_by_message.insert(message_id, source_role);
+    }
+
+    let mut messages = Vec::new();
+    for (message_id, author_id, content, created_at) in find!(
+        (
+            message_id: Id,
+            author_id: Id,
+            content: Value<Handle<Blake3, LongString>>,
+            created_at: Value<NsTAIInterval>
+        ),
+        pattern!(catalog, [{
+            ?message_id @
+                playground_archive::kind: playground_archive::kind_message,
+                playground_archive::author: ?author_id,
+                playground_archive::content: ?content,
+                playground_archive::created_at: ?created_at,
+        }])
+    ) {
+        let thread_root_id = archive_thread_root(message_id, &reply_to);
+        let batch_id = batch_by_message.get(&message_id).copied();
+        let conversation_id = batch_id.and_then(|id| conversation_by_batch.get(&id).copied());
+        let source_format = batch_id.and_then(|id| source_format_by_batch.get(&id).cloned());
+        messages.push(ArchiveMessageInfo {
+            id: message_id,
+            author_id,
+            author_name: author_name_by_author.get(&author_id).copied(),
+            content,
+            created_at,
+            thread_root_id,
+            conversation_id,
+            source_format,
+            source_message_id: source_message_id_by_message.get(&message_id).copied(),
+            source_author: source_author_by_message.get(&message_id).copied(),
+            source_role: source_role_by_message.get(&message_id).copied(),
+        });
+    }
+
+    messages.sort_by_key(|message| (interval_key(message.created_at), message.id));
+    messages
+}
+
+fn archive_thread_root(message_id: Id, reply_to: &HashMap<Id, Id>) -> Id {
+    let mut cursor = message_id;
+    let mut seen = HashSet::new();
+    while let Some(parent) = reply_to.get(&cursor).copied() {
+        if !seen.insert(cursor) {
+            break;
+        }
+        cursor = parent;
+    }
+    cursor
+}
+
+fn load_relations_index(
+    ws: &mut Workspace<Pile>,
+    relations_catalog: &TribleSet,
+) -> Result<RelationsIndex> {
+    let mut people = HashSet::new();
+    for (person_id,) in find!(
+        (person_id: Id),
+        pattern!(relations_catalog, [{
+            ?person_id @ metadata::tag: playground_relations::kind_person,
+        }])
+    ) {
+        people.insert(person_id);
+    }
+
+    let mut alias_map: HashMap<Id, Vec<String>> = HashMap::new();
+    for (person_id, alias) in find!(
+        (person_id: Id, alias: String),
+        pattern!(relations_catalog, [{
+            ?person_id @ playground_relations::alias: ?alias,
+        }])
+    ) {
+        alias_map.entry(person_id).or_default().push(alias);
+    }
+
+    let mut display_name_map: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (person_id, handle) in find!(
+        (person_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(relations_catalog, [{
+            ?person_id @ playground_relations::display_name: ?handle,
+        }])
+    ) {
+        display_name_map.insert(person_id, handle);
+    }
+
+    let mut first_name_map: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (person_id, handle) in find!(
+        (person_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(relations_catalog, [{
+            ?person_id @ playground_relations::first_name: ?handle,
+        }])
+    ) {
+        first_name_map.insert(person_id, handle);
+    }
+
+    let mut last_name_map: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (person_id, handle) in find!(
+        (person_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(relations_catalog, [{
+            ?person_id @ playground_relations::last_name: ?handle,
+        }])
+    ) {
+        last_name_map.insert(person_id, handle);
+    }
+
+    let mut metadata_name_map: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (person_id, handle) in find!(
+        (person_id: Id, handle: Value<Handle<Blake3, LongString>>),
+        pattern!(relations_catalog, [{
+            ?person_id @ metadata::name: ?handle,
+        }])
+    ) {
+        metadata_name_map.insert(person_id, handle);
+    }
+
+    let mut key_candidates: HashMap<String, HashSet<Id>> = HashMap::new();
+    let mut labels = HashMap::new();
+    for person_id in people {
+        let metadata_name = metadata_name_map
+            .get(&person_id)
+            .copied()
+            .map(|handle| load_text(ws, handle))
+            .transpose()?;
+        let display_name = display_name_map
+            .get(&person_id)
+            .copied()
+            .map(|handle| load_text(ws, handle))
+            .transpose()?;
+        let first_name = first_name_map
+            .get(&person_id)
+            .copied()
+            .map(|handle| load_text(ws, handle))
+            .transpose()?;
+        let last_name = last_name_map
+            .get(&person_id)
+            .copied()
+            .map(|handle| load_text(ws, handle))
+            .transpose()?;
+
+        let mut keys = Vec::new();
+        if let Some(name) = metadata_name.as_deref() {
+            keys.push(name.to_string());
+        }
+        if let Some(display_name) = display_name.as_deref() {
+            keys.push(display_name.to_string());
+        }
+        if let (Some(first_name), Some(last_name)) = (first_name.as_deref(), last_name.as_deref()) {
+            keys.push(format!("{first_name} {last_name}"));
+        }
+        if let Some(aliases) = alias_map.get(&person_id) {
+            keys.extend(aliases.iter().cloned());
+        }
+
+        for key in keys {
+            let normalized = normalize_person_key(key.as_str());
+            if normalized.is_empty() {
+                continue;
+            }
+            key_candidates
+                .entry(normalized)
+                .or_default()
+                .insert(person_id);
+        }
+
+        let label = display_name
+            .or(metadata_name)
+            .or_else(|| {
+                if let (Some(first_name), Some(last_name)) = (first_name, last_name) {
+                    Some(format!("{first_name} {last_name}"))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| id_prefix(person_id));
+        labels.insert(person_id, label);
+    }
+
+    let mut key_to_person_id = HashMap::new();
+    for (key, candidates) in key_candidates {
+        if candidates.len() != 1 {
+            continue;
+        }
+        if let Some(person_id) = candidates.into_iter().next() {
+            key_to_person_id.insert(key, person_id);
+        }
+    }
+
+    Ok(RelationsIndex {
+        key_to_person_id,
+        person_label: labels,
+    })
+}
+
+fn normalize_person_key(raw: &str) -> String {
+    raw.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_lowercase()
+}
+
+fn resolve_archive_person(
+    relations: &RelationsIndex,
+    author_name: Option<&str>,
+    source_author: Option<&str>,
+) -> Option<Id> {
+    let mut candidates = HashSet::new();
+    for key in [author_name, source_author].into_iter().flatten() {
+        let normalized = normalize_person_key(key);
+        if normalized.is_empty() {
+            continue;
+        }
+        if let Some(person_id) = relations.key_to_person_id.get(normalized.as_str()) {
+            candidates.insert(*person_id);
+        }
+    }
+    if candidates.len() == 1 {
+        return candidates.into_iter().next();
+    }
+    None
+}
+
+fn load_optional_text(
+    ws: &mut Workspace<Pile>,
+    handle: Option<Value<Handle<Blake3, LongString>>>,
+) -> Result<Option<String>> {
+    handle.map(|handle| load_text(ws, handle)).transpose()
+}
+
+fn format_archive_output(
+    message: &ArchiveMessageInfo,
+    author_name: Option<&str>,
+    source_author: Option<&str>,
+    source_role: Option<&str>,
+    source_message_id: Option<&str>,
+    conversation_id: Option<&str>,
+    content: &str,
+    person_label: Option<&str>,
+    person_id: Option<Id>,
+) -> String {
+    let mut text = String::new();
+    append_section(&mut text, "source", "archive");
+    append_section(
+        &mut text,
+        "archive_message_id",
+        format!("{:x}", message.id).as_str(),
+    );
+    append_section(
+        &mut text,
+        "archive_author_id",
+        format!("{:x}", message.author_id).as_str(),
+    );
+    append_section(
+        &mut text,
+        "archive_thread_root_id",
+        format!("{:x}", message.thread_root_id).as_str(),
+    );
+    if let Some(source_format) = message.source_format.as_deref() {
+        append_section(&mut text, "archive_source_format", source_format);
+    }
+    if let Some(conversation_id) = conversation_id {
+        append_section(&mut text, "archive_conversation_id", conversation_id);
+    }
+    if let Some(source_message_id) = source_message_id {
+        append_section(&mut text, "source_message_id", source_message_id);
+    }
+    if let Some(author_name) = author_name {
+        append_section(&mut text, "author_name", author_name);
+    }
+    if let Some(source_author) = source_author {
+        append_section(&mut text, "source_author", source_author);
+    }
+    if let Some(source_role) = source_role {
+        append_section(&mut text, "source_role", source_role);
+    }
+    if let Some(person_id) = person_id {
+        append_section(&mut text, "person_id", format!("{person_id:x}").as_str());
+    }
+    if let Some(person_label) = person_label {
+        append_section(&mut text, "person_label", person_label);
+    }
+    append_section(&mut text, "message", content);
+    text
+}
+
 fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
     let mut index = ContextChunkIndex::default();
 
@@ -2234,6 +2797,12 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
                 left: None,
                 right: None,
                 about_exec_result: None,
+                about_archive_message: None,
+                archive_author: None,
+                archive_person: None,
+                archive_thread_root: None,
+                archive_conversation: None,
+                archive_source_format: None,
             },
         );
     }
@@ -2275,6 +2844,87 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
         index.chunk_for_exec_result.insert(exec_result_id, chunk_id);
         if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
             chunk.about_exec_result = Some(exec_result_id);
+        }
+    }
+
+    for (chunk_id, archive_message_id) in find!(
+        (chunk_id: Id, archive_message_id: Id),
+        pattern!(catalog, [{
+            ?chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::about_archive_message: ?archive_message_id,
+        }])
+    ) {
+        index
+            .chunk_for_archive_message
+            .insert(archive_message_id, chunk_id);
+        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
+            chunk.about_archive_message = Some(archive_message_id);
+        }
+    }
+
+    for (chunk_id, archive_author_id) in find!(
+        (chunk_id: Id, archive_author_id: Id),
+        pattern!(catalog, [{
+            ?chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::archive_author: ?archive_author_id,
+        }])
+    ) {
+        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
+            chunk.archive_author = Some(archive_author_id);
+        }
+    }
+
+    for (chunk_id, archive_person_id) in find!(
+        (chunk_id: Id, archive_person_id: Id),
+        pattern!(catalog, [{
+            ?chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::archive_person: ?archive_person_id,
+        }])
+    ) {
+        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
+            chunk.archive_person = Some(archive_person_id);
+        }
+    }
+
+    for (chunk_id, thread_root_id) in find!(
+        (chunk_id: Id, thread_root_id: Id),
+        pattern!(catalog, [{
+            ?chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::archive_thread_root: ?thread_root_id,
+        }])
+    ) {
+        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
+            chunk.archive_thread_root = Some(thread_root_id);
+        }
+    }
+
+    for (chunk_id, conversation_id) in find!(
+        (chunk_id: Id, conversation_id: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::archive_conversation: ?conversation_id,
+        }])
+    ) {
+        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
+            chunk.archive_conversation = Some(conversation_id);
+        }
+    }
+
+    for (chunk_id, source_format) in find!(
+        (chunk_id: Id, source_format: String),
+        pattern!(catalog, [{
+            ?chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::archive_source_format: ?source_format,
+        }])
+    ) {
+        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
+            chunk.archive_source_format = Some(source_format);
         }
     }
 
@@ -2367,6 +3017,12 @@ fn insert_chunk_with_carry(
                 left: Some(left.id),
                 right: Some(right.id),
                 about_exec_result: None,
+                about_archive_message: None,
+                archive_author: None,
+                archive_person: None,
+                archive_thread_root: None,
+                archive_conversation: None,
+                archive_source_format: None,
             };
 
             // Update chunk index for subsequent carry steps.
