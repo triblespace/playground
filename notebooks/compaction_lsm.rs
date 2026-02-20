@@ -751,7 +751,16 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
         sim.frontier_size()
     );
 
-    println!("\n## Policy behavior");
+    let tail_steps = sampled_tail_steps(state.visible_leaves, state.churn_sample_count);
+    let tail_window_start = tail_steps.first().copied().unwrap_or(1);
+    let tail_window_end = tail_steps
+        .last()
+        .copied()
+        .unwrap_or(state.visible_leaves.max(1));
+    println!(
+        "\n## Policy behavior (tail-consecutive window {}..={})",
+        tail_window_start, tail_window_end
+    );
     for policy in ALL_POLICIES {
         let selection = select_cover(&sim, state.context_budget, policy, params);
         let fill_ratio = if state.context_budget == 0 {
@@ -759,7 +768,16 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
         } else {
             selection.used_chars as f64 / state.context_budget as f64
         };
-        let samples = build_churn_trace_with(
+        let tail_samples = build_churn_trace_for_steps(
+            state.stream.as_slice(),
+            state.reduction_factor,
+            state.context_budget,
+            policy,
+            params,
+            &tail_steps,
+            None,
+        );
+        let sparse_samples = build_churn_trace_with(
             state.stream.as_slice(),
             state.visible_leaves,
             state.reduction_factor,
@@ -769,21 +787,33 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
             state.churn_sample_count,
             state.churn_sampling_mode,
         );
-        let summary = summarize_churn(&samples, steady_state_min_step(state.visible_leaves));
-        match summary {
-            Some(summary) => {
+        let tail_summary = summarize_churn(&tail_samples, tail_window_start);
+        let sparse_summary =
+            summarize_churn(&sparse_samples, steady_state_min_step(state.visible_leaves));
+        match (tail_summary, sparse_summary) {
+            (Some(tail), Some(sparse)) => {
                 println!(
-                    "- {:>24} | fill {:>6.2}% | hist prefix {:>5.1}% | hist suffix {:>6.2} | hist set {:>6.2} | moment prefix {:>5.1}% | score {:>7.2}",
+                    "- {:>24} | fill {:>6.2}% | tail h-prefix {:>5.1}% h-suffix {:>6.2} h-set {:>6.2} | sparse h-prefix {:>5.1}% h-suffix {:>6.2}",
                     policy.label(),
                     fill_ratio * 100.0,
-                    summary.avg_history_prefix_retention * 100.0,
-                    summary.avg_history_suffix_churn,
-                    summary.avg_history_set_churn,
-                    summary.avg_moment_prefix_retention * 100.0,
-                    summary.score(),
+                    tail.avg_history_prefix_retention * 100.0,
+                    tail.avg_history_suffix_churn,
+                    tail.avg_history_set_churn,
+                    sparse.avg_history_prefix_retention * 100.0,
+                    sparse.avg_history_suffix_churn,
                 );
             }
-            None => {
+            (Some(tail), None) => {
+                println!(
+                    "- {:>24} | fill {:>6.2}% | tail h-prefix {:>5.1}% h-suffix {:>6.2} h-set {:>6.2}",
+                    policy.label(),
+                    fill_ratio * 100.0,
+                    tail.avg_history_prefix_retention * 100.0,
+                    tail.avg_history_suffix_churn,
+                    tail.avg_history_set_churn,
+                );
+            }
+            _ => {
                 println!(
                     "- {:>24} | fill {:>6.2}% | no churn summary",
                     policy.label(),
@@ -1739,47 +1769,6 @@ fn select_cover_distribution(
     ));
     steps.push(format!("target_error={:.4}", current_error));
 
-    while used_chars > budget_chars && !cover.is_empty() {
-        let dropped = cover.remove(0);
-        if let Some(node) = by_id.get(&dropped).copied() {
-            let cost = cover_turn_cost(node);
-            used_chars = used_chars.saturating_sub(cost);
-            let bucket =
-                age_bucket_for_end_leaf(node.end_leaf, newest_leaf, leaf_count, bucket_count);
-            bucket_chars[bucket] = bucket_chars[bucket].saturating_sub(cost);
-            current_error = distribution_error(
-                &bucket_chars,
-                used_chars,
-                &target_weights,
-                target_weight_sum,
-            );
-            dropped_roots = dropped_roots.saturating_add(1);
-            steps.push(format!(
-                "drop oldest root #{:04} [{}..{}], -{} chars => {} / {} (error {:.4})",
-                node.id,
-                node.start_leaf,
-                node.end_leaf,
-                cost,
-                used_chars,
-                budget_chars,
-                current_error
-            ));
-        }
-    }
-
-    if cover.is_empty() {
-        steps.push("cover is empty after drops".to_string());
-        return CoverSelection {
-            cover,
-            history_len: 0,
-            moment_len: 0,
-            used_chars,
-            dropped_roots,
-            splits,
-            steps,
-        };
-    }
-
     loop {
         let remaining = budget_chars.saturating_sub(used_chars);
         if remaining == 0 {
@@ -1811,7 +1800,6 @@ fn select_cover_distribution(
             if !split_preserves_level_monotonicity(&cover, &by_id, idx, child_level) {
                 continue;
             }
-
             let candidate = Candidate {
                 index: idx,
                 parent_id: *parent_id,
@@ -1908,6 +1896,37 @@ fn select_cover_distribution(
         ));
     }
 
+    while used_chars > budget_chars && !cover.is_empty() {
+        let dropped = cover.remove(0);
+        if let Some(node) = by_id.get(&dropped).copied() {
+            let cost = cover_turn_cost(node);
+            used_chars = used_chars.saturating_sub(cost);
+            let bucket =
+                age_bucket_for_end_leaf(node.end_leaf, newest_leaf, leaf_count, bucket_count);
+            bucket_chars[bucket] = bucket_chars[bucket].saturating_sub(cost);
+            current_error = distribution_error(
+                &bucket_chars,
+                used_chars,
+                &target_weights,
+                target_weight_sum,
+            );
+            dropped_roots = dropped_roots.saturating_add(1);
+            steps.push(format!(
+                "drop oldest root #{:04} [{}..{}], -{} chars => {} / {} (error {:.4})",
+                node.id,
+                node.start_leaf,
+                node.end_leaf,
+                cost,
+                used_chars,
+                budget_chars,
+                current_error
+            ));
+        }
+    }
+    if cover.is_empty() {
+        steps.push("cover is empty after drops".to_string());
+    }
+
     if steps.len() == 1 {
         steps.push("no changes needed".to_string());
     }
@@ -1943,32 +1962,6 @@ fn select_cover_deterministic(
         used_chars,
         budget_chars,
     ));
-
-    while used_chars > budget_chars && !cover.is_empty() {
-        let dropped = cover.remove(0);
-        if let Some(node) = by_id.get(&dropped).copied() {
-            let cost = cover_turn_cost(node);
-            used_chars = used_chars.saturating_sub(cost);
-            dropped_roots = dropped_roots.saturating_add(1);
-            steps.push(format!(
-                "drop oldest root #{:04} [{}..{}], -{} chars => {} / {}",
-                node.id, node.start_leaf, node.end_leaf, cost, used_chars, budget_chars
-            ));
-        }
-    }
-
-    if cover.is_empty() {
-        steps.push("cover is empty after drops".to_string());
-        return CoverSelection {
-            cover,
-            history_len: 0,
-            moment_len: 0,
-            used_chars,
-            dropped_roots,
-            splits,
-            steps,
-        };
-    }
 
     loop {
         let remaining = budget_chars.saturating_sub(used_chars);
@@ -2033,6 +2026,22 @@ fn select_cover_deterministic(
             used_chars,
             budget_chars
         ));
+    }
+
+    while used_chars > budget_chars && !cover.is_empty() {
+        let dropped = cover.remove(0);
+        if let Some(node) = by_id.get(&dropped).copied() {
+            let cost = cover_turn_cost(node);
+            used_chars = used_chars.saturating_sub(cost);
+            dropped_roots = dropped_roots.saturating_add(1);
+            steps.push(format!(
+                "drop oldest root #{:04} [{}..{}], -{} chars => {} / {}",
+                node.id, node.start_leaf, node.end_leaf, cost, used_chars, budget_chars
+            ));
+        }
+    }
+    if cover.is_empty() {
+        steps.push("cover is empty after drops".to_string());
     }
 
     if steps.len() == 1 {
@@ -2168,35 +2177,6 @@ fn select_cover_deterministic_quota(
         target_slots
     ));
 
-    while used_chars > effective_budget && !cover.is_empty() {
-        let dropped = cover.remove(0);
-        if let Some(node) = by_id.get(&dropped).copied() {
-            let cost = cover_turn_cost(node);
-            used_chars = used_chars.saturating_sub(cost);
-            let bucket =
-                age_bucket_for_end_leaf(node.end_leaf, newest_leaf, leaf_count, bucket_count);
-            slot_counts[bucket] = slot_counts[bucket].saturating_sub(1);
-            dropped_roots = dropped_roots.saturating_add(1);
-            steps.push(format!(
-                "drop oldest root #{:04} [{}..{}], -{} chars => {} / {}",
-                node.id, node.start_leaf, node.end_leaf, cost, used_chars, effective_budget
-            ));
-        }
-    }
-
-    if cover.is_empty() {
-        steps.push("cover is empty after drops".to_string());
-        return CoverSelection {
-            cover,
-            history_len: 0,
-            moment_len: 0,
-            used_chars,
-            dropped_roots,
-            splits,
-            steps,
-        };
-    }
-
     loop {
         if cover.len() >= target_slots {
             break;
@@ -2236,7 +2216,6 @@ fn select_cover_deterministic_quota(
             if !split_preserves_level_monotonicity(&cover, &by_id, idx, child_level) {
                 continue;
             }
-
             let parent_bucket =
                 age_bucket_for_end_leaf(parent.end_leaf, newest_leaf, leaf_count, bucket_count);
             let left_bucket =
@@ -2312,6 +2291,25 @@ fn select_cover_deterministic_quota(
             cover.len(),
             target_slots
         ));
+    }
+
+    while used_chars > effective_budget && !cover.is_empty() {
+        let dropped = cover.remove(0);
+        if let Some(node) = by_id.get(&dropped).copied() {
+            let cost = cover_turn_cost(node);
+            used_chars = used_chars.saturating_sub(cost);
+            let bucket =
+                age_bucket_for_end_leaf(node.end_leaf, newest_leaf, leaf_count, bucket_count);
+            slot_counts[bucket] = slot_counts[bucket].saturating_sub(1);
+            dropped_roots = dropped_roots.saturating_add(1);
+            steps.push(format!(
+                "drop oldest root #{:04} [{}..{}], -{} chars => {} / {}",
+                node.id, node.start_leaf, node.end_leaf, cost, used_chars, effective_budget
+            ));
+        }
+    }
+    if cover.is_empty() {
+        steps.push("cover is empty after drops".to_string());
     }
 
     if steps.len() == 1 {
@@ -2990,6 +2988,15 @@ fn sampled_steps(
             unique_sorted_steps(out, visible_leaves)
         }
     }
+}
+
+fn sampled_tail_steps(visible_leaves: usize, sample_count: usize) -> Vec<usize> {
+    if visible_leaves == 0 {
+        return Vec::new();
+    }
+    let count = sample_count.max(2).min(visible_leaves);
+    let start = visible_leaves.saturating_sub(count).saturating_add(1);
+    (start..=visible_leaves).collect()
 }
 
 fn build_churn_trace_for_steps(
@@ -3874,11 +3881,11 @@ Each policy receives the same inputs (`frontier`, budget, target-age weights). T
 \n\
 **Algorithm (detailed):**\n\
 1. Build an initial history cover from frontier roots clipped to leaves older than moment.\n\
-2. If history is over budget, drop oldest history nodes.\n\
-3. Fit a quantized curve scale `s` from a fixed ladder; choose smallest `s` where history fits.\n\
-4. Enforce curve constraint by splitting violating history nodes:\n\
+2. Fit a quantized curve scale `s` from a fixed ladder; choose smallest `s` where history fits.\n\
+3. Enforce curve constraint by splitting violating history nodes:\n\
    `span(node) <= s * 2^floor(log2(age(node)+1))`.\n\
-5. Use remaining history headroom for deterministic newest-first refinement splits.\n\
+4. Use remaining history headroom for deterministic newest-first refinement splits.\n\
+5. If still over budget (rare), drop oldest history nodes as a last resort.\n\
 \n\
 **Properties:**\n\
 - deterministic replay,\n\
