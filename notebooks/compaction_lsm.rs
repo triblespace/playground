@@ -1412,9 +1412,13 @@ fn select_cover(
             history_seed,
             global_newest_leaf,
         ),
-        SelectionPolicy::CurveHistory => {
-            select_cover_curve_history(sim, history_budget, history_seed, global_newest_leaf)
-        }
+        SelectionPolicy::CurveHistory => select_cover_curve_history(
+            sim,
+            history_budget,
+            history_seed,
+            global_newest_leaf,
+            params,
+        ),
     };
 
     let mut steps = Vec::new();
@@ -1664,18 +1668,27 @@ fn refine_history_suffix(
     by_id: &HashMap<u64, &SimNode>,
     global_newest_leaf: usize,
     scale: f32,
+    suffix_window_ratio: f32,
+    max_splits: usize,
     history_budget: usize,
     used_chars: &mut usize,
     steps: &mut Vec<String>,
 ) -> usize {
     let mut splits = 0usize;
     loop {
+        if max_splits > 0 && splits >= max_splits {
+            break;
+        }
         let remaining = history_budget.saturating_sub(*used_chars);
         if remaining == 0 {
             break;
         }
         let mut changed = false;
-        for idx in (0..cover.len()).rev() {
+        let suffix_span = ((cover.len() as f32) * suffix_window_ratio.clamp(0.01, 1.0))
+            .ceil()
+            .max(1.0) as usize;
+        let min_index = cover.len().saturating_sub(suffix_span);
+        for idx in (min_index..cover.len()).rev() {
             let parent_id = cover[idx];
             let Some(parent) = by_id.get(&parent_id).copied() else {
                 continue;
@@ -1723,6 +1736,7 @@ fn select_cover_curve_history(
     budget_chars: usize,
     mut cover: Vec<u64>,
     global_newest_leaf: usize,
+    params: CoverPolicyParams,
 ) -> CoverSelection {
     let by_id = sim.node_map();
     if budget_chars == 0 {
@@ -1741,6 +1755,11 @@ fn select_cover_curve_history(
         cover.len(),
         used_chars,
         budget_chars,
+    ));
+    steps.push(format!(
+        "curve refine suffix window {:.0}%, max splits/turn {}",
+        params.detq_suffix_window_ratio * 100.0,
+        1
     ));
 
     let mut chosen_scale = CURVE_SCALE_LADDER.last().copied().unwrap_or(1.0);
@@ -1779,6 +1798,8 @@ fn select_cover_curve_history(
         &by_id,
         global_newest_leaf,
         chosen_scale,
+        params.detq_suffix_window_ratio,
+        1,
         budget_chars,
         &mut used_chars,
         &mut steps,
