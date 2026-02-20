@@ -578,7 +578,7 @@ _Live view of the agent pile, exec queue, and message activity._"
                 ui.heading("Config");
                 ui.horizontal(|ui| {
                     ui.label("Pile");
-                    ui.text_edit_singleline(&mut state.config.pile_path);
+                    ui.add(TextField::singleline(&mut state.config.pile_path));
                 });
                 let mut picker_branches = Vec::new();
                 let repo_open_result = ensure_repo_open(state);

@@ -516,8 +516,8 @@ fn apply_config_set(config: &mut Config, args: ConfigSetArgs) -> Result<()> {
         }
         ConfigField::LlmCompactionReductionFactor => {
             let factor = parse_u64(args.value.as_str(), "llm_compaction_reduction_factor")?;
-            if factor == 0 {
-                return Err(anyhow!("llm_compaction_reduction_factor must be >= 1"));
+            if factor < 2 {
+                return Err(anyhow!("llm_compaction_reduction_factor must be >= 2"));
             }
             config.llm_compaction_reduction_factor = factor;
         }
@@ -1886,8 +1886,6 @@ fn load_optional_catalog(
     ws.checkout(..).context("checkout optional branch")
 }
 
-const PROMPT_RECENT_TURN_CAP: usize = 64;
-
 #[derive(Debug, Clone)]
 struct ContextChunk {
     id: Id,
@@ -1975,7 +1973,7 @@ fn build_prompt_messages_with_compaction(
 ) -> Result<(Vec<ChatMessage>, TribleSet)> {
     let mut index = load_context_chunks(catalog);
     let body_budget_chars = prompt_body_budget_chars(config);
-    let semantic_compactor = SemanticCompactor::new(config).ok();
+    let semantic_compactor = SemanticCompactor::new(config)?;
 
     // Sort all command results in chronological order (oldest -> newest).
     let mut results: Vec<CommandResultInfo> =
@@ -1998,9 +1996,6 @@ fn build_prompt_messages_with_compaction(
     let archive_messages = load_archive_messages(archive_catalog);
 
     let mut compact_change = TribleSet::new();
-    let mut cutoff = 0usize;
-    let mut compacted_messages: Vec<ChatMessage> = Vec::new();
-    let mut recent_messages: Vec<ChatMessage> = Vec::new();
 
     // Archive leaves are always represented as memory chunks (never as raw shell turns).
     for message in archive_messages
@@ -2083,84 +2078,65 @@ fn build_prompt_messages_with_compaction(
             &mut index,
             &mut compact_change,
             chunk,
-            semantic_compactor.as_ref(),
+            &semantic_compactor,
         )?;
     }
 
-    // Iterate until the budget-derived cutoff stabilizes. Each iteration may compact additional
-    // older turns into the LSM frontier, which can slightly change the compacted section size.
-    for _ in 0..8 {
-        for result in results.iter().take(cutoff) {
-            if index.chunk_for_exec_result.contains_key(&result.id) {
-                continue;
-            }
-            let finished_at = result
-                .finished_at
-                .context("command result missing finished_at")?;
-            let command = load_command_for_result(ws, core_index, result)?;
-            let reasoning_text = load_reasoning_for_exec_result(ws, core_index, result)?;
-            let exec_output = load_exec_result(ws, result.clone())?;
-            let leaf_summary =
-                format_exec_output(command.as_str(), exec_output, reasoning_text.as_deref());
-            let leaf_summary_handle = ws.put(leaf_summary);
-            let now = epoch_interval(now_epoch());
-            let chunk_id = ufoid();
-
-            compact_change += entity! { &chunk_id @
-                playground_context::kind: playground_context::kind_chunk,
-                playground_context::level: 0u64,
-                playground_context::summary: leaf_summary_handle,
-                playground_context::created_at: now,
-                playground_context::start_at: finished_at,
-                playground_context::end_at: finished_at,
-                playground_context::about_exec_result: result.id,
-            };
-
-            let chunk = ContextChunk {
-                id: *chunk_id,
-                level: 0,
-                summary: leaf_summary_handle,
-                start_at: finished_at,
-                end_at: finished_at,
-                left: None,
-                right: None,
-                about_exec_result: Some(result.id),
-                about_archive_message: None,
-                archive_author: None,
-                archive_person: None,
-                archive_thread_root: None,
-                archive_conversation: None,
-                archive_source_format: None,
-            };
-            index.chunk_for_exec_result.insert(result.id, chunk.id);
-            insert_chunk_with_carry(
-                ws,
-                &mut index,
-                &mut compact_change,
-                chunk,
-                semantic_compactor.as_ref(),
-            )?;
+    // Exec leaves are represented as memory chunks too; prompt selection is a stateless cover
+    // over the chunk tree (not a separate "recent raw turns" bucket).
+    for result in &results {
+        if index.chunk_for_exec_result.contains_key(&result.id) {
+            continue;
         }
+        let finished_at = result
+            .finished_at
+            .context("command result missing finished_at")?;
+        let command = load_command_for_result(ws, core_index, result)?;
+        let reasoning_text = load_reasoning_for_exec_result(ws, core_index, result)?;
+        let exec_output = load_exec_result(ws, result.clone())?;
+        let leaf_summary =
+            format_exec_output(command.as_str(), exec_output, reasoning_text.as_deref());
+        let leaf_summary_handle = ws.put(leaf_summary);
+        let now = epoch_interval(now_epoch());
+        let chunk_id = ufoid();
 
-        let compact_budget = body_budget_chars / 2;
-        let (next_compacted_messages, used_compact_chars) =
-            build_history_compacted_messages(ws, &index, compact_budget)?;
-        let raw_budget_chars = body_budget_chars.saturating_sub(used_compact_chars);
-        let (next_recent_messages, recent_count, _used_recent_chars) =
-            build_recent_messages(ws, core_index, &results, &index, raw_budget_chars)?;
-        compacted_messages = next_compacted_messages;
-        recent_messages = next_recent_messages;
+        compact_change += entity! { &chunk_id @
+            playground_context::kind: playground_context::kind_chunk,
+            playground_context::level: 0u64,
+            playground_context::summary: leaf_summary_handle,
+            playground_context::created_at: now,
+            playground_context::start_at: finished_at,
+            playground_context::end_at: finished_at,
+            playground_context::about_exec_result: result.id,
+        };
 
-        let new_cutoff = results.len().saturating_sub(recent_count);
-        if new_cutoff == cutoff {
-            break;
-        }
-        cutoff = new_cutoff;
+        let chunk = ContextChunk {
+            id: *chunk_id,
+            level: 0,
+            summary: leaf_summary_handle,
+            start_at: finished_at,
+            end_at: finished_at,
+            left: None,
+            right: None,
+            about_exec_result: Some(result.id),
+            about_archive_message: None,
+            archive_author: None,
+            archive_person: None,
+            archive_thread_root: None,
+            archive_conversation: None,
+            archive_source_format: None,
+        };
+        index.chunk_for_exec_result.insert(result.id, chunk.id);
+        insert_chunk_with_carry(
+            ws,
+            &mut index,
+            &mut compact_change,
+            chunk,
+            &semantic_compactor,
+        )?;
     }
 
-    let mut messages = Vec::new();
-    messages.append(&mut compacted_messages);
-    messages.append(&mut recent_messages);
+    let (messages, _used_chars) = build_memory_cover_messages(ws, &index, body_budget_chars)?;
     Ok((messages, compact_change))
 }
 
@@ -2183,7 +2159,24 @@ fn u128_to_usize_saturating(value: u128) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
 }
 
-fn build_history_compacted_messages(
+#[derive(Debug, Clone)]
+struct MemoryCoverTurn {
+    command: String,
+    output: String,
+    cost: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SplitCandidate {
+    index: usize,
+    parent_id: Id,
+    left_id: Id,
+    right_id: Id,
+    extra_cost: usize,
+    recency_key: i128,
+}
+
+fn build_memory_cover_messages(
     ws: &mut Workspace<Pile>,
     index: &ContextChunkIndex,
     budget_chars: usize,
@@ -2192,99 +2185,144 @@ fn build_history_compacted_messages(
         return Ok((Vec::new(), 0));
     }
 
-    let mut roots: Vec<ContextChunk> = index
+    let mut seen_roots = HashSet::new();
+    let mut cover: Vec<Id> = index
         .root_by_level
         .values()
-        .filter_map(|id| index.chunks.get(id).cloned())
+        .copied()
+        .filter(|id| seen_roots.insert(*id))
+        .filter(|id| index.chunks.contains_key(id))
         .collect();
-    roots.sort_by_key(|chunk| interval_key(chunk.start_at));
-    if roots.is_empty() {
+    cover.sort_by_key(|id| {
+        index
+            .chunks
+            .get(id)
+            .map(|chunk| interval_key(chunk.start_at))
+            .unwrap_or(i128::MAX)
+    });
+    if cover.is_empty() {
         return Ok((Vec::new(), 0));
     }
 
+    let mut turn_cache: HashMap<Id, MemoryCoverTurn> = HashMap::new();
     let mut used = 0usize;
-    let mut messages = Vec::new();
-    for chunk in roots {
-        let command = format!("memory {id:x}", id = chunk.id);
-        let output = format_memory_output(ws, &chunk)?;
-        let cost = command.chars().count() + output.chars().count();
-        if used.saturating_add(cost) > budget_chars {
+    for chunk_id in &cover {
+        let turn = memory_cover_turn(ws, index, &mut turn_cache, *chunk_id)?;
+        used = used.saturating_add(turn.cost);
+    }
+
+    // If even the coarsest antichain exceeds budget, drop the oldest roots until the selected
+    // cover fits.
+    while used > budget_chars && !cover.is_empty() {
+        let removed = cover.remove(0);
+        let turn = memory_cover_turn(ws, index, &mut turn_cache, removed)?;
+        used = used.saturating_sub(turn.cost);
+    }
+    if cover.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+
+    loop {
+        let remaining = budget_chars.saturating_sub(used);
+        if remaining == 0 {
             break;
         }
-        used += cost;
-        messages.push(ChatMessage::assistant(command));
-        messages.push(ChatMessage::user(output));
+
+        let mut best: Option<SplitCandidate> = None;
+        for (cover_index, parent_id) in cover.iter().enumerate() {
+            let Some(parent_chunk) = index.chunks.get(parent_id) else {
+                continue;
+            };
+            let (Some(left_id), Some(right_id)) = (parent_chunk.left, parent_chunk.right) else {
+                continue;
+            };
+
+            let parent_turn = memory_cover_turn(ws, index, &mut turn_cache, *parent_id)?;
+            let left_turn = memory_cover_turn(ws, index, &mut turn_cache, left_id)?;
+            let right_turn = memory_cover_turn(ws, index, &mut turn_cache, right_id)?;
+            let children_cost = left_turn.cost.saturating_add(right_turn.cost);
+            let extra_cost = children_cost.saturating_sub(parent_turn.cost);
+            if extra_cost > remaining {
+                continue;
+            }
+
+            let candidate = SplitCandidate {
+                index: cover_index,
+                parent_id: *parent_id,
+                left_id,
+                right_id,
+                extra_cost,
+                recency_key: interval_key(parent_chunk.end_at),
+            };
+            if is_better_split_candidate(candidate, best) {
+                best = Some(candidate);
+            }
+        }
+
+        let Some(candidate) = best else {
+            break;
+        };
+
+        cover.splice(
+            candidate.index..=candidate.index,
+            [candidate.left_id, candidate.right_id],
+        );
+        used = used.saturating_add(candidate.extra_cost);
+    }
+
+    let mut messages = Vec::new();
+    for chunk_id in cover {
+        let turn = memory_cover_turn(ws, index, &mut turn_cache, chunk_id)?;
+        messages.push(ChatMessage::assistant(turn.command.clone()));
+        messages.push(ChatMessage::user(turn.output.clone()));
     }
 
     Ok((messages, used))
 }
 
-fn build_recent_messages(
+fn memory_cover_turn(
     ws: &mut Workspace<Pile>,
-    core_index: &CoreIndex,
-    results: &[CommandResultInfo],
     index: &ContextChunkIndex,
-    raw_budget_chars: usize,
-) -> Result<(Vec<ChatMessage>, usize, usize)> {
-    if raw_budget_chars == 0 || results.is_empty() {
-        return Ok((Vec::new(), 0, 0));
+    turn_cache: &mut HashMap<Id, MemoryCoverTurn>,
+    chunk_id: Id,
+) -> Result<MemoryCoverTurn> {
+    if let Some(turn) = turn_cache.get(&chunk_id) {
+        return Ok(turn.clone());
     }
 
-    // Prefer raw turns that haven't been compacted yet (monotonic: once compacted, stay compacted).
-    let mut tail_start = 0usize;
-    for (idx, result) in results.iter().enumerate().rev() {
-        if index.chunk_for_exec_result.contains_key(&result.id) {
-            tail_start = idx.saturating_add(1);
-            break;
-        }
+    let chunk = index
+        .chunks
+        .get(&chunk_id)
+        .with_context(|| format!("missing context chunk {:x}", chunk_id))?;
+    let command = format!("memory {id:x}", id = chunk.id);
+    let output = format_memory_output(ws, chunk)?;
+    let cost = command
+        .chars()
+        .count()
+        .saturating_add(output.chars().count());
+    let turn = MemoryCoverTurn {
+        command,
+        output,
+        cost,
+    };
+    turn_cache.insert(chunk_id, turn.clone());
+    Ok(turn)
+}
+
+fn is_better_split_candidate(candidate: SplitCandidate, current: Option<SplitCandidate>) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    if candidate.recency_key != current.recency_key {
+        return candidate.recency_key > current.recency_key;
     }
-
-    let mut candidates = &results[tail_start..];
-    if candidates.len() > PROMPT_RECENT_TURN_CAP {
-        candidates = &candidates[candidates.len() - PROMPT_RECENT_TURN_CAP..];
+    if candidate.extra_cost != current.extra_cost {
+        return candidate.extra_cost > current.extra_cost;
     }
-
-    let mut remaining = raw_budget_chars;
-    let mut turns: Vec<(String, String)> = Vec::new();
-    for result in candidates.iter().rev() {
-        if remaining == 0 {
-            break;
-        }
-        let command = load_command_for_result(ws, core_index, result)?;
-        let reasoning_text = load_reasoning_for_exec_result(ws, core_index, result)?;
-        let exec_output = load_exec_result(ws, result.clone())?;
-        let turn_output = format_exec_result_output(exec_output, reasoning_text.as_deref());
-
-        let command_len = command.chars().count();
-        let output_len = turn_output.chars().count();
-        let needed = command_len.saturating_add(output_len);
-        if needed <= remaining {
-            turns.push((command, turn_output));
-            remaining -= needed;
-            continue;
-        }
-
-        // Always include the newest turn, even if we have to truncate it hard to fit.
-        if turns.is_empty() {
-            turns.push((command, turn_output));
-            remaining = 0;
-        }
-        break;
+    if candidate.index != current.index {
+        return candidate.index > current.index;
     }
-
-    if turns.is_empty() {
-        return Ok((Vec::new(), 0, 0));
-    }
-    turns.reverse();
-    let recent_count = turns.len();
-
-    let mut messages = Vec::new();
-    for (command, output) in turns.into_iter() {
-        messages.push(ChatMessage::assistant(command));
-        messages.push(ChatMessage::user(output));
-    }
-    let used = raw_budget_chars.saturating_sub(remaining);
-    Ok((messages, recent_count, used))
+    candidate.parent_id < current.parent_id
 }
 
 fn format_memory_output(ws: &mut Workspace<Pile>, chunk: &ContextChunk) -> Result<String> {
@@ -2325,28 +2363,6 @@ fn format_memory_output(ws: &mut Workspace<Pile>, chunk: &ContextChunk) -> Resul
         ));
     }
     Ok(format!("{header}\n{}\n", summary.trim_end()))
-}
-
-fn format_exec_result_output(result: ExecResult, reasoning_text: Option<&str>) -> String {
-    let mut text = String::new();
-    if let Some(reasoning_text) = reasoning_text {
-        append_section(&mut text, "reasoning", reasoning_text);
-    }
-    let stdout = format_output_text(result.stdout_text, result.stdout);
-    append_section(&mut text, "stdout", stdout.as_str());
-    let stderr = format_output_text(result.stderr_text, result.stderr);
-    append_section(&mut text, "stderr", stderr.as_str());
-
-    if let Some(error) = result.error {
-        append_section(&mut text, "error", error.as_str());
-    }
-
-    let exit_code = result
-        .exit_code
-        .map(|code| code.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    text.push_str(&format!("exit_code: {exit_code}\n"));
-    text
 }
 
 fn id_prefix(id: Id) -> String {
@@ -2964,7 +2980,7 @@ fn insert_chunk_with_carry(
     index: &mut ContextChunkIndex,
     change: &mut TribleSet,
     mut carry: ContextChunk,
-    semantic: Option<&SemanticCompactor>,
+    semantic: &SemanticCompactor,
 ) -> Result<()> {
     let mut level = carry.level;
     loop {
@@ -2984,14 +3000,9 @@ fn insert_chunk_with_carry(
 
             let left_text = load_text(ws, left.summary).context("load left chunk summary")?;
             let right_text = load_text(ws, right.summary).context("load right chunk summary")?;
-            let merged_text = match semantic {
-                Some(compactor) => compactor
-                    .merge(left_text.as_str(), right_text.as_str())
-                    .unwrap_or_else(|_| {
-                        merge_text_fallback(left_text.as_str(), right_text.as_str())
-                    }),
-                None => merge_text_fallback(left_text.as_str(), right_text.as_str()),
-            };
+            let merged_text = semantic
+                .merge(left_text.as_str(), right_text.as_str())
+                .context("semantic merge context chunks")?;
             let merged_handle = ws.put(merged_text);
 
             let now = epoch_interval(now_epoch());
@@ -3086,7 +3097,7 @@ impl SemanticCompactor {
             api_key,
             model,
             chars_per_token,
-            reduction_factor: config.llm_compaction_reduction_factor.max(1),
+            reduction_factor: config.llm_compaction_reduction_factor.max(2),
             system_prompt: config
                 .llm_compaction_prompt
                 .clone()
@@ -3100,7 +3111,7 @@ impl SemanticCompactor {
             .count()
             .saturating_add(right.chars().count())
             .max(1);
-        let target_chars = input_chars / (self.reduction_factor.max(1) as usize);
+        let target_chars = input_chars / (self.reduction_factor.max(2) as usize);
         let target_chars = target_chars.max(1);
         let max_tokens = target_chars.div_ceil(self.chars_per_token as usize) as u64;
 
@@ -3209,10 +3220,6 @@ fn extract_output_text(json: &serde_json::Value) -> String {
     }
 
     String::new()
-}
-
-fn merge_text_fallback(left: &str, right: &str) -> String {
-    format!("{left}\n\n...\n\n{right}")
 }
 
 fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Result<ExecResult> {

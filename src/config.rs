@@ -580,7 +580,7 @@ fn load_latest_config(
     )
     .and_then(u256be_to_u64)
     {
-        config.llm_compaction_reduction_factor = factor.max(1);
+        config.llm_compaction_reduction_factor = factor.max(2);
     }
 
     if let Some(profile_id) = config.llm_profile_id {
@@ -706,7 +706,7 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
         playground_config::active_llm_profile_id: profile_id,
     };
     let compaction_reduction_factor: Value<U256BE> =
-        config.llm_compaction_reduction_factor.max(1).to_value();
+        config.llm_compaction_reduction_factor.max(2).to_value();
     change += entity! { &config_id @
         playground_config::llm_compaction_reduction_factor: compaction_reduction_factor,
     };

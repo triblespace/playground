@@ -18,6 +18,14 @@ Prefill the dashboard with a pile path:
 cargo run --manifest-path playground/Cargo.toml -- --pile /path/to/self.pile diagnostics
 ```
 
+## Notebooks
+
+Run the conceptual compaction notebook to explore carry merges as new messages are added:
+
+```bash
+cargo run --manifest-path playground/Cargo.toml --example compaction_lsm
+```
+
 ## Running Playground
 
 Run core + LLM + Lima exec. Defaults to `./personas/<instance>/pile/self.pile`:
