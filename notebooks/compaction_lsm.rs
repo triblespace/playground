@@ -74,7 +74,6 @@ struct NotebookArgs {
     det_safe_quantile: Option<f32>,
     moment_ratio: Option<f32>,
     detq_suffix_window_ratio: Option<f32>,
-    reduction_factor: Option<u32>,
     merge_arity: Option<usize>,
     context_budget: Option<usize>,
     churn_sample_count: Option<usize>,
@@ -198,7 +197,6 @@ fn parse_notebook_args() -> Result<NotebookArgs> {
         det_safe_quantile: None,
         moment_ratio: None,
         detq_suffix_window_ratio: None,
-        reduction_factor: None,
         merge_arity: None,
         context_budget: None,
         churn_sample_count: None,
@@ -277,16 +275,6 @@ fn parse_notebook_args() -> Result<NotebookArgs> {
                     format!("invalid --detq-suffix-window-ratio value '{value}'")
                 })?);
             }
-            "--reduction-factor" => {
-                let value = it
-                    .next()
-                    .ok_or_else(|| anyhow!("--reduction-factor expects an integer"))?;
-                args.reduction_factor = Some(
-                    value
-                        .parse::<u32>()
-                        .with_context(|| format!("invalid --reduction-factor value '{value}'"))?,
-                );
-            }
             "--merge-arity" => {
                 let value = it
                     .next()
@@ -355,9 +343,6 @@ fn initial_state_from_bootstrap(bootstrap: &NotebookBootstrap) -> ViewState {
     }
     if let Some(value) = bootstrap.args.detq_suffix_window_ratio {
         state.detq_suffix_window_ratio = value.clamp(0.01, 1.0);
-    }
-    if let Some(value) = bootstrap.args.reduction_factor {
-        state.reduction_factor = value.max(2);
     }
     if let Some(value) = bootstrap.args.merge_arity {
         state.merge_arity = value.max(2);
@@ -838,7 +823,6 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
     let sim = simulate(
         state.stream.as_slice(),
         state.visible_leaves,
-        state.reduction_factor,
         state.merge_arity,
     );
 
@@ -899,9 +883,8 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
     }
 
     println!(
-        "- simulation setup: inserts={} reduction={} merge_k={} budget={} chars policy={} sampling={}({})",
+        "- simulation setup: inserts={} merge_k={} budget={} chars policy={} sampling={}({})",
         state.visible_leaves,
-        state.reduction_factor,
         state.merge_arity,
         state.context_budget,
         state.selection_policy.label(),
@@ -953,7 +936,6 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
         };
         let tail_samples = build_churn_trace_for_steps(
             state.stream.as_slice(),
-            state.reduction_factor,
             state.merge_arity,
             state.context_budget,
             policy,
@@ -964,7 +946,6 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
         let sparse_samples = build_churn_trace_with(
             state.stream.as_slice(),
             state.visible_leaves,
-            state.reduction_factor,
             state.merge_arity,
             state.context_budget,
             policy,
@@ -1114,7 +1095,6 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
             inv_params.moment_ratio = moment_ratio;
             let tail_samples = build_churn_trace_for_steps(
                 state.stream.as_slice(),
-                state.reduction_factor,
                 state.merge_arity,
                 total_budget,
                 policy,
@@ -1278,7 +1258,6 @@ impl Simulation {
 #[derive(Debug, Clone)]
 struct ViewState {
     base_leaf_size: usize,
-    reduction_factor: u32,
     merge_arity: usize,
     context_budget: usize,
     selection_policy: SelectionPolicy,
@@ -1302,7 +1281,6 @@ impl Default for ViewState {
     fn default() -> Self {
         let mut state = Self {
             base_leaf_size: 220,
-            reduction_factor: 2,
             merge_arity: 4,
             context_budget: 2200,
             selection_policy: SelectionPolicy::DistributionAware,
@@ -1421,14 +1399,12 @@ fn spawn_insert_job(state: &ViewState, target_len: usize) -> Option<InsertJob> {
 fn simulate(
     stream: &[usize],
     visible_leaves: usize,
-    reduction_factor: u32,
     merge_arity: usize,
 ) -> Simulation {
     let mut sim = Simulation::default();
     let mut roots_by_level: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
     let mut by_id: HashMap<u64, usize> = HashMap::new();
     let mut next_id = 1u64;
-    let reduction = reduction_factor.max(2) as usize;
     let merge_arity = merge_arity.max(2);
 
     for (leaf_idx, leaf_size) in stream.iter().copied().take(visible_leaves).enumerate() {
@@ -1475,6 +1451,7 @@ fn simulate(
             let mut merged_input_size = 0usize;
             let mut first_leaf = usize::MAX;
             let mut last_leaf = 0usize;
+            let child_count = children.len().max(1);
             for child_id in &children {
                 let Some(node) = sim.nodes.get(by_id[child_id]) else {
                     continue;
@@ -1483,7 +1460,7 @@ fn simulate(
                 first_leaf = first_leaf.min(node.start_leaf);
                 last_leaf = last_leaf.max(node.end_leaf);
             }
-            let merged_size = (merged_input_size / reduction).max(1);
+            let merged_size = (merged_input_size / child_count).max(1);
             let parent_id = next_id;
             next_id += 1;
 
@@ -3064,7 +3041,6 @@ struct SweepState {
 struct DerivedKey {
     stream_revision: u64,
     visible_leaves: usize,
-    reduction_factor: u32,
     merge_arity: usize,
     context_budget: usize,
     selection_policy: SelectionPolicy,
@@ -3089,7 +3065,6 @@ struct DerivedData {
 struct DerivedSnapshot {
     stream: Vec<usize>,
     visible_leaves: usize,
-    reduction_factor: u32,
     merge_arity: usize,
     context_budget: usize,
     selection_policy: SelectionPolicy,
@@ -3121,7 +3096,6 @@ impl DerivedSnapshot {
         Self {
             stream: state.stream.clone(),
             visible_leaves: state.visible_leaves,
-            reduction_factor: state.reduction_factor,
             merge_arity: state.merge_arity,
             context_budget: state.context_budget,
             selection_policy: state.selection_policy,
@@ -3154,7 +3128,6 @@ fn spawn_derived_job(key: DerivedKey, snapshot: DerivedSnapshot) -> DerivedJob {
         let sim = simulate(
             snapshot.stream.as_slice(),
             snapshot.visible_leaves,
-            snapshot.reduction_factor,
             snapshot.merge_arity,
         );
         progress_handle.store(1, Ordering::Relaxed);
@@ -3167,7 +3140,6 @@ fn spawn_derived_job(key: DerivedKey, snapshot: DerivedSnapshot) -> DerivedJob {
         progress_handle.store(2, Ordering::Relaxed);
         let churn_samples = build_churn_trace_for_steps(
             snapshot.stream.as_slice(),
-            snapshot.reduction_factor,
             snapshot.merge_arity,
             snapshot.context_budget,
             snapshot.selection_policy,
@@ -3185,7 +3157,6 @@ fn spawn_derived_job(key: DerivedKey, snapshot: DerivedSnapshot) -> DerivedJob {
             } else {
                 let samples = build_churn_trace_for_steps(
                     snapshot.stream.as_slice(),
-                    snapshot.reduction_factor,
                     snapshot.merge_arity,
                     snapshot.context_budget,
                     policy,
@@ -3288,7 +3259,6 @@ impl DerivedKey {
         Self {
             stream_revision: state.stream_revision,
             visible_leaves: state.visible_leaves,
-            reduction_factor: state.reduction_factor,
             merge_arity: state.merge_arity,
             context_budget: state.context_budget,
             selection_policy: state.selection_policy,
@@ -3488,7 +3458,6 @@ fn sampled_tail_steps(visible_leaves: usize, sample_count: usize) -> Vec<usize> 
 
 fn build_churn_trace_for_steps(
     stream: &[usize],
-    reduction_factor: u32,
     merge_arity: usize,
     context_budget: usize,
     selection_policy: SelectionPolicy,
@@ -3508,7 +3477,7 @@ fn build_churn_trace_for_steps(
     let mut prior_history_lens: Vec<usize> = Vec::with_capacity(step_points.len());
     let mut step_to_index: HashMap<usize, usize> = HashMap::with_capacity(step_points.len());
     for (idx, step) in step_points.iter().copied().enumerate() {
-        let sim = simulate(stream, step, reduction_factor, merge_arity);
+        let sim = simulate(stream, step, merge_arity);
         let by_id = sim.node_map();
         let selection = select_cover(&sim, context_budget, selection_policy, params);
         let history_len = selection.history_len.min(selection.cover.len());
@@ -3671,7 +3640,6 @@ fn build_churn_trace_for_steps(
 fn build_churn_trace_with(
     stream: &[usize],
     visible_leaves: usize,
-    reduction_factor: u32,
     merge_arity: usize,
     context_budget: usize,
     selection_policy: SelectionPolicy,
@@ -3685,7 +3653,6 @@ fn build_churn_trace_with(
     let step_points = sampled_steps(visible_leaves, sample_count, sampling_mode);
     build_churn_trace_for_steps(
         stream,
-        reduction_factor,
         merge_arity,
         context_budget,
         selection_policy,
@@ -3993,7 +3960,6 @@ fn evaluate_sweep_row(
     let samples = build_churn_trace_with(
         state.stream.as_slice(),
         visible_leaves,
-        state.reduction_factor,
         state.merge_arity,
         state.context_budget,
         policy,
@@ -4423,11 +4389,12 @@ Primary readouts:\n\
                     ui.add(Slider::new(&mut state.base_leaf_size, 16..=1024).text("chars"));
                 });
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("Reduction factor");
-                    ui.add(Slider::new(&mut state.reduction_factor, 2..=8).text("merge"));
-                    ui.add_space(8.0);
                     ui.label("Merge arity (k)");
                     ui.add(Slider::new(&mut state.merge_arity, 2..=16).text("runs"));
+                    ui.label(format!(
+                        "Compression factor = {} (coupled to k)",
+                        state.merge_arity
+                    ));
                     ui.add_space(8.0);
                     ui.label("Jitter");
                     ui.add(ChoiceToggle::binary(&mut state.jitter, "OFF", "ON"));
@@ -4507,14 +4474,15 @@ A compact summary of the active run configuration.\n\
 \n\
 _Hypothesis: deterministic quota + headroom should reduce churn while preserving budget safety._\n\
 \n\
-`N={}`  `reduction={}`  `budget={}`\n\
+`N={}`  `merge_k={}`  `compression={}`  `budget={}`\n\
 `policy={}`\n\
 `churn_sampling={} ({})`\n\
 `steady_state_start={:.0}%`\n\
 `moment_ratio={:.2}`\n\
 `detq: fill={:.2}  q={:.2}  effective_budget={}  safe_cost={}  target_slots={}`",
                 state_snapshot.visible_leaves,
-                state_snapshot.reduction_factor,
+                state_snapshot.merge_arity,
+                state_snapshot.merge_arity,
                 state_snapshot.context_budget,
                 state_snapshot.selection_policy.label(),
                 state_snapshot.churn_sampling_mode.label(),
@@ -5216,14 +5184,9 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
             let derived = derived.read(ui);
             (Arc::clone(&derived.sim), Arc::clone(&derived.cover))
         };
-        let (visible_leaves, selection_policy, merge_arity, reduction_factor) = {
+        let (visible_leaves, selection_policy, merge_arity) = {
             let s = state.read(ui);
-            (
-                s.visible_leaves,
-                s.selection_policy,
-                s.merge_arity,
-                s.reduction_factor,
-            )
+            (s.visible_leaves, s.selection_policy, s.merge_arity)
         };
 
         with_padding(ui, DEFAULT_CARD_PADDING, |ui| {
@@ -5233,7 +5196,7 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
 - leaves: `{}`\n\
 - policy: `{}`\n\
 - merge arity (k): `{}`\n\
-- reduction factor: `{}`\n\
+- compression factor: `{}`\n\
 - nodes: `{}`\n\
 - merges: `{}`\n\
 - frontier runs: `{}`\n\
@@ -5246,7 +5209,7 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
                 visible_leaves,
                 selection_policy.label(),
                 merge_arity,
-                reduction_factor,
+                merge_arity,
                 sim.nodes.len(),
                 sim.merges,
                 sim.frontier_root_count(),
