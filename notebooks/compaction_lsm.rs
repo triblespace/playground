@@ -48,6 +48,9 @@ const STEADY_STATE_START_RATIO: f32 = 0.9;
 const MIN_RELEVANT_INSERTS: usize = 100_000;
 const MAX_RELEVANT_INSERTS: usize = 1_000_000;
 const TRACE_RENDER_LIMIT: usize = 256;
+const OLDEST_BAND_RATIO: f64 = 0.2;
+const HISTORY_QUANTILE_BUCKETS: usize = 5;
+const LAG_STEPS: [usize; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 const DEFAULT_DETQ_SUFFIX_WINDOW_RATIO: f32 = 0.05;
 const CURVE_SCALE_LADDER: [f32; 14] = [
     0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0,
@@ -773,6 +776,45 @@ fn interval_key(interval: Value<NsTAIInterval>) -> i128 {
     lower.to_tai_duration().total_nanoseconds()
 }
 
+fn format_lag_series(
+    values: &[f64; LAG_STEPS.len()],
+    counts: &[usize; LAG_STEPS.len()],
+    max_entries: usize,
+) -> String {
+    LAG_STEPS
+        .iter()
+        .enumerate()
+        .take(max_entries.min(LAG_STEPS.len()))
+        .map(|(idx, lag)| {
+            if counts[idx] == 0 || !values[idx].is_finite() {
+                format!("{lag}:n/a")
+            } else {
+                format!("{lag}:{:.1}%", values[idx] * 100.0)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_quantile_flip_series(values: &[f64; HISTORY_QUANTILE_BUCKETS]) -> String {
+    values
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| format!("q{idx}:{:.1}%", value * 100.0))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_spill_bins(bins: &[f64; 4]) -> String {
+    format!(
+        "0:{:.1}% 1:{:.1}% 2:{:.1}% 3+:{:.1}%",
+        bins[0] * 100.0,
+        bins[1] * 100.0,
+        bins[2] * 100.0,
+        bins[3] * 100.0
+    )
+}
+
 fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
     let mut state = initial_state_from_bootstrap(bootstrap);
     state.visible_leaves = state.stream.len();
@@ -919,14 +961,22 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
                 let avg_new_tokens = tail.avg_new_input_chars / chars_per_token;
                 let avg_input_tokens = tail.avg_input_chars / chars_per_token;
                 println!(
-                    "- {:>24} | fill {:>6.2}% util {:>6.2}% | tail h-prefix {:>5.1}% h-suffix {:>6.2} h-set {:>6.2} | sparse h-prefix {:>5.1}% h-suffix {:>6.2} | cache/new {:>6} | in tok t/c/n {:>6.0}/{:>6.0}/{:>6.0} | out {:>5.0}",
+                    "- {:>24} | fill {:>6.2}% util {:>6.2}% | tail prefix n/c {:>5.1}%/{:>5.1}% h-prefix n/c/l {:>5.1}%/{:>5.1}%/{:>5.1}% h-suffix {:>6.2} h-set {:>6.2} | sparse prefix n/c {:>5.1}%/{:>5.1}% h-prefix n/c/l {:>5.1}%/{:>5.1}%/{:>5.1}% h-suffix {:>6.2} | cache/new {:>6} | in tok t/c/n {:>6.0}/{:>6.0}/{:>6.0} | out {:>5.0}",
                     policy.label(),
                     fill_ratio * 100.0,
                     tail.avg_context_utilization * 100.0,
+                    tail.avg_prefix_retention * 100.0,
+                    tail.avg_prefix_retention_chars * 100.0,
                     tail.avg_history_prefix_retention * 100.0,
+                    tail.avg_history_prefix_retention_chars * 100.0,
+                    tail.avg_history_prefix_retention_leaves * 100.0,
                     tail.avg_history_suffix_churn,
                     tail.avg_history_set_churn,
+                    sparse.avg_prefix_retention * 100.0,
+                    sparse.avg_prefix_retention_chars * 100.0,
                     sparse.avg_history_prefix_retention * 100.0,
+                    sparse.avg_history_prefix_retention_chars * 100.0,
+                    sparse.avg_history_prefix_retention_leaves * 100.0,
                     sparse.avg_history_suffix_churn,
                     tail.cached_new_ratio
                         .map(|ratio| format!("{ratio:.2}x"))
@@ -936,17 +986,44 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
                     avg_new_tokens,
                     assumed_out_tokens,
                 );
+                println!(
+                    "  {:>24} | tail lag-n [{}] lag-c [{}] | oldest-band n/c {:>5.1}%/{:>5.1}% | qflip [{}]",
+                    "",
+                    format_lag_series(&tail.avg_lag_history_prefix_retention, &tail.lag_counts, 6),
+                    format_lag_series(
+                        &tail.avg_lag_history_prefix_retention_chars,
+                        &tail.lag_counts,
+                        6
+                    ),
+                    tail.avg_oldest_band_survival * 100.0,
+                    tail.avg_oldest_band_survival_chars * 100.0,
+                    format_quantile_flip_series(&tail.avg_history_quantile_flip)
+                );
+                println!(
+                    "  {:>24} | moment fill avg/min/max {:>5.1}%/{:>5.1}%/{:>5.1}% | spill avg leaves/insert {:>5.2}/{:>5.2} | spill bins [{}]",
+                    "",
+                    tail.avg_moment_fill_ratio * 100.0,
+                    tail.min_moment_fill_ratio * 100.0,
+                    tail.max_moment_fill_ratio * 100.0,
+                    tail.avg_moment_spill_leaves,
+                    tail.avg_moment_spill_per_insert,
+                    format_spill_bins(&tail.moment_spill_bins),
+                );
             }
             (Some(tail), None) => {
                 let avg_cached_tokens = tail.avg_cached_input_chars / chars_per_token;
                 let avg_new_tokens = tail.avg_new_input_chars / chars_per_token;
                 let avg_input_tokens = tail.avg_input_chars / chars_per_token;
                 println!(
-                    "- {:>24} | fill {:>6.2}% util {:>6.2}% | tail h-prefix {:>5.1}% h-suffix {:>6.2} h-set {:>6.2} | cache/new {:>6} | in tok t/c/n {:>6.0}/{:>6.0}/{:>6.0} | out {:>5.0}",
+                    "- {:>24} | fill {:>6.2}% util {:>6.2}% | tail prefix n/c {:>5.1}%/{:>5.1}% h-prefix n/c/l {:>5.1}%/{:>5.1}%/{:>5.1}% h-suffix {:>6.2} h-set {:>6.2} | cache/new {:>6} | in tok t/c/n {:>6.0}/{:>6.0}/{:>6.0} | out {:>5.0}",
                     policy.label(),
                     fill_ratio * 100.0,
                     tail.avg_context_utilization * 100.0,
+                    tail.avg_prefix_retention * 100.0,
+                    tail.avg_prefix_retention_chars * 100.0,
                     tail.avg_history_prefix_retention * 100.0,
+                    tail.avg_history_prefix_retention_chars * 100.0,
+                    tail.avg_history_prefix_retention_leaves * 100.0,
                     tail.avg_history_suffix_churn,
                     tail.avg_history_set_churn,
                     tail.cached_new_ratio
@@ -957,12 +1034,97 @@ fn run_text_report(bootstrap: &NotebookBootstrap) -> Result<()> {
                     avg_new_tokens,
                     assumed_out_tokens,
                 );
+                println!(
+                    "  {:>24} | tail lag-n [{}] lag-c [{}] | oldest-band n/c {:>5.1}%/{:>5.1}% | qflip [{}]",
+                    "",
+                    format_lag_series(&tail.avg_lag_history_prefix_retention, &tail.lag_counts, 6),
+                    format_lag_series(
+                        &tail.avg_lag_history_prefix_retention_chars,
+                        &tail.lag_counts,
+                        6
+                    ),
+                    tail.avg_oldest_band_survival * 100.0,
+                    tail.avg_oldest_band_survival_chars * 100.0,
+                    format_quantile_flip_series(&tail.avg_history_quantile_flip)
+                );
+                println!(
+                    "  {:>24} | moment fill avg/min/max {:>5.1}%/{:>5.1}%/{:>5.1}% | spill avg leaves/insert {:>5.2}/{:>5.2} | spill bins [{}]",
+                    "",
+                    tail.avg_moment_fill_ratio * 100.0,
+                    tail.min_moment_fill_ratio * 100.0,
+                    tail.max_moment_fill_ratio * 100.0,
+                    tail.avg_moment_spill_leaves,
+                    tail.avg_moment_spill_per_insert,
+                    format_spill_bins(&tail.moment_spill_bins),
+                );
             }
             _ => {
                 println!(
                     "- {:>24} | fill {:>6.2}% | no churn summary",
                     policy.label(),
                     fill_ratio * 100.0
+                );
+            }
+        }
+    }
+
+    let reserved_moment_budget = ((state.context_budget as f32) * state.moment_ratio.clamp(0.0, 1.0))
+        .round()
+        .clamp(0.0, state.context_budget as f32) as usize;
+    let fixed_history_budget = state.context_budget.saturating_sub(reserved_moment_budget);
+    let invariance_moment_ratios = [0.15_f32, 0.25_f32, 0.35_f32, 0.45_f32];
+    println!(
+        "\n## Fixed-history-budget invariance (tail window {}..={})",
+        tail_window_start, tail_window_end
+    );
+    println!(
+        "- baseline: total_budget={} moment_ratio={:.2} -> fixed_history_budget={}",
+        state.context_budget, state.moment_ratio, fixed_history_budget
+    );
+    for policy in ALL_POLICIES {
+        println!("- {}", policy.label());
+        for moment_ratio in invariance_moment_ratios {
+            if !(0.0..1.0).contains(&moment_ratio) {
+                continue;
+            }
+            let total_budget = ((fixed_history_budget as f64) / (1.0 - moment_ratio as f64))
+                .round()
+                .max(1.0) as usize;
+            let mut inv_params = params;
+            inv_params.moment_ratio = moment_ratio;
+            let tail_samples = build_churn_trace_for_steps(
+                state.stream.as_slice(),
+                state.reduction_factor,
+                total_budget,
+                policy,
+                inv_params,
+                &tail_steps,
+                None,
+            );
+            if let Some(summary) = summarize_churn(&tail_samples, tail_window_start) {
+                let avg_cached_tokens = summary.avg_cached_input_chars / chars_per_token;
+                let avg_new_tokens = summary.avg_new_input_chars / chars_per_token;
+                println!(
+                    "  r={:.2} budget={} | h-prefix n/c/l {:>5.1}%/{:>5.1}%/{:>5.1}% | oldest-band {:>5.1}% | q0-flip {:>5.1}% | util {:>6.2}% | cache/new {:>6} | in tok c/n {:>6.0}/{:>6.0}",
+                    moment_ratio,
+                    total_budget,
+                    summary.avg_history_prefix_retention * 100.0,
+                    summary.avg_history_prefix_retention_chars * 100.0,
+                    summary.avg_history_prefix_retention_leaves * 100.0,
+                    summary.avg_oldest_band_survival * 100.0,
+                    summary
+                        .avg_history_quantile_flip
+                        .first()
+                        .copied()
+                        .unwrap_or_default()
+                        * 100.0,
+                    summary.avg_context_utilization * 100.0,
+                    summary
+                        .cached_new_ratio
+                        .map(|ratio| format!("{ratio:.2}x"))
+                        .unwrap_or_else(|| "inf".to_string()),
+                    avg_cached_tokens,
+                    avg_new_tokens,
                 );
             }
         }
@@ -1308,6 +1470,10 @@ struct CoverSelection {
     history_len: usize,
     moment_len: usize,
     used_chars: usize,
+    history_budget_chars: usize,
+    moment_reserved_chars: usize,
+    moment_used_chars: usize,
+    moment_start_leaf: Option<usize>,
     dropped_roots: usize,
     splits: usize,
     steps: Vec<String>,
@@ -1418,6 +1584,10 @@ fn select_cover(
             history_len: 0,
             moment_len: 0,
             used_chars: 0,
+            history_budget_chars: 0,
+            moment_reserved_chars: 0,
+            moment_used_chars: 0,
+            moment_start_leaf: None,
             dropped_roots: 0,
             splits: 0,
             steps: vec!["no visible leaves".to_string()],
@@ -1487,6 +1657,10 @@ fn select_cover(
     history.history_len = history_nodes;
     history.moment_len = moment_nodes;
     history.used_chars = history.used_chars.saturating_add(moment_used);
+    history.history_budget_chars = history_budget;
+    history.moment_reserved_chars = reserved_moment_budget;
+    history.moment_used_chars = moment_used;
+    history.moment_start_leaf = moment_start_leaf;
     history.steps = steps;
     history.steps.push(format!(
         "final: history_nodes={}, moment_nodes={}, used {} / {} chars",
@@ -1513,6 +1687,10 @@ fn empty_history_selection(reason: &str) -> CoverSelection {
         history_len: 0,
         moment_len: 0,
         used_chars: 0,
+        history_budget_chars: 0,
+        moment_reserved_chars: 0,
+        moment_used_chars: 0,
+        moment_start_leaf: None,
         dropped_roots: 0,
         splits: 0,
         steps: vec![reason.to_string()],
@@ -1856,6 +2034,10 @@ fn select_cover_curve_history(
         history_len: 0,
         moment_len: 0,
         used_chars,
+        history_budget_chars: budget_chars,
+        moment_reserved_chars: 0,
+        moment_used_chars: 0,
+        moment_start_leaf: None,
         dropped_roots,
         splits,
         steps,
@@ -2044,6 +2226,10 @@ fn select_cover_distribution(
         history_len: 0,
         moment_len: 0,
         used_chars,
+        history_budget_chars: budget_chars,
+        moment_reserved_chars: 0,
+        moment_used_chars: 0,
+        moment_start_leaf: None,
         dropped_roots,
         splits,
         steps,
@@ -2148,6 +2334,10 @@ fn select_cover_deterministic(
         history_len: 0,
         moment_len: 0,
         used_chars,
+        history_budget_chars: budget_chars,
+        moment_reserved_chars: 0,
+        moment_used_chars: 0,
+        moment_start_leaf: None,
         dropped_roots,
         splits,
         steps,
@@ -2397,6 +2587,10 @@ fn select_cover_deterministic_quota(
         history_len: 0,
         moment_len: 0,
         used_chars,
+        history_budget_chars: effective_budget,
+        moment_reserved_chars: 0,
+        moment_used_chars: 0,
+        moment_start_leaf: None,
         dropped_roots,
         splits,
         steps,
@@ -2668,12 +2862,23 @@ struct ChurnSample {
     cached_input_chars: usize,
     new_input_chars: usize,
     context_utilization: f64,
+    moment_fill_ratio: f64,
+    moment_spill_leaves: usize,
+    moment_spill_per_insert: f64,
     suffix_churn: usize,
     set_churn: usize,
     prefix_retention: f64,
+    prefix_retention_chars: f64,
     history_suffix_churn: usize,
     history_set_churn: usize,
     history_prefix_retention: f64,
+    history_prefix_retention_chars: f64,
+    history_prefix_retention_leaves: f64,
+    oldest_band_survival: f64,
+    oldest_band_survival_chars: f64,
+    history_quantile_flip: [f64; HISTORY_QUANTILE_BUCKETS],
+    lag_history_prefix_retention: [f64; LAG_STEPS.len()],
+    lag_history_prefix_retention_chars: [f64; LAG_STEPS.len()],
     moment_suffix_churn: usize,
     moment_set_churn: usize,
     moment_prefix_retention: f64,
@@ -2684,11 +2889,21 @@ struct ChurnSummary {
     transitions: usize,
     window_start_step: usize,
     avg_history_prefix_retention: f64,
+    avg_history_prefix_retention_chars: f64,
+    avg_history_prefix_retention_leaves: f64,
+    avg_oldest_band_survival: f64,
+    avg_oldest_band_survival_chars: f64,
+    avg_history_quantile_flip: [f64; HISTORY_QUANTILE_BUCKETS],
+    avg_lag_history_prefix_retention: [f64; LAG_STEPS.len()],
+    avg_lag_history_prefix_retention_chars: [f64; LAG_STEPS.len()],
+    lag_counts: [usize; LAG_STEPS.len()],
     avg_history_suffix_churn: f64,
     avg_history_set_churn: f64,
     worst_history_suffix_churn: usize,
     worst_history_set_churn: usize,
+    avg_prefix_retention: f64,
     avg_moment_prefix_retention: f64,
+    avg_prefix_retention_chars: f64,
     avg_moment_suffix_churn: f64,
     avg_moment_set_churn: f64,
     avg_context_utilization: f64,
@@ -2696,6 +2911,12 @@ struct ChurnSummary {
     avg_cached_input_chars: f64,
     avg_new_input_chars: f64,
     cached_new_ratio: Option<f64>,
+    avg_moment_fill_ratio: f64,
+    min_moment_fill_ratio: f64,
+    max_moment_fill_ratio: f64,
+    avg_moment_spill_leaves: f64,
+    avg_moment_spill_per_insert: f64,
+    moment_spill_bins: [f64; 4],
 }
 
 #[derive(Debug, Clone)]
@@ -3017,6 +3238,15 @@ fn cover_churn(prev: &[u64], next: &[u64]) -> (usize, usize, f64, usize) {
     (suffix_churn, set_churn, prefix_retention, prefix_len)
 }
 
+fn quantile_bounds(len: usize, bucket: usize, bucket_count: usize) -> std::ops::Range<usize> {
+    if len == 0 || bucket_count == 0 {
+        return 0..0;
+    }
+    let start = (bucket * len) / bucket_count;
+    let end = ((bucket + 1) * len) / bucket_count;
+    start.min(len)..end.min(len)
+}
+
 fn prefix_chars(cover: &[u64], prefix_len: usize, by_id: &HashMap<u64, &SimNode>) -> usize {
     cover
         .iter()
@@ -3024,6 +3254,84 @@ fn prefix_chars(cover: &[u64], prefix_len: usize, by_id: &HashMap<u64, &SimNode>
         .filter_map(|id| by_id.get(id).copied())
         .map(cover_turn_cost)
         .sum()
+}
+
+fn oldest_band_survival(
+    prev_history: &[u64],
+    next_history: &[u64],
+    by_id: &HashMap<u64, &SimNode>,
+) -> (f64, f64) {
+    if prev_history.is_empty() {
+        return (1.0, 1.0);
+    }
+    let band_len = ((prev_history.len() as f64) * OLDEST_BAND_RATIO)
+        .ceil()
+        .clamp(1.0, prev_history.len() as f64) as usize;
+    let prev_band = &prev_history[..band_len];
+    let lcp = prev_band
+        .iter()
+        .zip(next_history.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let node_survival = lcp as f64 / band_len as f64;
+    let char_survival = prefix_weighted_retention(prev_band, lcp, by_id, cover_turn_cost);
+    (node_survival, char_survival)
+}
+
+fn history_quantile_flip(prev_history: &[u64], next_history: &[u64]) -> [f64; HISTORY_QUANTILE_BUCKETS] {
+    let mut out = [0.0; HISTORY_QUANTILE_BUCKETS];
+    if prev_history.is_empty() {
+        return out;
+    }
+    for (bucket, out_value) in out.iter_mut().enumerate() {
+        let prev_range = quantile_bounds(prev_history.len(), bucket, HISTORY_QUANTILE_BUCKETS);
+        if prev_range.is_empty() {
+            continue;
+        }
+        let next_range = quantile_bounds(next_history.len(), bucket, HISTORY_QUANTILE_BUCKETS);
+        let prev_set: HashSet<u64> = prev_history[prev_range].iter().copied().collect();
+        if prev_set.is_empty() {
+            continue;
+        }
+        let next_set: HashSet<u64> = if next_range.is_empty() {
+            HashSet::new()
+        } else {
+            next_history[next_range].iter().copied().collect()
+        };
+        let kept = prev_set.intersection(&next_set).count();
+        *out_value = 1.0 - (kept as f64 / prev_set.len() as f64);
+    }
+    out
+}
+
+fn prefix_weighted_retention<F>(
+    cover: &[u64],
+    prefix_len: usize,
+    by_id: &HashMap<u64, &SimNode>,
+    mut weight: F,
+) -> f64
+where
+    F: FnMut(&SimNode) -> usize,
+{
+    if cover.is_empty() {
+        return 1.0;
+    }
+    let mut total_weight = 0usize;
+    for id in cover {
+        if let Some(node) = by_id.get(id).copied() {
+            total_weight = total_weight.saturating_add(weight(node));
+        }
+    }
+    if total_weight == 0 {
+        return 1.0;
+    }
+    let mut prefix_weight = 0usize;
+    for id in cover.iter().take(prefix_len.min(cover.len())) {
+        if let Some(node) = by_id.get(id).copied() {
+            prefix_weight = prefix_weight.saturating_add(weight(node));
+        }
+    }
+    prefix_weight as f64 / total_weight as f64
 }
 
 fn unique_sorted_steps(mut steps: Vec<usize>, max_step: usize) -> Vec<usize> {
@@ -3108,19 +3416,25 @@ fn build_churn_trace_for_steps(
     let mut samples = Vec::with_capacity(step_points.len());
     let mut prev_cover: Vec<u64> = Vec::new();
     let mut prev_history_len = 0usize;
+    let mut prev_step: Option<usize> = None;
+    let mut prev_moment_start_leaf: Option<usize> = None;
+    let mut prior_covers: Vec<Vec<u64>> = Vec::with_capacity(step_points.len());
+    let mut prior_history_lens: Vec<usize> = Vec::with_capacity(step_points.len());
+    let mut step_to_index: HashMap<usize, usize> = HashMap::with_capacity(step_points.len());
     for (idx, step) in step_points.iter().copied().enumerate() {
         let sim = simulate(stream, step, reduction_factor);
         let by_id = sim.node_map();
         let selection = select_cover(&sim, context_budget, selection_policy, params);
         let history_len = selection.history_len.min(selection.cover.len());
         let moment_len = selection.cover.len().saturating_sub(history_len);
+        let next_history = &selection.cover[..history_len];
 
         let (suffix_churn, set_churn, prefix_retention, prefix_len) = if prev_cover.is_empty() {
             (0, 0, 1.0, 0)
         } else {
             cover_churn(&prev_cover, &selection.cover)
         };
-        let (history_suffix_churn, history_set_churn, history_prefix_retention, _) =
+        let (history_suffix_churn, history_set_churn, history_prefix_retention, history_prefix_len) =
             if prev_cover.is_empty() {
                 (0, 0, 1.0, 0)
             } else {
@@ -3142,12 +3456,83 @@ fn build_churn_trace_for_steps(
         } else {
             prefix_chars(&prev_cover, prefix_len, &by_id)
         };
+        let prefix_retention_chars = if prev_cover.is_empty() {
+            1.0
+        } else {
+            prefix_weighted_retention(&prev_cover, prefix_len, &by_id, cover_turn_cost)
+        };
+        let history_prefix_retention_chars = if prev_cover.is_empty() {
+            1.0
+        } else {
+            let prev_history = &prev_cover[..prev_history_len.min(prev_cover.len())];
+            prefix_weighted_retention(prev_history, history_prefix_len, &by_id, cover_turn_cost)
+        };
+        let history_prefix_retention_leaves = if prev_cover.is_empty() {
+            1.0
+        } else {
+            let prev_history = &prev_cover[..prev_history_len.min(prev_cover.len())];
+            prefix_weighted_retention(prev_history, history_prefix_len, &by_id, node_span)
+        };
+        let (oldest_band_survival, oldest_band_survival_chars, history_quantile_flip) =
+            if prev_cover.is_empty() {
+                (1.0, 1.0, [0.0; HISTORY_QUANTILE_BUCKETS])
+            } else {
+                let prev_history = &prev_cover[..prev_history_len.min(prev_cover.len())];
+                let (node_survival, char_survival) =
+                    oldest_band_survival(prev_history, next_history, &by_id);
+                (
+                    node_survival,
+                    char_survival,
+                    history_quantile_flip(prev_history, next_history),
+                )
+            };
+        let mut lag_history_prefix_retention = [f64::NAN; LAG_STEPS.len()];
+        let mut lag_history_prefix_retention_chars = [f64::NAN; LAG_STEPS.len()];
+        for (lag_idx, lag) in LAG_STEPS.iter().copied().enumerate() {
+            let Some(past_step) = step.checked_sub(lag) else {
+                continue;
+            };
+            let Some(&past_idx) = step_to_index.get(&past_step) else {
+                continue;
+            };
+            let Some(past_cover) = prior_covers.get(past_idx) else {
+                continue;
+            };
+            let past_history_len = prior_history_lens
+                .get(past_idx)
+                .copied()
+                .unwrap_or_else(|| past_cover.len())
+                .min(past_cover.len());
+            let past_history = &past_cover[..past_history_len];
+            let (_, _, lag_retention, lag_prefix_len) = cover_churn(past_history, next_history);
+            lag_history_prefix_retention[lag_idx] = lag_retention;
+            lag_history_prefix_retention_chars[lag_idx] =
+                prefix_weighted_retention(past_history, lag_prefix_len, &by_id, cover_turn_cost);
+        }
         let input_chars = selection.used_chars;
         let new_input_chars = input_chars.saturating_sub(cached_input_chars);
         let context_utilization = if context_budget == 0 {
             0.0
         } else {
             (input_chars as f64 / context_budget as f64).clamp(0.0, 10.0)
+        };
+        let step_delta = prev_step
+            .map(|previous| step.saturating_sub(previous).max(1))
+            .unwrap_or(0);
+        let moment_fill_ratio = if selection.moment_reserved_chars == 0 {
+            1.0
+        } else {
+            (selection.moment_used_chars as f64 / selection.moment_reserved_chars as f64)
+                .clamp(0.0, 1.0)
+        };
+        let moment_spill_leaves = match (prev_moment_start_leaf, selection.moment_start_leaf) {
+            (Some(previous), Some(current)) if current > previous => current - previous,
+            _ => 0,
+        };
+        let moment_spill_per_insert = if step_delta == 0 {
+            0.0
+        } else {
+            moment_spill_leaves as f64 / step_delta as f64
         };
 
         samples.push(ChurnSample {
@@ -3159,16 +3544,32 @@ fn build_churn_trace_for_steps(
             cached_input_chars,
             new_input_chars,
             context_utilization,
+            moment_fill_ratio,
+            moment_spill_leaves,
+            moment_spill_per_insert,
             suffix_churn,
             set_churn,
             prefix_retention,
+            prefix_retention_chars,
             history_suffix_churn,
             history_set_churn,
             history_prefix_retention,
+            history_prefix_retention_chars,
+            history_prefix_retention_leaves,
+            oldest_band_survival,
+            oldest_band_survival_chars,
+            history_quantile_flip,
+            lag_history_prefix_retention,
+            lag_history_prefix_retention_chars,
             moment_suffix_churn,
             moment_set_churn,
             moment_prefix_retention,
         });
+        step_to_index.insert(step, prior_covers.len());
+        prior_history_lens.push(history_len);
+        prior_covers.push(selection.cover.clone());
+        prev_step = Some(step);
+        prev_moment_start_leaf = selection.moment_start_leaf;
         prev_history_len = history_len;
         prev_cover = selection.cover;
         if let Some((progress, base)) = progress {
@@ -3245,6 +3646,67 @@ fn summarize_churn(samples: &[ChurnSample], min_step: usize) -> Option<ChurnSumm
         .map(|sample| sample.history_prefix_retention)
         .sum::<f64>()
         / transitions as f64;
+    let avg_history_prefix_retention_chars = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.history_prefix_retention_chars)
+        .sum::<f64>()
+        / transitions as f64;
+    let avg_history_prefix_retention_leaves = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.history_prefix_retention_leaves)
+        .sum::<f64>()
+        / transitions as f64;
+    let avg_oldest_band_survival = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.oldest_band_survival)
+        .sum::<f64>()
+        / transitions as f64;
+    let avg_oldest_band_survival_chars = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.oldest_band_survival_chars)
+        .sum::<f64>()
+        / transitions as f64;
+    let mut avg_history_quantile_flip = [0.0; HISTORY_QUANTILE_BUCKETS];
+    for sample in samples.iter().skip(start) {
+        for (bucket, acc) in avg_history_quantile_flip.iter_mut().enumerate() {
+            *acc += sample.history_quantile_flip[bucket];
+        }
+    }
+    for value in &mut avg_history_quantile_flip {
+        *value /= transitions as f64;
+    }
+    let mut avg_lag_history_prefix_retention = [f64::NAN; LAG_STEPS.len()];
+    let mut avg_lag_history_prefix_retention_chars = [f64::NAN; LAG_STEPS.len()];
+    let mut lag_counts = [0usize; LAG_STEPS.len()];
+    for sample in samples.iter().skip(start) {
+        for (idx, value) in sample.lag_history_prefix_retention.iter().enumerate() {
+            if value.is_finite() {
+                if !avg_lag_history_prefix_retention[idx].is_finite() {
+                    avg_lag_history_prefix_retention[idx] = 0.0;
+                }
+                avg_lag_history_prefix_retention[idx] += *value;
+                lag_counts[idx] = lag_counts[idx].saturating_add(1);
+            }
+        }
+        for (idx, value) in sample.lag_history_prefix_retention_chars.iter().enumerate() {
+            if value.is_finite() {
+                if !avg_lag_history_prefix_retention_chars[idx].is_finite() {
+                    avg_lag_history_prefix_retention_chars[idx] = 0.0;
+                }
+                avg_lag_history_prefix_retention_chars[idx] += *value;
+            }
+        }
+    }
+    for idx in 0..LAG_STEPS.len() {
+        if lag_counts[idx] > 0 {
+            avg_lag_history_prefix_retention[idx] /= lag_counts[idx] as f64;
+            avg_lag_history_prefix_retention_chars[idx] /= lag_counts[idx] as f64;
+        }
+    }
     let avg_history_suffix_churn = samples
         .iter()
         .skip(start)
@@ -3276,6 +3738,18 @@ fn summarize_churn(samples: &[ChurnSample], min_step: usize) -> Option<ChurnSumm
         .map(|sample| sample.moment_prefix_retention)
         .sum::<f64>()
         / transitions as f64;
+    let avg_prefix_retention = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.prefix_retention)
+        .sum::<f64>()
+        / transitions as f64;
+    let avg_prefix_retention_chars = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.prefix_retention_chars)
+        .sum::<f64>()
+        / transitions as f64;
     let avg_moment_suffix_churn = samples
         .iter()
         .skip(start)
@@ -3288,6 +3762,47 @@ fn summarize_churn(samples: &[ChurnSample], min_step: usize) -> Option<ChurnSumm
         .map(|sample| sample.moment_set_churn as f64)
         .sum::<f64>()
         / transitions as f64;
+    let avg_moment_fill_ratio = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.moment_fill_ratio)
+        .sum::<f64>()
+        / transitions as f64;
+    let min_moment_fill_ratio = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.moment_fill_ratio)
+        .fold(f64::INFINITY, f64::min);
+    let max_moment_fill_ratio = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.moment_fill_ratio)
+        .fold(0.0, f64::max);
+    let avg_moment_spill_leaves = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.moment_spill_leaves as f64)
+        .sum::<f64>()
+        / transitions as f64;
+    let avg_moment_spill_per_insert = samples
+        .iter()
+        .skip(start)
+        .map(|sample| sample.moment_spill_per_insert)
+        .sum::<f64>()
+        / transitions as f64;
+    let mut moment_spill_bins = [0.0; 4];
+    for sample in samples.iter().skip(start) {
+        let bin = match sample.moment_spill_leaves {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 3,
+        };
+        moment_spill_bins[bin] += 1.0;
+    }
+    for value in &mut moment_spill_bins {
+        *value /= transitions as f64;
+    }
     let avg_context_utilization = samples
         .iter()
         .skip(start)
@@ -3331,11 +3846,21 @@ fn summarize_churn(samples: &[ChurnSample], min_step: usize) -> Option<ChurnSumm
         transitions,
         window_start_step: samples.get(start).map(|s| s.step).unwrap_or(min_step),
         avg_history_prefix_retention,
+        avg_history_prefix_retention_chars,
+        avg_history_prefix_retention_leaves,
+        avg_oldest_band_survival,
+        avg_oldest_band_survival_chars,
+        avg_history_quantile_flip,
+        avg_lag_history_prefix_retention,
+        avg_lag_history_prefix_retention_chars,
+        lag_counts,
         avg_history_suffix_churn,
         avg_history_set_churn,
         worst_history_suffix_churn,
         worst_history_set_churn,
+        avg_prefix_retention,
         avg_moment_prefix_retention,
+        avg_prefix_retention_chars,
         avg_moment_suffix_churn,
         avg_moment_set_churn,
         avg_context_utilization,
@@ -3343,6 +3868,12 @@ fn summarize_churn(samples: &[ChurnSample], min_step: usize) -> Option<ChurnSumm
         avg_cached_input_chars,
         avg_new_input_chars,
         cached_new_ratio,
+        avg_moment_fill_ratio,
+        min_moment_fill_ratio,
+        max_moment_fill_ratio,
+        avg_moment_spill_leaves,
+        avg_moment_spill_per_insert,
+        moment_spill_bins,
     })
 }
 
@@ -4135,6 +4666,8 @@ Interpretation: high prefix retention with low churn indicates stronger turn-to-
                     ui.label(egui::RichText::new("history prefix").monospace());
                     ui.label(egui::RichText::new("history suffix").monospace());
                     ui.label(egui::RichText::new("history set").monospace());
+                    ui.label(egui::RichText::new("oldest band").monospace());
+                    ui.label(egui::RichText::new("q0/q4 flip").monospace());
                     ui.label(egui::RichText::new("moment prefix").monospace());
                     ui.label(egui::RichText::new("moment suffix").monospace());
                     ui.label(egui::RichText::new("score").monospace());
@@ -4174,6 +4707,32 @@ Interpretation: high prefix retention with low churn indicates stronger turn-to-
                             );
                             ui.label(
                                 egui::RichText::new(format!(
+                                    "{:.1}%/{:.1}%",
+                                    summary.avg_oldest_band_survival * 100.0,
+                                    summary.avg_oldest_band_survival_chars * 100.0
+                                ))
+                                .monospace(),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{:.1}%/{:.1}%",
+                                    summary
+                                        .avg_history_quantile_flip
+                                        .first()
+                                        .copied()
+                                        .unwrap_or_default()
+                                        * 100.0,
+                                    summary
+                                        .avg_history_quantile_flip
+                                        .last()
+                                        .copied()
+                                        .unwrap_or_default()
+                                        * 100.0
+                                ))
+                                .monospace(),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
                                     "{:.1}%",
                                     summary.avg_moment_prefix_retention * 100.0
                                 ))
@@ -4190,6 +4749,8 @@ Interpretation: high prefix retention with low churn indicates stronger turn-to-
                                 egui::RichText::new(format!("{:.2}", summary.score())).monospace(),
                             );
                         } else {
+                            ui.label("-");
+                            ui.label("-");
                             ui.label("-");
                             ui.label("-");
                             ui.label("-");
@@ -4256,6 +4817,73 @@ Interpretation: high prefix retention with low churn indicates stronger turn-to-
                                 Line::new(policy.label(), PlotPoints::from(points))
                                     .color(policy_color(policy)),
                             );
+                        }
+                    });
+            });
+
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("Oldest-band survival + oldest/newest quantile flips")
+                    .monospace(),
+            );
+            ui.push_id("all_policy_oldest_quantile_plot", |ui| {
+                Plot::new("all_policy_oldest_quantile_plot")
+                    .height(170.0)
+                    .legend(Legend::default())
+                    .include_y(0.0)
+                    .include_y(1.0)
+                    .show(ui, |plot_ui| {
+                        for policy in ALL_POLICIES {
+                            let Some(trace) = by_policy.get(&policy) else {
+                                continue;
+                            };
+                            let oldest_points: Vec<[f64; 2]> = trace
+                                .samples
+                                .iter()
+                                .map(|sample| [sample.step as f64, sample.oldest_band_survival])
+                                .collect();
+                            let q0_points: Vec<[f64; 2]> = trace
+                                .samples
+                                .iter()
+                                .map(|sample| [sample.step as f64, sample.history_quantile_flip[0]])
+                                .collect();
+                            let qn_points: Vec<[f64; 2]> = trace
+                                .samples
+                                .iter()
+                                .map(|sample| {
+                                    [
+                                        sample.step as f64,
+                                        sample.history_quantile_flip[HISTORY_QUANTILE_BUCKETS - 1],
+                                    ]
+                                })
+                                .collect();
+                            if !oldest_points.is_empty() {
+                                plot_ui.line(
+                                    Line::new(
+                                        format!("{} oldest-band", policy.label()),
+                                        PlotPoints::from(oldest_points),
+                                    )
+                                    .color(policy_color(policy)),
+                                );
+                            }
+                            if !q0_points.is_empty() {
+                                plot_ui.line(
+                                    Line::new(
+                                        format!("{} q0 flip", policy.label()),
+                                        PlotPoints::from(q0_points),
+                                    )
+                                    .color(policy_color(policy)),
+                                );
+                            }
+                            if !qn_points.is_empty() {
+                                plot_ui.line(
+                                    Line::new(
+                                        format!("{} q{} flip", policy.label(), HISTORY_QUANTILE_BUCKETS - 1),
+                                        PlotPoints::from(qn_points),
+                                    )
+                                    .color(policy_color(policy)),
+                                );
+                            }
                         }
                     });
             });
@@ -4675,6 +5303,12 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
                 .map(|sample| sample.moment_set_churn as f64)
                 .sum::<f64>()
                 / transitions as f64;
+            let mut avg_moment_fill_ratio = 0.0;
+            let mut min_moment_fill_ratio = f64::INFINITY;
+            let mut max_moment_fill_ratio = 0.0;
+            let mut avg_moment_spill_leaves = 0.0;
+            let mut avg_moment_spill_per_insert = 0.0;
+            let mut moment_spill_bins = [0.0; 4];
             let avg_prefix = samples
                 .iter()
                 .skip(eval_start)
@@ -4687,12 +5321,101 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
                 .map(|sample| sample.history_prefix_retention)
                 .sum::<f64>()
                 / transitions as f64;
+            let avg_history_prefix_chars = samples
+                .iter()
+                .skip(eval_start)
+                .map(|sample| sample.history_prefix_retention_chars)
+                .sum::<f64>()
+                / transitions as f64;
+            let avg_history_prefix_leaves = samples
+                .iter()
+                .skip(eval_start)
+                .map(|sample| sample.history_prefix_retention_leaves)
+                .sum::<f64>()
+                / transitions as f64;
             let avg_moment_prefix = samples
                 .iter()
                 .skip(eval_start)
                 .map(|sample| sample.moment_prefix_retention)
                 .sum::<f64>()
                 / transitions as f64;
+            let avg_prefix_chars = samples
+                .iter()
+                .skip(eval_start)
+                .map(|sample| sample.prefix_retention_chars)
+                .sum::<f64>()
+                / transitions as f64;
+            let avg_oldest_band_survival = samples
+                .iter()
+                .skip(eval_start)
+                .map(|sample| sample.oldest_band_survival)
+                .sum::<f64>()
+                / transitions as f64;
+            let avg_oldest_band_survival_chars = samples
+                .iter()
+                .skip(eval_start)
+                .map(|sample| sample.oldest_band_survival_chars)
+                .sum::<f64>()
+                / transitions as f64;
+            let mut avg_quantile_flip = [0.0; HISTORY_QUANTILE_BUCKETS];
+            let mut avg_lag_history_prefix = [f64::NAN; LAG_STEPS.len()];
+            let mut avg_lag_history_prefix_chars = [f64::NAN; LAG_STEPS.len()];
+            let mut lag_counts = [0usize; LAG_STEPS.len()];
+            for sample in samples.iter().skip(eval_start) {
+                avg_moment_fill_ratio += sample.moment_fill_ratio;
+                min_moment_fill_ratio =
+                    f64::min(min_moment_fill_ratio, sample.moment_fill_ratio);
+                max_moment_fill_ratio =
+                    f64::max(max_moment_fill_ratio, sample.moment_fill_ratio);
+                avg_moment_spill_leaves += sample.moment_spill_leaves as f64;
+                avg_moment_spill_per_insert += sample.moment_spill_per_insert;
+                let spill_bin = match sample.moment_spill_leaves {
+                    0 => 0,
+                    1 => 1,
+                    2 => 2,
+                    _ => 3,
+                };
+                moment_spill_bins[spill_bin] += 1.0;
+                for (bucket, acc) in avg_quantile_flip.iter_mut().enumerate() {
+                    *acc += sample.history_quantile_flip[bucket];
+                }
+                for (lag_idx, value) in sample.lag_history_prefix_retention.iter().enumerate() {
+                    if value.is_finite() {
+                        if !avg_lag_history_prefix[lag_idx].is_finite() {
+                            avg_lag_history_prefix[lag_idx] = 0.0;
+                        }
+                        avg_lag_history_prefix[lag_idx] += *value;
+                        lag_counts[lag_idx] = lag_counts[lag_idx].saturating_add(1);
+                    }
+                }
+                for (lag_idx, value) in sample
+                    .lag_history_prefix_retention_chars
+                    .iter()
+                    .enumerate()
+                {
+                    if value.is_finite() {
+                        if !avg_lag_history_prefix_chars[lag_idx].is_finite() {
+                            avg_lag_history_prefix_chars[lag_idx] = 0.0;
+                        }
+                        avg_lag_history_prefix_chars[lag_idx] += *value;
+                    }
+                }
+            }
+            for value in &mut avg_quantile_flip {
+                *value /= transitions as f64;
+            }
+            avg_moment_fill_ratio /= transitions as f64;
+            avg_moment_spill_leaves /= transitions as f64;
+            avg_moment_spill_per_insert /= transitions as f64;
+            for value in &mut moment_spill_bins {
+                *value /= transitions as f64;
+            }
+            for lag_idx in 0..LAG_STEPS.len() {
+                if lag_counts[lag_idx] > 0 {
+                    avg_lag_history_prefix[lag_idx] /= lag_counts[lag_idx] as f64;
+                    avg_lag_history_prefix_chars[lag_idx] /= lag_counts[lag_idx] as f64;
+                }
+            }
             let max_suffix = samples
                 .iter()
                 .skip(eval_start)
@@ -4750,15 +5473,48 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
                 ui.label(format!("avg prefix retention: {:.1}%", avg_prefix * 100.0));
                 ui.separator();
                 ui.label(format!(
-                    "history avg set: {:.2} (prefix {:.1}%)",
+                    "history avg set: {:.2} (prefix n/c/l {:.1}%/{:.1}%/{:.1}%)",
                     avg_history_set,
-                    avg_history_prefix * 100.0
+                    avg_history_prefix * 100.0,
+                    avg_history_prefix_chars * 100.0,
+                    avg_history_prefix_leaves * 100.0
                 ));
                 ui.separator();
                 ui.label(format!(
-                    "moment avg set: {:.2} (prefix {:.1}%)",
+                    "moment avg set: {:.2} (prefix n/c {:.1}%/{:.1}%)",
                     avg_moment_set,
-                    avg_moment_prefix * 100.0
+                    avg_moment_prefix * 100.0,
+                    avg_prefix_chars * 100.0
+                ));
+                ui.separator();
+                ui.label(format!(
+                    "moment fill avg/min/max: {:.1}%/{:.1}%/{:.1}%",
+                    avg_moment_fill_ratio * 100.0,
+                    min_moment_fill_ratio * 100.0,
+                    max_moment_fill_ratio * 100.0
+                ));
+                ui.separator();
+                ui.label(format!(
+                    "spill avg leaves/insert: {:.2}/{:.2} (bins {})",
+                    avg_moment_spill_leaves,
+                    avg_moment_spill_per_insert,
+                    format_spill_bins(&moment_spill_bins)
+                ));
+                ui.separator();
+                ui.label(format!(
+                    "oldest band n/c: {:.1}%/{:.1}%",
+                    avg_oldest_band_survival * 100.0,
+                    avg_oldest_band_survival_chars * 100.0
+                ));
+                ui.separator();
+                ui.label(format!(
+                    "lag n [{}]",
+                    format_lag_series(&avg_lag_history_prefix, &lag_counts, 5)
+                ));
+                ui.separator();
+                ui.label(format!(
+                    "q-flip [{}]",
+                    format_quantile_flip_series(&avg_quantile_flip)
                 ));
                 ui.separator();
                 ui.label(format!("worst suffix churn: {}", max_suffix));
@@ -4787,6 +5543,30 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
                 .iter()
                 .map(|sample| [sample.step as f64, sample.prefix_retention])
                 .collect();
+            let prefix_chars_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.prefix_retention_chars])
+                .collect();
+            let history_prefix_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.history_prefix_retention])
+                .collect();
+            let history_prefix_chars_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.history_prefix_retention_chars])
+                .collect();
+            let history_prefix_leaves_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.history_prefix_retention_leaves])
+                .collect();
+            let oldest_band_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.oldest_band_survival])
+                .collect();
+            let oldest_band_chars_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.oldest_band_survival_chars])
+                .collect();
             let history_set_points: Vec<[f64; 2]> = samples
                 .iter()
                 .map(|sample| [sample.step as f64, sample.history_set_churn as f64])
@@ -4810,6 +5590,18 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
             let moment_len_points: Vec<[f64; 2]> = samples
                 .iter()
                 .map(|sample| [sample.step as f64, sample.moment_cover_len as f64])
+                .collect();
+            let moment_fill_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.moment_fill_ratio])
+                .collect();
+            let moment_spill_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.moment_spill_leaves as f64])
+                .collect();
+            let moment_spill_per_insert_points: Vec<[f64; 2]> = samples
+                .iter()
+                .map(|sample| [sample.step as f64, sample.moment_spill_per_insert])
                 .collect();
             let input_chars_points: Vec<[f64; 2]> = samples
                 .iter()
@@ -4836,6 +5628,32 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
                     ])
                 })
                 .collect();
+            let lag_retention_points: [Vec<[f64; 2]>; LAG_STEPS.len()] = std::array::from_fn(|lag_idx| {
+                samples
+                    .iter()
+                    .filter_map(|sample| {
+                        let value = sample.lag_history_prefix_retention[lag_idx];
+                        value.is_finite().then_some([sample.step as f64, value])
+                    })
+                    .collect()
+            });
+            let lag_retention_chars_points: [Vec<[f64; 2]>; LAG_STEPS.len()] =
+                std::array::from_fn(|lag_idx| {
+                    samples
+                        .iter()
+                        .filter_map(|sample| {
+                            let value = sample.lag_history_prefix_retention_chars[lag_idx];
+                            value.is_finite().then_some([sample.step as f64, value])
+                        })
+                        .collect()
+                });
+            let quantile_flip_points: [Vec<[f64; 2]>; HISTORY_QUANTILE_BUCKETS] =
+                std::array::from_fn(|bucket| {
+                    samples
+                        .iter()
+                        .map(|sample| [sample.step as f64, sample.history_quantile_flip[bucket]])
+                        .collect()
+                });
 
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Node churn per insertion").monospace());
@@ -4898,17 +5716,109 @@ evaluated at `N={}` steps (steady-state from step `{}` / {:.0}%). Pareto-front s
             });
 
             ui.add_space(6.0);
+            ui.label(egui::RichText::new("Moment reservation behavior").monospace());
+            ui.push_id("cover_moment_behavior_plot", |ui| {
+                Plot::new("cover_moment_behavior_plot")
+                    .height(140.0)
+                    .legend(Legend::default())
+                    .include_y(0.0)
+                    .include_y(1.0)
+                    .show(ui, |plot_ui| {
+                        plot_ui.line(Line::new(
+                            "moment fill ratio",
+                            PlotPoints::from(moment_fill_points),
+                        ));
+                        plot_ui.line(Line::new(
+                            "spill leaves",
+                            PlotPoints::from(moment_spill_points),
+                        ));
+                        plot_ui.line(Line::new(
+                            "spill leaves/insert",
+                            PlotPoints::from(moment_spill_per_insert_points),
+                        ));
+                    });
+            });
+
+            ui.add_space(6.0);
             ui.label(egui::RichText::new("Prefix retention per insertion").monospace());
             ui.push_id("cover_prefix_retention_plot", |ui| {
                 Plot::new("cover_prefix_retention_plot")
                     .height(120.0)
                     .include_y(0.0)
                     .include_y(1.0)
+                    .legend(Legend::default())
+                    .show(ui, |plot_ui| {
+                        plot_ui.line(Line::new("prefix n", PlotPoints::from(prefix_points)));
+                        plot_ui.line(Line::new(
+                            "prefix c",
+                            PlotPoints::from(prefix_chars_points),
+                        ));
+                        plot_ui.line(Line::new(
+                            "history n",
+                            PlotPoints::from(history_prefix_points),
+                        ));
+                        plot_ui.line(Line::new(
+                            "history c",
+                            PlotPoints::from(history_prefix_chars_points),
+                        ));
+                        plot_ui.line(Line::new(
+                            "history l",
+                            PlotPoints::from(history_prefix_leaves_points),
+                        ));
+                    });
+            });
+
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Lag-k history prefix retention").monospace());
+            ui.push_id("cover_lag_prefix_plot", |ui| {
+                Plot::new("cover_lag_prefix_plot")
+                    .height(150.0)
+                    .include_y(0.0)
+                    .include_y(1.0)
+                    .legend(Legend::default())
+                    .show(ui, |plot_ui| {
+                        for (idx, lag) in LAG_STEPS.iter().copied().enumerate() {
+                            if !lag_retention_points[idx].is_empty() {
+                                plot_ui.line(Line::new(
+                                    format!("lag{lag} n"),
+                                    PlotPoints::from(lag_retention_points[idx].clone()),
+                                ));
+                            }
+                            if !lag_retention_chars_points[idx].is_empty() {
+                                plot_ui.line(Line::new(
+                                    format!("lag{lag} c"),
+                                    PlotPoints::from(lag_retention_chars_points[idx].clone()),
+                                ));
+                            }
+                        }
+                    });
+            });
+
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("Oldest-band survival + quantile flip-rate").monospace(),
+            );
+            ui.push_id("cover_oldest_quantile_plot", |ui| {
+                Plot::new("cover_oldest_quantile_plot")
+                    .height(150.0)
+                    .include_y(0.0)
+                    .include_y(1.0)
+                    .legend(Legend::default())
                     .show(ui, |plot_ui| {
                         plot_ui.line(Line::new(
-                            "prefix retention",
-                            PlotPoints::from(prefix_points),
+                            "oldest band n",
+                            PlotPoints::from(oldest_band_points),
                         ));
+                        plot_ui.line(Line::new(
+                            "oldest band c",
+                            PlotPoints::from(oldest_band_chars_points),
+                        ));
+                        for (bucket, points) in quantile_flip_points.iter().enumerate() {
+                            plot_ui.line(Line::new(
+                                format!("q{bucket} flip"),
+                                PlotPoints::from(points.clone()),
+                            ));
+                        }
                     });
             });
 
