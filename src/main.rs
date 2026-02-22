@@ -14,6 +14,7 @@ use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
 use triblespace::core::metadata;
 use triblespace::core::query::ContainsConstraint;
+use triblespace::core::repo::content as commit_content;
 use triblespace::core::repo::parent as commit_parent;
 use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::{Repository, Workspace};
@@ -2474,27 +2475,46 @@ fn load_optional_catalog(
     ws.checkout(..).context("checkout optional branch")
 }
 
-fn discover_branch_commits(
+#[derive(Debug)]
+struct BranchDiscovery {
+    commit_count: usize,
+    payload_commits: Vec<Value<Handle<Blake3, SimpleArchive>>>,
+}
+
+fn discover_branch_payload_commits(
     ws: &mut Workspace<Pile>,
     head: Value<Handle<Blake3, SimpleArchive>>,
     label: &str,
-) -> Result<Vec<Value<Handle<Blake3, SimpleArchive>>>> {
+) -> Result<BranchDiscovery> {
     let mut stack = vec![head];
-    let mut seen = HashSet::new();
-    let mut commits = Vec::new();
+    let mut seen_commits = HashSet::new();
+    let mut seen_payloads = HashSet::new();
+    let mut commit_count = 0usize;
+    let mut payload_commits = Vec::new();
     while let Some(commit) = stack.pop() {
-        if !seen.insert(commit) {
+        if !seen_commits.insert(commit) {
             continue;
         }
-        commits.push(commit);
-        if commits.len() % 2_000 == 0 {
+        commit_count += 1;
+        if commit_count % 2_000 == 0 {
             memory_status(format!(
                 "{label}: discovered {} commit(s) so far...",
-                commits.len()
+                commit_count
             ));
         }
 
         let meta: TribleSet = ws.get(commit).context("read commit metadata")?;
+        let mut content_iter = find!((c: Value<_>), pattern!(&meta, [{ commit_content: ?c }]));
+        let content_opt = content_iter.next().map(|(c,)| c);
+        if content_iter.next().is_some() {
+            return Err(anyhow!("bad commit metadata: multiple content handles"));
+        }
+        if let Some(content_handle) = content_opt {
+            if seen_payloads.insert(content_handle) {
+                payload_commits.push(commit);
+            }
+        }
+
         for (parent,) in find!(
             (parent: Value<_>,),
             pattern!(&meta, [{ commit_parent: ?parent }])
@@ -2502,7 +2522,10 @@ fn discover_branch_commits(
             stack.push(parent);
         }
     }
-    Ok(commits)
+    Ok(BranchDiscovery {
+        commit_count,
+        payload_commits,
+    })
 }
 
 fn load_archive_messages_incremental(
@@ -2526,29 +2549,36 @@ fn load_archive_messages_incremental(
         "{label}: discovering reachable commits from head {:?}...",
         head
     ));
-    let commits = discover_branch_commits(&mut ws, head, label)?;
+    let discovery = discover_branch_payload_commits(&mut ws, head, label)?;
     memory_status_timed(
-        &format!("{label}: discovered {} commit(s)", commits.len()),
+        &format!(
+            "{label}: discovered {} commit(s), {} unique payload commit(s)",
+            discovery.commit_count,
+            discovery.payload_commits.len()
+        ),
         discover_started,
     );
 
-    if commits.is_empty() {
+    let mut payload_commits = discovery.payload_commits;
+    if payload_commits.is_empty() {
         return Ok(Vec::new());
     }
+    // Process oldest payloads first so progress and growth are easier to read in checkpoints.
+    payload_commits.reverse();
 
     let mut projection = ArchiveMessageProjection::default();
     let mut projection_catalog = TribleSet::new();
     let batch_size = batch_size.max(1);
-    let total_batches = commits.len().div_ceil(batch_size);
+    let total_batches = payload_commits.len().div_ceil(batch_size);
     let checkout_started = Instant::now();
     memory_status(format!(
-        "{label}: scanning payload in {total_batches} batch(es) of up to {batch_size} commit(s)..."
+        "{label}: scanning payload in {total_batches} batch(es) of up to {batch_size} unique payload commit(s)..."
     ));
-    for (batch_idx, batch) in commits.chunks(batch_size).enumerate() {
+    for (batch_idx, batch) in payload_commits.chunks(batch_size).enumerate() {
         let is_checkpoint = batch_idx % 10 == 0 || batch_idx + 1 == total_batches;
         if is_checkpoint {
             memory_status(format!(
-                "{label}: checkpoint before batch {}/{} ({} commit(s))...",
+                "{label}: checkpoint before batch {}/{} ({} unique payload commit(s))...",
                 batch_idx + 1,
                 total_batches,
                 batch.len()
@@ -2578,7 +2608,7 @@ fn load_archive_messages_incremental(
                 .len()
                 .saturating_sub(message_batch_links_before);
             memory_status(format!(
-                "{label}: scanned batch {}/{} ({} commit(s), {} tribles, message facts {} (+{}), reply links {} (+{}), import links {} (+{}))",
+                "{label}: scanned batch {}/{} ({} unique payload commit(s), {} tribles, message facts {} (+{}), reply links {} (+{}), import links {} (+{}))",
                 batch_idx + 1,
                 total_batches,
                 batch.len(),
