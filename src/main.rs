@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, sleep};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -13,9 +13,10 @@ use reqwest::blocking::Client;
 use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
 use triblespace::core::metadata;
+use triblespace::core::repo::parent as commit_parent;
 use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::{Repository, Workspace};
-use triblespace::prelude::blobschemas::LongString;
+use triblespace::prelude::blobschemas::{LongString, SimpleArchive};
 use triblespace::prelude::valueschemas::{Blake3, Handle, NsTAIInterval, U256BE};
 use triblespace::prelude::*;
 
@@ -401,6 +402,26 @@ fn memory_status(message: impl AsRef<str>) {
     eprintln!("[memory] {}", message.as_ref());
 }
 
+const MEMORY_CATALOG_CHECKOUT_BATCH_SIZE: usize = 128;
+
+fn memory_status_timed(stage: &str, started_at: Instant) {
+    memory_status(format!(
+        "{stage} ({})",
+        format_elapsed(started_at.elapsed())
+    ));
+}
+
+fn format_elapsed(duration: Duration) -> String {
+    let secs = duration.as_secs_f64();
+    if secs < 60.0 {
+        format!("{secs:.2}s")
+    } else {
+        let mins = (secs / 60.0).floor() as u64;
+        let rem = secs - (mins as f64) * 60.0;
+        format!("{mins}m {rem:.1}s")
+    }
+}
+
 fn run_memory_estimate(config: Config, args: MemoryEstimateArgs) -> Result<()> {
     let merge_arity = config.llm_compaction_merge_arity.max(2) as usize;
     let profile = resolve_compaction_profile_info(&config);
@@ -409,29 +430,56 @@ fn run_memory_estimate(config: Config, args: MemoryEstimateArgs) -> Result<()> {
     repo_util::seed_metadata(&mut repo)?;
     let result = (|| -> Result<()> {
         memory_status("loading archive branch...");
-        let archive_catalog = load_optional_catalog(
+        let stage = Instant::now();
+        let archive_messages = load_archive_messages_incremental(
             &mut repo,
             config.archive_branch_id,
             "pull archive workspace for memory estimate",
+            "archive",
+            MEMORY_CATALOG_CHECKOUT_BATCH_SIZE,
         )?;
+        memory_status_timed(
+            &format!(
+                "archive branch loaded ({} message(s))",
+                archive_messages.len()
+            ),
+            stage,
+        );
         memory_status("loading relations branch...");
+        let stage = Instant::now();
         let relations_catalog = load_optional_catalog(
             &mut repo,
             config.relations_branch_id,
             "pull relations workspace for memory estimate",
         )?;
+        memory_status_timed("relations branch loaded", stage);
         memory_status("loading cognition workspace...");
+        let stage = Instant::now();
         let mut ws = pull_workspace(&mut repo, branch_id, "pull workspace for memory estimate")?;
         let catalog = ws.checkout(..).context("checkout workspace")?;
+        memory_status_timed("cognition workspace loaded", stage);
 
         let mut core_index = CoreIndex::default();
+        let stage = Instant::now();
         core_index.apply_delta(&catalog, &catalog);
+        memory_status_timed("cognition index built", stage);
         memory_status("indexing existing context chunks...");
+        let stage = Instant::now();
         let index = load_context_chunks(&catalog);
-        memory_status("collecting archive messages...");
-        let archive_messages = load_archive_messages(&archive_catalog);
+        memory_status_timed(
+            &format!("context index built: {} chunk(s)", index.chunks.len()),
+            stage,
+        );
         memory_status("building relations index...");
+        let stage = Instant::now();
         let relations = load_relations_index(&mut ws, &relations_catalog)?;
+        memory_status_timed(
+            &format!(
+                "relations index built: {} person key(s)",
+                relations.key_to_person_id.len()
+            ),
+            stage,
+        );
 
         let pending_archive_total = archive_messages
             .iter()
@@ -456,12 +504,20 @@ fn run_memory_estimate(config: Config, args: MemoryEstimateArgs) -> Result<()> {
         memory_status(format!(
             "simulating carry merges for {new_leaves} pending leaves (k={merge_arity})..."
         ));
+        let stage = Instant::now();
         let sim = simulate_kary_merges(&index.root_by_level, merge_arity, new_leaves);
+        memory_status_timed("merge simulation complete", stage);
 
         memory_status("sampling existing context leaf summaries...");
+        let stage = Instant::now();
         let (existing_chars_sum, existing_samples) =
             sample_existing_leaf_summary_chars(&mut ws, &index, args.sample_leaves)?;
+        memory_status_timed(
+            &format!("existing leaf sampling complete: {existing_samples} sample(s)"),
+            stage,
+        );
         memory_status("sampling pending archive summaries...");
+        let stage = Instant::now();
         let (archive_chars_sum, archive_samples) = sample_pending_archive_leaf_summary_chars(
             &mut ws,
             archive_messages.as_slice(),
@@ -469,6 +525,10 @@ fn run_memory_estimate(config: Config, args: MemoryEstimateArgs) -> Result<()> {
             &relations,
             args.sample_leaves,
         )?;
+        memory_status_timed(
+            &format!("pending archive sampling complete: {archive_samples} sample(s)"),
+            stage,
+        );
         let sample_chars_sum = existing_chars_sum.saturating_add(archive_chars_sum);
         let sample_count = existing_samples.saturating_add(archive_samples);
         let avg_leaf_chars = if sample_count == 0 {
@@ -546,28 +606,55 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
     repo_util::seed_metadata(&mut repo)?;
     let result = (|| -> Result<()> {
         memory_status("loading archive branch...");
-        let archive_catalog = load_optional_catalog(
+        let stage = Instant::now();
+        let archive_messages = load_archive_messages_incremental(
             &mut repo,
             config.archive_branch_id,
             "pull archive workspace for memory build",
+            "archive",
+            MEMORY_CATALOG_CHECKOUT_BATCH_SIZE,
         )?;
+        memory_status_timed(
+            &format!(
+                "archive branch loaded ({} message(s))",
+                archive_messages.len()
+            ),
+            stage,
+        );
         memory_status("loading relations branch...");
+        let stage = Instant::now();
         let relations_catalog = load_optional_catalog(
             &mut repo,
             config.relations_branch_id,
             "pull relations workspace for memory build",
         )?;
+        memory_status_timed("relations branch loaded", stage);
         memory_status("loading cognition workspace...");
+        let stage = Instant::now();
         let mut ws = pull_workspace(&mut repo, branch_id, "pull workspace for memory build")?;
         let catalog = ws.checkout(..).context("checkout workspace")?;
+        memory_status_timed("cognition workspace loaded", stage);
         let mut core_index = CoreIndex::default();
+        let stage = Instant::now();
         core_index.apply_delta(&catalog, &catalog);
+        memory_status_timed("cognition index built", stage);
         memory_status("indexing existing context chunks...");
+        let stage = Instant::now();
         let mut index = load_context_chunks(&catalog);
-        memory_status("collecting archive messages...");
-        let archive_messages = load_archive_messages(&archive_catalog);
+        memory_status_timed(
+            &format!("context index built: {} chunk(s)", index.chunks.len()),
+            stage,
+        );
         memory_status("building relations index...");
+        let stage = Instant::now();
         let relations = load_relations_index(&mut ws, &relations_catalog)?;
+        memory_status_timed(
+            &format!(
+                "relations index built: {} person key(s)",
+                relations.key_to_person_id.len()
+            ),
+            stage,
+        );
 
         println!("memory build");
         println!("  model: {} ({})", profile.model, profile.source);
@@ -591,6 +678,7 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
         let mut change = TribleSet::new();
         let mut stats = CompactionRunStats::default();
         memory_status("backfilling archive memory chunks...");
+        let stage = Instant::now();
         let archive_added = ingest_archive_context_chunks(
             &mut ws,
             &mut index,
@@ -604,10 +692,15 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
             &mut stats,
             Some(500),
         )?;
+        memory_status_timed(
+            &format!("archive backfill pass complete: added {archive_added} chunk(s)"),
+            stage,
+        );
         let exec_added = if args.include_exec {
             memory_status("backfilling exec memory chunks...");
+            let stage = Instant::now();
             let results = sorted_finished_command_results(&core_index);
-            ingest_exec_context_chunks(
+            let exec_added = ingest_exec_context_chunks(
                 &mut ws,
                 &core_index,
                 &mut index,
@@ -618,7 +711,12 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
                 &semantic_compactor,
                 &mut stats,
                 Some(200),
-            )?
+            )?;
+            memory_status_timed(
+                &format!("exec backfill pass complete: added {exec_added} chunk(s)"),
+                stage,
+            );
+            exec_added
         } else {
             0
         };
@@ -630,8 +728,10 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
         }
 
         memory_status("committing/pushing backfill to pile...");
+        let stage = Instant::now();
         ws.commit(change, None, Some("memory backfill"));
         push_workspace(&mut repo, &mut ws).context("push memory backfill")?;
+        memory_status_timed("backfill committed and pushed", stage);
         println!("  archive_leaves_added: {}", archive_added);
         println!("  exec_leaves_added: {}", exec_added);
         println!("  merge_calls: {}", stats.merge_calls);
@@ -2373,6 +2473,103 @@ fn load_optional_catalog(
     ws.checkout(..).context("checkout optional branch")
 }
 
+fn discover_branch_commits(
+    ws: &mut Workspace<Pile>,
+    head: Value<Handle<Blake3, SimpleArchive>>,
+    label: &str,
+) -> Result<Vec<Value<Handle<Blake3, SimpleArchive>>>> {
+    let mut stack = vec![head];
+    let mut seen = HashSet::new();
+    let mut commits = Vec::new();
+    while let Some(commit) = stack.pop() {
+        if !seen.insert(commit) {
+            continue;
+        }
+        commits.push(commit);
+        if commits.len() % 2_000 == 0 {
+            memory_status(format!(
+                "{label}: discovered {} commit(s) so far...",
+                commits.len()
+            ));
+        }
+
+        let meta: TribleSet = ws.get(commit).context("read commit metadata")?;
+        for (parent,) in find!(
+            (parent: Value<_>,),
+            pattern!(&meta, [{ commit_parent: ?parent }])
+        ) {
+            stack.push(parent);
+        }
+    }
+    Ok(commits)
+}
+
+fn load_archive_messages_incremental(
+    repo: &mut Repository<Pile>,
+    branch_id: Option<Id>,
+    context: &str,
+    label: &str,
+    batch_size: usize,
+) -> Result<Vec<ArchiveMessageInfo>> {
+    let Some(branch_id) = branch_id else {
+        return Ok(Vec::new());
+    };
+    let mut ws = pull_workspace(repo, branch_id, context)?;
+    let Some(head) = ws.head() else {
+        memory_status(format!("{label}: branch is empty."));
+        return Ok(Vec::new());
+    };
+
+    let discover_started = Instant::now();
+    memory_status(format!(
+        "{label}: discovering reachable commits from head {:?}...",
+        head
+    ));
+    let commits = discover_branch_commits(&mut ws, head, label)?;
+    memory_status_timed(
+        &format!("{label}: discovered {} commit(s)", commits.len()),
+        discover_started,
+    );
+
+    if commits.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut projection = ArchiveMessageProjection::default();
+    let batch_size = batch_size.max(1);
+    let total_batches = commits.len().div_ceil(batch_size);
+    let checkout_started = Instant::now();
+    memory_status(format!(
+        "{label}: scanning payload in {total_batches} batch(es) of up to {batch_size} commit(s)..."
+    ));
+    for (batch_idx, batch) in commits.chunks(batch_size).enumerate() {
+        if batch_idx % 10 == 0 || batch_idx + 1 == total_batches {
+            memory_status(format!(
+                "{label}: loading batch {}/{} ({} commit(s))...",
+                batch_idx + 1,
+                total_batches,
+                batch.len()
+            ));
+        }
+        let delta = ws
+            .checkout(batch)
+            .with_context(|| format!("checkout {label} batch {}", batch_idx + 1))?;
+        projection.apply_delta(&delta);
+        if batch_idx % 10 == 0 || batch_idx + 1 == total_batches {
+            memory_status(format!(
+                "{label}: scanned batch {}/{} ({} commit(s), {} message fact(s))",
+                batch_idx + 1,
+                total_batches,
+                batch.len(),
+                projection.message_facts.len()
+            ));
+        }
+    }
+    memory_status_timed(&format!("{label}: payload scan complete"), checkout_started);
+
+    Ok(projection.into_messages())
+}
+
 #[derive(Debug, Clone)]
 struct ContextChunk {
     id: Id,
@@ -2453,17 +2650,22 @@ fn ingest_archive_context_chunks(
     stats: &mut CompactionRunStats,
     progress_every: Option<usize>,
 ) -> Result<usize> {
+    let started_at = Instant::now();
     let mut added = 0usize;
     let mut seen = 0usize;
+    let mut skipped_existing = 0usize;
+    let mut skipped_newer_than_cutoff = 0usize;
     for message in archive_messages {
         seen = seen.saturating_add(1);
         if max_new.is_some_and(|limit| added >= limit) {
             break;
         }
         if max_created_at_key.is_some_and(|max_key| interval_key(message.created_at) > max_key) {
+            skipped_newer_than_cutoff = skipped_newer_than_cutoff.saturating_add(1);
             continue;
         }
         if index.chunk_for_archive_message.contains_key(&message.id) {
+            skipped_existing = skipped_existing.saturating_add(1);
             continue;
         }
 
@@ -2549,7 +2751,8 @@ fn ingest_archive_context_chunks(
     }
     if progress_every.is_some() {
         memory_status(format!(
-            "archive ingest finished: added {added} chunk(s) (scanned {seen})"
+            "archive ingest finished: added {added} chunk(s), skipped existing {skipped_existing}, skipped cutoff {skipped_newer_than_cutoff} (scanned {seen}) in {}",
+            format_elapsed(started_at.elapsed())
         ));
     }
     Ok(added)
@@ -2567,14 +2770,17 @@ fn ingest_exec_context_chunks(
     stats: &mut CompactionRunStats,
     progress_every: Option<usize>,
 ) -> Result<usize> {
+    let started_at = Instant::now();
     let mut added = 0usize;
     let mut seen = 0usize;
+    let mut skipped_existing = 0usize;
     for result in exec_results {
         seen = seen.saturating_add(1);
         if max_new.is_some_and(|limit| added >= limit) {
             break;
         }
         if index.chunk_for_exec_result.contains_key(&result.id) {
+            skipped_existing = skipped_existing.saturating_add(1);
             continue;
         }
         let finished_at = result
@@ -2634,7 +2840,8 @@ fn ingest_exec_context_chunks(
     }
     if progress_every.is_some() {
         memory_status(format!(
-            "exec ingest finished: added {added} chunk(s) (scanned {seen})"
+            "exec ingest finished: added {added} chunk(s), skipped existing {skipped_existing} (scanned {seen}) in {}",
+            format_elapsed(started_at.elapsed())
         ));
     }
     Ok(added)
@@ -3004,126 +3211,147 @@ fn load_reasoning_for_exec_result(
     Ok(Some(reasoning_text))
 }
 
+#[derive(Default)]
+struct ArchiveMessageProjection {
+    reply_to: HashMap<Id, Id>,
+    author_name_by_author: HashMap<Id, Value<Handle<Blake3, LongString>>>,
+    batch_by_message: HashMap<Id, Id>,
+    source_format_by_batch: HashMap<Id, String>,
+    conversation_by_batch: HashMap<Id, Value<Handle<Blake3, LongString>>>,
+    source_message_id_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>>,
+    source_author_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>>,
+    source_role_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>>,
+    message_facts: HashMap<Id, (Id, Value<Handle<Blake3, LongString>>, Value<NsTAIInterval>)>,
+}
+
+impl ArchiveMessageProjection {
+    fn apply_delta(&mut self, delta: &TribleSet) {
+        for (message_id, parent_id) in find!(
+            (message_id: Id, parent_id: Id),
+            pattern!(delta, [{
+                ?message_id @ playground_archive::reply_to: ?parent_id,
+            }])
+        ) {
+            self.reply_to.insert(message_id, parent_id);
+        }
+
+        for (author_id, author_name) in find!(
+            (author_id: Id, author_name: Value<Handle<Blake3, LongString>>),
+            pattern!(delta, [{
+                ?author_id @ playground_archive::author_name: ?author_name,
+            }])
+        ) {
+            self.author_name_by_author.insert(author_id, author_name);
+        }
+
+        for (message_id, batch_id) in find!(
+            (message_id: Id, batch_id: Id),
+            pattern!(delta, [{
+                ?message_id @ playground_archive_import::batch: ?batch_id,
+            }])
+        ) {
+            self.batch_by_message.insert(message_id, batch_id);
+        }
+
+        for (batch_id, source_format) in find!(
+            (batch_id: Id, source_format: String),
+            pattern!(delta, [{
+                ?batch_id @ playground_archive_import::source_format: ?source_format,
+            }])
+        ) {
+            self.source_format_by_batch.insert(batch_id, source_format);
+        }
+
+        for (batch_id, conversation_id) in find!(
+            (batch_id: Id, conversation_id: Value<Handle<Blake3, LongString>>),
+            pattern!(delta, [{
+                ?batch_id @ playground_archive_import::source_conversation_id: ?conversation_id,
+            }])
+        ) {
+            self.conversation_by_batch.insert(batch_id, conversation_id);
+        }
+
+        for (message_id, source_message_id) in find!(
+            (message_id: Id, source_message_id: Value<Handle<Blake3, LongString>>),
+            pattern!(delta, [{
+                ?message_id @ playground_archive_import::source_message_id: ?source_message_id,
+            }])
+        ) {
+            self.source_message_id_by_message
+                .insert(message_id, source_message_id);
+        }
+
+        for (message_id, source_author) in find!(
+            (message_id: Id, source_author: Value<Handle<Blake3, LongString>>),
+            pattern!(delta, [{
+                ?message_id @ playground_archive_import::source_author: ?source_author,
+            }])
+        ) {
+            self.source_author_by_message
+                .insert(message_id, source_author);
+        }
+
+        for (message_id, source_role) in find!(
+            (message_id: Id, source_role: Value<Handle<Blake3, LongString>>),
+            pattern!(delta, [{
+                ?message_id @ playground_archive_import::source_role: ?source_role,
+            }])
+        ) {
+            self.source_role_by_message.insert(message_id, source_role);
+        }
+
+        for (message_id, author_id, content, created_at) in find!(
+            (
+                message_id: Id,
+                author_id: Id,
+                content: Value<Handle<Blake3, LongString>>,
+                created_at: Value<NsTAIInterval>
+            ),
+            pattern!(delta, [{
+                ?message_id @
+                    playground_archive::kind: playground_archive::kind_message,
+                    playground_archive::author: ?author_id,
+                    playground_archive::content: ?content,
+                    playground_archive::created_at: ?created_at,
+            }])
+        ) {
+            self.message_facts
+                .insert(message_id, (author_id, content, created_at));
+        }
+    }
+
+    fn into_messages(self) -> Vec<ArchiveMessageInfo> {
+        let mut messages = Vec::with_capacity(self.message_facts.len());
+        for (message_id, (author_id, content, created_at)) in self.message_facts {
+            let thread_root_id = archive_thread_root(message_id, &self.reply_to);
+            let batch_id = self.batch_by_message.get(&message_id).copied();
+            let conversation_id =
+                batch_id.and_then(|id| self.conversation_by_batch.get(&id).copied());
+            let source_format =
+                batch_id.and_then(|id| self.source_format_by_batch.get(&id).cloned());
+            messages.push(ArchiveMessageInfo {
+                id: message_id,
+                author_id,
+                author_name: self.author_name_by_author.get(&author_id).copied(),
+                content,
+                created_at,
+                thread_root_id,
+                conversation_id,
+                source_format,
+                source_message_id: self.source_message_id_by_message.get(&message_id).copied(),
+                source_author: self.source_author_by_message.get(&message_id).copied(),
+                source_role: self.source_role_by_message.get(&message_id).copied(),
+            });
+        }
+        messages.sort_by_key(|message| (interval_key(message.created_at), message.id));
+        messages
+    }
+}
+
 fn load_archive_messages(catalog: &TribleSet) -> Vec<ArchiveMessageInfo> {
-    let mut reply_to: HashMap<Id, Id> = HashMap::new();
-    for (message_id, parent_id) in find!(
-        (message_id: Id, parent_id: Id),
-        pattern!(catalog, [{
-            ?message_id @ playground_archive::reply_to: ?parent_id,
-        }])
-    ) {
-        reply_to.insert(message_id, parent_id);
-    }
-
-    let mut author_name_by_author: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
-    for (author_id, author_name) in find!(
-        (author_id: Id, author_name: Value<Handle<Blake3, LongString>>),
-        pattern!(catalog, [{
-            ?author_id @ playground_archive::author_name: ?author_name,
-        }])
-    ) {
-        author_name_by_author.insert(author_id, author_name);
-    }
-
-    let mut batch_by_message: HashMap<Id, Id> = HashMap::new();
-    for (message_id, batch_id) in find!(
-        (message_id: Id, batch_id: Id),
-        pattern!(catalog, [{
-            ?message_id @ playground_archive_import::batch: ?batch_id,
-        }])
-    ) {
-        batch_by_message.insert(message_id, batch_id);
-    }
-
-    let mut source_format_by_batch: HashMap<Id, String> = HashMap::new();
-    for (batch_id, source_format) in find!(
-        (batch_id: Id, source_format: String),
-        pattern!(catalog, [{
-            ?batch_id @ playground_archive_import::source_format: ?source_format,
-        }])
-    ) {
-        source_format_by_batch.insert(batch_id, source_format);
-    }
-
-    let mut conversation_by_batch: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
-    for (batch_id, conversation_id) in find!(
-        (batch_id: Id, conversation_id: Value<Handle<Blake3, LongString>>),
-        pattern!(catalog, [{
-            ?batch_id @ playground_archive_import::source_conversation_id: ?conversation_id,
-        }])
-    ) {
-        conversation_by_batch.insert(batch_id, conversation_id);
-    }
-
-    let mut source_message_id_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>> =
-        HashMap::new();
-    for (message_id, source_message_id) in find!(
-        (message_id: Id, source_message_id: Value<Handle<Blake3, LongString>>),
-        pattern!(catalog, [{
-            ?message_id @ playground_archive_import::source_message_id: ?source_message_id,
-        }])
-    ) {
-        source_message_id_by_message.insert(message_id, source_message_id);
-    }
-
-    let mut source_author_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>> =
-        HashMap::new();
-    for (message_id, source_author) in find!(
-        (message_id: Id, source_author: Value<Handle<Blake3, LongString>>),
-        pattern!(catalog, [{
-            ?message_id @ playground_archive_import::source_author: ?source_author,
-        }])
-    ) {
-        source_author_by_message.insert(message_id, source_author);
-    }
-
-    let mut source_role_by_message: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
-    for (message_id, source_role) in find!(
-        (message_id: Id, source_role: Value<Handle<Blake3, LongString>>),
-        pattern!(catalog, [{
-            ?message_id @ playground_archive_import::source_role: ?source_role,
-        }])
-    ) {
-        source_role_by_message.insert(message_id, source_role);
-    }
-
-    let mut messages = Vec::new();
-    for (message_id, author_id, content, created_at) in find!(
-        (
-            message_id: Id,
-            author_id: Id,
-            content: Value<Handle<Blake3, LongString>>,
-            created_at: Value<NsTAIInterval>
-        ),
-        pattern!(catalog, [{
-            ?message_id @
-                playground_archive::kind: playground_archive::kind_message,
-                playground_archive::author: ?author_id,
-                playground_archive::content: ?content,
-                playground_archive::created_at: ?created_at,
-        }])
-    ) {
-        let thread_root_id = archive_thread_root(message_id, &reply_to);
-        let batch_id = batch_by_message.get(&message_id).copied();
-        let conversation_id = batch_id.and_then(|id| conversation_by_batch.get(&id).copied());
-        let source_format = batch_id.and_then(|id| source_format_by_batch.get(&id).cloned());
-        messages.push(ArchiveMessageInfo {
-            id: message_id,
-            author_id,
-            author_name: author_name_by_author.get(&author_id).copied(),
-            content,
-            created_at,
-            thread_root_id,
-            conversation_id,
-            source_format,
-            source_message_id: source_message_id_by_message.get(&message_id).copied(),
-            source_author: source_author_by_message.get(&message_id).copied(),
-            source_role: source_role_by_message.get(&message_id).copied(),
-        });
-    }
-
-    messages.sort_by_key(|message| (interval_key(message.created_at), message.id));
-    messages
+    let mut projection = ArchiveMessageProjection::default();
+    projection.apply_delta(catalog);
+    projection.into_messages()
 }
 
 fn archive_thread_root(message_id: Id, reply_to: &HashMap<Id, Id>) -> Id {
