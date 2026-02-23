@@ -890,19 +890,23 @@ fn sample_pending_archive_leaf_summary_chars(
         }
 
         let author_name = load_optional_text(ws, message.author_name)?;
-        let source_author = load_optional_text(ws, message.source_author)?;
-        let source_role = load_optional_text(ws, message.source_role)?;
-        let source_message_id = load_optional_text(ws, message.source_message_id)?;
+        let source_author = load_text(ws, message.source_author).context("load source_author")?;
+        let source_role = load_text(ws, message.source_role).context("load source_role")?;
+        let source_message_id =
+            load_text(ws, message.source_message_id).context("load source_message_id")?;
         let conversation_id = load_optional_text(ws, message.conversation_id)?;
         let content = load_text(ws, message.content).context("load archive message content")?;
-        let resolved_person =
-            resolve_archive_person(relations, author_name.as_deref(), source_author.as_deref());
+        let resolved_person = resolve_archive_person(
+            relations,
+            author_name.as_deref(),
+            Some(source_author.as_str()),
+        );
         let leaf_summary = format_archive_output(
             message,
             author_name.as_deref(),
-            source_author.as_deref(),
-            source_role.as_deref(),
-            source_message_id.as_deref(),
+            source_author.as_str(),
+            source_role.as_str(),
+            source_message_id.as_str(),
             conversation_id.as_deref(),
             content.as_str(),
             resolved_person
@@ -2618,7 +2622,7 @@ fn load_archive_messages_incremental(
     }
     memory_status_timed(&format!("{label}: payload scan complete"), checkout_started);
 
-    Ok(projection.into_messages())
+    projection.into_messages()
 }
 
 #[derive(Debug, Clone)]
@@ -2659,9 +2663,9 @@ struct ArchiveMessageInfo {
     thread_root_id: Id,
     conversation_id: Option<Value<Handle<Blake3, LongString>>>,
     source_format: Option<String>,
-    source_message_id: Option<Value<Handle<Blake3, LongString>>>,
-    source_author: Option<Value<Handle<Blake3, LongString>>>,
-    source_role: Option<Value<Handle<Blake3, LongString>>>,
+    source_message_id: Value<Handle<Blake3, LongString>>,
+    source_author: Value<Handle<Blake3, LongString>>,
+    source_role: Value<Handle<Blake3, LongString>>,
 }
 
 #[derive(Default)]
@@ -2721,19 +2725,23 @@ fn ingest_archive_context_chunks(
         }
 
         let author_name = load_optional_text(ws, message.author_name)?;
-        let source_author = load_optional_text(ws, message.source_author)?;
-        let source_role = load_optional_text(ws, message.source_role)?;
-        let source_message_id = load_optional_text(ws, message.source_message_id)?;
+        let source_author = load_text(ws, message.source_author).context("load source_author")?;
+        let source_role = load_text(ws, message.source_role).context("load source_role")?;
+        let source_message_id =
+            load_text(ws, message.source_message_id).context("load source_message_id")?;
         let conversation_id = load_optional_text(ws, message.conversation_id)?;
         let content = load_text(ws, message.content).context("load archive message content")?;
-        let resolved_person =
-            resolve_archive_person(relations, author_name.as_deref(), source_author.as_deref());
+        let resolved_person = resolve_archive_person(
+            relations,
+            author_name.as_deref(),
+            Some(source_author.as_str()),
+        );
         let leaf_summary = format_archive_output(
             message,
             author_name.as_deref(),
-            source_author.as_deref(),
-            source_role.as_deref(),
-            source_message_id.as_deref(),
+            source_author.as_str(),
+            source_role.as_str(),
+            source_message_id.as_str(),
             conversation_id.as_deref(),
             content.as_str(),
             resolved_person
@@ -2952,7 +2960,7 @@ fn build_prompt_messages_with_compaction(
     let current_finished_key = interval_key(current_finished_at);
     let results = results[..=current_pos].to_vec();
     let relations = load_relations_index(ws, relations_catalog)?;
-    let archive_messages = load_archive_messages(archive_catalog);
+    let archive_messages = load_archive_messages(archive_catalog)?;
 
     let mut compact_change = TribleSet::new();
     let mut compaction_stats = CompactionRunStats::default();
@@ -3554,7 +3562,7 @@ impl ArchiveMessageProjection {
         }
     }
 
-    fn into_messages(self) -> Vec<ArchiveMessageInfo> {
+    fn into_messages(self) -> Result<Vec<ArchiveMessageInfo>> {
         let mut messages = Vec::with_capacity(self.message_facts.len());
         for (message_id, (author_id, content, created_at)) in self.message_facts {
             let thread_root_id = archive_thread_root(message_id, &self.reply_to);
@@ -3563,6 +3571,23 @@ impl ArchiveMessageProjection {
                 batch_id.and_then(|id| self.conversation_by_batch.get(&id).copied());
             let source_format =
                 batch_id.and_then(|id| self.source_format_by_batch.get(&id).cloned());
+            let source_message_id = self
+                .source_message_id_by_message
+                .get(&message_id)
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!("archive message {message_id:x} missing source_message_id")
+                })?;
+            let source_author = self
+                .source_author_by_message
+                .get(&message_id)
+                .copied()
+                .ok_or_else(|| anyhow!("archive message {message_id:x} missing source_author"))?;
+            let source_role = self
+                .source_role_by_message
+                .get(&message_id)
+                .copied()
+                .ok_or_else(|| anyhow!("archive message {message_id:x} missing source_role"))?;
             messages.push(ArchiveMessageInfo {
                 id: message_id,
                 author_id,
@@ -3572,17 +3597,17 @@ impl ArchiveMessageProjection {
                 thread_root_id,
                 conversation_id,
                 source_format,
-                source_message_id: self.source_message_id_by_message.get(&message_id).copied(),
-                source_author: self.source_author_by_message.get(&message_id).copied(),
-                source_role: self.source_role_by_message.get(&message_id).copied(),
+                source_message_id,
+                source_author,
+                source_role,
             });
         }
         messages.sort_by_key(|message| (interval_key(message.created_at), message.id));
-        messages
+        Ok(messages)
     }
 }
 
-fn load_archive_messages(catalog: &TribleSet) -> Vec<ArchiveMessageInfo> {
+fn load_archive_messages(catalog: &TribleSet) -> Result<Vec<ArchiveMessageInfo>> {
     let projection_delta = filter_archive_projection_delta(catalog);
     let mut projection = ArchiveMessageProjection::default();
     projection.apply_delta(&projection_delta, &projection_delta);
@@ -3782,9 +3807,9 @@ fn load_optional_text(
 fn format_archive_output(
     message: &ArchiveMessageInfo,
     author_name: Option<&str>,
-    source_author: Option<&str>,
-    source_role: Option<&str>,
-    source_message_id: Option<&str>,
+    source_author: &str,
+    source_role: &str,
+    source_message_id: &str,
     conversation_id: Option<&str>,
     content: &str,
     person_label: Option<&str>,
@@ -3813,18 +3838,12 @@ fn format_archive_output(
     if let Some(conversation_id) = conversation_id {
         append_section(&mut text, "archive_conversation_id", conversation_id);
     }
-    if let Some(source_message_id) = source_message_id {
-        append_section(&mut text, "source_message_id", source_message_id);
-    }
+    append_section(&mut text, "source_message_id", source_message_id);
     if let Some(author_name) = author_name {
         append_section(&mut text, "author_name", author_name);
     }
-    if let Some(source_author) = source_author {
-        append_section(&mut text, "source_author", source_author);
-    }
-    if let Some(source_role) = source_role {
-        append_section(&mut text, "source_role", source_role);
-    }
+    append_section(&mut text, "source_author", source_author);
+    append_section(&mut text, "source_role", source_role);
     if let Some(person_id) = person_id {
         append_section(&mut text, "person_id", format!("{person_id:x}").as_str());
     }
