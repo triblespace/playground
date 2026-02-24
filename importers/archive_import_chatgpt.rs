@@ -6,6 +6,7 @@
 //! ed25519-dalek = "2.1.1"
 //! hifitime = "4"
 //! rand_core = "0.6.4"
+//! rayon = "1.10"
 //! serde_json = "1"
 //! triblespace = "0.16.0"
 //! ```
@@ -17,6 +18,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{CommandFactory, Parser};
+use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 use triblespace::core::blob::Bytes;
 use triblespace::core::import::json_tree::JsonTreeImporter;
@@ -53,6 +56,11 @@ struct ImportStats {
     commits: usize,
 }
 
+#[derive(Debug, Clone)]
+struct ParsedChatgptFile {
+    conversations: Vec<JsonValue>,
+}
+
 fn import_chatgpt_path(path: &Path, repo: &mut common::Repo, branch_id: Id) -> Result<ImportStats> {
     let start = Instant::now();
     println!("chatgpt phase pull: {}", path.display());
@@ -81,8 +89,33 @@ fn import_chatgpt_path(path: &Path, repo: &mut common::Repo, branch_id: Id) -> R
             path.display(),
             scan_start.elapsed()
         );
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let parser_pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .context("build chatgpt parser thread pool")?;
+        let parse_start = Instant::now();
+        println!(
+            "chatgpt phase parse: {} file(s) using {} thread(s)",
+            total_files, threads
+        );
+        let parsed_files: Vec<(PathBuf, Result<ParsedChatgptFile>)> = parser_pool.install(|| {
+            paths
+                .par_iter()
+                .map(|convo_path| {
+                    (
+                        convo_path.to_path_buf(),
+                        parse_chatgpt_file(convo_path.as_path()),
+                    )
+                })
+                .collect()
+        });
+        println!("chatgpt phase parse: done in {:?}", parse_start.elapsed());
+
         let mut total = ImportStats::default();
-        for (index, convo_path) in paths.iter().enumerate() {
+        for (index, (convo_path, parsed_file)) in parsed_files.into_iter().enumerate() {
             let file_start = Instant::now();
             println!(
                 "chatgpt file {}/{}: {}",
@@ -90,8 +123,9 @@ fn import_chatgpt_path(path: &Path, repo: &mut common::Repo, branch_id: Id) -> R
                 total_files,
                 convo_path.display()
             );
-            let stats = import_chatgpt_file(
-                convo_path,
+            let stats = import_chatgpt_parsed_file(
+                convo_path.as_path(),
+                parsed_file.with_context(|| format!("parse {}", convo_path.display()))?,
                 repo,
                 &mut ws,
                 &mut catalog,
@@ -117,8 +151,18 @@ fn import_chatgpt_path(path: &Path, repo: &mut common::Repo, branch_id: Id) -> R
         return Ok(total);
     }
 
-    import_chatgpt_file(
+    let parse_start = Instant::now();
+    println!("chatgpt phase parse: {}", path.display());
+    let parsed = parse_chatgpt_file(path)?;
+    println!(
+        "chatgpt {}: {} conversation(s) in export (parsed in {:?})",
+        path.display(),
+        parsed.conversations.len(),
+        parse_start.elapsed()
+    );
+    import_chatgpt_parsed_file(
         path,
+        parsed,
         repo,
         &mut ws,
         &mut catalog,
@@ -127,28 +171,17 @@ fn import_chatgpt_path(path: &Path, repo: &mut common::Repo, branch_id: Id) -> R
     )
 }
 
-fn import_chatgpt_file(
+fn import_chatgpt_parsed_file(
     path: &Path,
+    parsed: ParsedChatgptFile,
     repo: &mut common::Repo,
     ws: &mut common::Ws,
     catalog: &mut TribleSet,
     catalog_head: &mut Option<common::CommitHandle>,
     json_tree_metadata: &TribleSet,
 ) -> Result<ImportStats> {
-    let parse_start = Instant::now();
-    println!("chatgpt phase parse: {}", path.display());
-    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let root: JsonValue = serde_json::from_str(&raw).context("parse chatgpt json")?;
-    let conversations = root
-        .as_array()
-        .ok_or_else(|| anyhow!("chatgpt export must be a JSON array"))?;
+    let ParsedChatgptFile { conversations } = parsed;
     let total_conversations = conversations.len();
-    println!(
-        "chatgpt {}: {} conversation(s) in export (parsed in {:?})",
-        path.display(),
-        total_conversations,
-        parse_start.elapsed()
-    );
 
     let index_start = Instant::now();
     let export_root = path.parent().unwrap_or_else(|| Path::new("."));
@@ -412,6 +445,19 @@ fn import_chatgpt_file(
     );
 
     Ok(stats)
+}
+
+fn parse_chatgpt_file(path: &Path) -> Result<ParsedChatgptFile> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let conversations = serde_json::from_str::<Vec<JsonValue>>(&raw).with_context(|| {
+        format!(
+            "parse chatgpt json array from {}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("<unknown>")
+        )
+    })?;
+    Ok(ParsedChatgptFile { conversations })
 }
 
 #[derive(Debug, Default, Clone)]

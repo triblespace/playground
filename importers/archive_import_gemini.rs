@@ -6,6 +6,7 @@
 //! ed25519-dalek = "2.1.1"
 //! hifitime = "4"
 //! rand_core = "0.6.4"
+//! rayon = "1.10"
 //! scraper = "0.23"
 //! triblespace = "0.16.0"
 //! ```
@@ -18,6 +19,8 @@ use std::time::Instant;
 use anyhow::{Context, Result, anyhow};
 use clap::{CommandFactory, Parser};
 use hifitime::{Duration, Epoch};
+use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use scraper::{Html, Selector};
 use triblespace::prelude::*;
 
@@ -90,8 +93,28 @@ fn import_gemini_path(
             path.display(),
             scan_start.elapsed()
         );
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let parser_pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .context("build gemini parser thread pool")?;
+        let parse_start = Instant::now();
+        println!(
+            "gemini phase parse: {} file(s) using {} thread(s)",
+            total_files, threads
+        );
+        let parsed_files: Vec<(PathBuf, Result<Vec<MessageRecord>>)> = parser_pool.install(|| {
+            files
+                .par_iter()
+                .map(|file| (file.to_path_buf(), parse_gemini_file(file.as_path())))
+                .collect()
+        });
+        println!("gemini phase parse: done in {:?}", parse_start.elapsed());
+
         let mut total = ImportStats::default();
-        for (index, file) in files.iter().enumerate() {
+        for (index, (file, parsed_records)) in parsed_files.into_iter().enumerate() {
             let file_start = Instant::now();
             println!(
                 "gemini file {}/{}: {}",
@@ -99,8 +122,15 @@ fn import_gemini_path(
                 total_files,
                 file.display()
             );
-            let stats = import_gemini_file(file, repo, &mut ws, &mut catalog, &mut catalog_head)
-                .with_context(|| format!("import {}", file.display()))?;
+            let stats = import_gemini_parsed_file(
+                file.as_path(),
+                parsed_records.with_context(|| format!("parse {}", file.display()))?,
+                repo,
+                &mut ws,
+                &mut catalog,
+                &mut catalog_head,
+            )
+            .with_context(|| format!("import {}", file.display()))?;
             total.files += stats.files;
             total.conversations += stats.conversations;
             total.messages += stats.messages;
@@ -117,39 +147,37 @@ fn import_gemini_path(
         }
         return Ok(total);
     }
-    import_gemini_file(path, repo, &mut ws, &mut catalog, &mut catalog_head)
-}
-
-fn import_gemini_file(
-    path: &std::path::Path,
-    repo: &mut common::Repo,
-    ws: &mut common::Ws,
-    catalog: &mut TribleSet,
-    catalog_head: &mut Option<common::CommitHandle>,
-) -> Result<ImportStats> {
     let parse_start = Instant::now();
     println!("gemini phase parse: {}", path.display());
-    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-
-    let mut stats = ImportStats {
-        files: 1,
-        ..ImportStats::default()
-    };
-
-    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    if extension != "html" && extension != "htm" {
-        return Err(anyhow!(
-            "Gemini importer currently supports only HTML exports; got {}",
-            path.display()
-        ));
-    }
-    let mut records = parse_gemini_activity_html(&raw);
+    let records = parse_gemini_file(path)?;
     println!(
         "gemini {}: parsed {} activity message(s) in {:?}",
         path.display(),
         records.len(),
         parse_start.elapsed()
     );
+    import_gemini_parsed_file(
+        path,
+        records,
+        repo,
+        &mut ws,
+        &mut catalog,
+        &mut catalog_head,
+    )
+}
+
+fn import_gemini_parsed_file(
+    _path: &std::path::Path,
+    mut records: Vec<MessageRecord>,
+    repo: &mut common::Repo,
+    ws: &mut common::Ws,
+    catalog: &mut TribleSet,
+    catalog_head: &mut Option<common::CommitHandle>,
+) -> Result<ImportStats> {
+    let mut stats = ImportStats {
+        files: 1,
+        ..ImportStats::default()
+    };
 
     records.sort_by_key(|r| r.order);
     if records.is_empty() {
@@ -248,6 +276,18 @@ fn import_gemini_file(
         stats.commits
     );
     Ok(stats)
+}
+
+fn parse_gemini_file(path: &std::path::Path) -> Result<Vec<MessageRecord>> {
+    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if extension != "html" && extension != "htm" {
+        return Err(anyhow!(
+            "Gemini importer currently supports only HTML exports; got {}",
+            path.display()
+        ));
+    }
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    Ok(parse_gemini_activity_html(&raw))
 }
 
 fn hash_prefix(input: &str) -> String {

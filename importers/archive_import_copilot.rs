@@ -6,6 +6,7 @@
 //! ed25519-dalek = "2.1.1"
 //! hifitime = "4"
 //! rand_core = "0.6.4"
+//! rayon = "1.10"
 //! serde_json = "1"
 //! triblespace = "0.16.0"
 //! ```
@@ -18,6 +19,8 @@ use std::time::Instant;
 use anyhow::{Context, Result, anyhow};
 use clap::{CommandFactory, Parser};
 use hifitime::Epoch;
+use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use serde_json::{Map, Value as JsonValue};
 use triblespace::core::import::json_tree::JsonTreeImporter;
 use triblespace::prelude::*;
@@ -51,6 +54,13 @@ struct ImportStats {
     conversations: usize,
     messages: usize,
     commits: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedCopilotFile {
+    raw: String,
+    root: JsonValue,
+    records: Vec<MessageRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,8 +105,28 @@ fn import_copilot_path(
             path.display(),
             scan_start.elapsed()
         );
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let parser_pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .context("build copilot parser thread pool")?;
+        let parse_start = Instant::now();
+        println!(
+            "copilot phase parse: {} file(s) using {} thread(s)",
+            total_files, threads
+        );
+        let parsed_files: Vec<(PathBuf, Result<ParsedCopilotFile>)> = parser_pool.install(|| {
+            files
+                .par_iter()
+                .map(|file| (file.to_path_buf(), parse_copilot_file(file.as_path())))
+                .collect()
+        });
+        println!("copilot phase parse: done in {:?}", parse_start.elapsed());
+
         let mut total = ImportStats::default();
-        for (index, file) in files.iter().enumerate() {
+        for (index, (file, parsed_file)) in parsed_files.into_iter().enumerate() {
             let file_start = Instant::now();
             println!(
                 "copilot file {}/{}: {}",
@@ -104,8 +134,9 @@ fn import_copilot_path(
                 total_files,
                 file.display()
             );
-            let stats = import_copilot_file(
-                file,
+            let stats = import_copilot_parsed_file(
+                file.as_path(),
+                parsed_file.with_context(|| format!("parse {}", file.display()))?,
                 repo,
                 &mut ws,
                 &mut catalog,
@@ -129,8 +160,18 @@ fn import_copilot_path(
         }
         return Ok(total);
     }
-    import_copilot_file(
+    let parse_start = Instant::now();
+    println!("copilot phase parse: {}", path.display());
+    let parsed = parse_copilot_file(path)?;
+    println!(
+        "copilot {}: parsed {} message record(s) in {:?}",
+        path.display(),
+        parsed.records.len(),
+        parse_start.elapsed()
+    );
+    import_copilot_parsed_file(
         path,
+        parsed,
         repo,
         &mut ws,
         &mut catalog,
@@ -139,28 +180,23 @@ fn import_copilot_path(
     )
 }
 
-fn import_copilot_file(
+fn import_copilot_parsed_file(
     path: &std::path::Path,
+    parsed: ParsedCopilotFile,
     repo: &mut common::Repo,
     ws: &mut common::Ws,
     catalog: &mut TribleSet,
     catalog_head: &mut Option<common::CommitHandle>,
     json_tree_metadata: &TribleSet,
 ) -> Result<ImportStats> {
-    let parse_start = Instant::now();
-    println!("copilot phase parse: {}", path.display());
-    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let root: JsonValue = serde_json::from_str(&raw).context("parse copilot json")?;
+    let ParsedCopilotFile {
+        raw,
+        root,
+        mut records,
+    } = parsed;
     let object = root
         .as_object()
         .ok_or_else(|| anyhow!("copilot export must be a JSON object"))?;
-    let mut records = parse_copilot_records(object)?;
-    println!(
-        "copilot {}: parsed {} message record(s) in {:?}",
-        path.display(),
-        records.len(),
-        parse_start.elapsed()
-    );
 
     let mut stats = ImportStats {
         files: 1,
@@ -300,6 +336,16 @@ fn import_copilot_file(
     }
 
     Ok(stats)
+}
+
+fn parse_copilot_file(path: &std::path::Path) -> Result<ParsedCopilotFile> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let root: JsonValue = serde_json::from_str(&raw).context("parse copilot json")?;
+    let object = root
+        .as_object()
+        .ok_or_else(|| anyhow!("copilot export must be a JSON object"))?;
+    let records = parse_copilot_records(object)?;
+    Ok(ParsedCopilotFile { raw, root, records })
 }
 
 fn collect_copilot_files(path: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<()> {
