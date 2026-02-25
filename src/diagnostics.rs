@@ -260,6 +260,7 @@ struct BranchEntry {
 
 #[derive(Debug, Clone)]
 struct ExecRow {
+    request_id: Id,
     command: String,
     status: ExecStatus,
     requested_at: Option<i128>,
@@ -267,6 +268,8 @@ struct ExecRow {
     finished_at: Option<i128>,
     exit_code: Option<u64>,
     worker: Option<Id>,
+    stdout_text: Option<String>,
+    stderr_text: Option<String>,
     error: Option<String>,
 }
 
@@ -366,10 +369,13 @@ enum TimelineSource {
 #[derive(Debug, Clone)]
 enum TimelineEvent {
     Shell {
+        request_id: Id,
         status: ExecStatus,
         command: String,
         worker_label: Option<String>,
         exit_code: Option<u64>,
+        stdout_text: Option<String>,
+        stderr_text: Option<String>,
         error: Option<String>,
     },
     Cognition {
@@ -1727,6 +1733,7 @@ fn collect_exec_rows(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<ExecRow>
         rows.insert(
             request_id,
             ExecRow {
+                request_id,
                 command: command_text,
                 status: ExecStatus::Pending,
                 requested_at: None,
@@ -1734,6 +1741,8 @@ fn collect_exec_rows(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<ExecRow>
                 finished_at: None,
                 exit_code: None,
                 worker: None,
+                stdout_text: None,
+                stderr_text: None,
                 error: None,
             },
         );
@@ -1753,10 +1762,20 @@ fn collect_exec_rows(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<ExecRow>
     let finished_at = load_finished_at(data);
     let workers = load_workers(data);
     let exit_codes = load_exit_codes(data);
+    let stdout_text = load_output_text(data, ws, playground_exec::stdout_text);
+    let stderr_text = load_output_text(data, ws, playground_exec::stderr_text);
     let errors = load_errors(data, ws);
 
     let progress = latest_progress(data, &attempts, &started_at, &workers);
-    let results = latest_results(data, &attempts, &finished_at, &exit_codes, &errors);
+    let results = latest_results(
+        data,
+        &attempts,
+        &finished_at,
+        &exit_codes,
+        &stdout_text,
+        &stderr_text,
+        &errors,
+    );
 
     for (request_id, row) in rows.iter_mut() {
         let progress_info = progress.get(request_id);
@@ -1765,6 +1784,8 @@ fn collect_exec_rows(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<ExecRow>
         row.worker = progress_info.and_then(|info| info.worker);
         row.finished_at = result_info.and_then(|info| info.finished_at);
         row.exit_code = result_info.and_then(|info| info.exit_code);
+        row.stdout_text = result_info.and_then(|info| info.stdout_text.clone());
+        row.stderr_text = result_info.and_then(|info| info.stderr_text.clone());
         row.error = result_info.and_then(|info| info.error.clone());
 
         row.status = if let Some(result) = result_info {
@@ -2578,10 +2599,13 @@ fn build_activity_timeline(
             at: row.finished_at.or(row.started_at).or(row.requested_at),
             source: TimelineSource::Shell,
             event: TimelineEvent::Shell {
+                request_id: row.request_id,
                 status: row.status,
                 command: row.command.clone(),
                 worker_label: row.worker.map(|worker_id| format_id(labels, worker_id)),
                 exit_code: row.exit_code,
+                stdout_text: row.stdout_text.clone(),
+                stderr_text: row.stderr_text.clone(),
                 error: row.error.clone(),
             },
         });
@@ -3427,6 +3451,8 @@ struct ResultInfo {
     attempt: u64,
     finished_at: Option<i128>,
     exit_code: Option<u64>,
+    stdout_text: Option<String>,
+    stderr_text: Option<String>,
     error: Option<String>,
 }
 
@@ -3489,6 +3515,23 @@ fn load_exit_codes(data: &TribleSet) -> HashMap<Id, u64> {
     codes
 }
 
+fn load_output_text(
+    data: &TribleSet,
+    ws: &mut Workspace<Pile>,
+    attr: Attribute<Handle<Blake3, LongString>>,
+) -> HashMap<Id, String> {
+    let mut outputs = HashMap::new();
+    for (event_id, output_handle) in find!(
+        (event_id: Id, output_handle: Value<Handle<Blake3, LongString>>),
+        pattern!(data, [{ ?event_id @ attr: ?output_handle }])
+    ) {
+        if let Some(text) = load_text(ws, output_handle) {
+            outputs.insert(event_id, text);
+        }
+    }
+    outputs
+}
+
 fn load_errors(data: &TribleSet, ws: &mut Workspace<Pile>) -> HashMap<Id, String> {
     let mut errors = HashMap::new();
     for (event_id, error_handle) in find!(
@@ -3546,6 +3589,8 @@ fn latest_results(
     attempts: &HashMap<Id, u64>,
     finished_at: &HashMap<Id, i128>,
     exit_codes: &HashMap<Id, u64>,
+    stdout_text: &HashMap<Id, String>,
+    stderr_text: &HashMap<Id, String>,
     errors: &HashMap<Id, String>,
 ) -> HashMap<Id, ResultInfo> {
     let mut results: HashMap<Id, ResultInfo> = HashMap::new();
@@ -3560,11 +3605,15 @@ fn latest_results(
         let attempt = attempts.get(&event_id).copied().unwrap_or(0);
         let finished_at = finished_at.get(&event_id).copied();
         let exit_code = exit_codes.get(&event_id).copied();
+        let stdout_text = stdout_text.get(&event_id).cloned();
+        let stderr_text = stderr_text.get(&event_id).cloned();
         let error = errors.get(&event_id).cloned();
         let info = ResultInfo {
             attempt,
             finished_at,
             exit_code,
+            stdout_text,
+            stderr_text,
             error,
         };
         results
@@ -4350,16 +4399,20 @@ fn render_timeline_row(ui: &mut egui::Ui, now_key: i128, row: &TimelineRow) {
 
     match &row.event {
         TimelineEvent::Shell {
+            request_id,
             status,
             command,
             worker_label,
             exit_code,
+            stdout_text,
+            stderr_text,
             error,
         } => {
             ui.horizontal_wrapped(|ui| {
                 ui.label(format!("{}: {}", exec_status_text(*status), command));
             });
             let mut details = Vec::new();
+            details.push(format!("req {}", id_prefix(*request_id)));
             if let Some(worker_label) = worker_label.as_deref() {
                 details.push(format!("worker {worker_label}"));
             }
@@ -4369,8 +4422,60 @@ fn render_timeline_row(ui: &mut egui::Ui, now_key: i128, row: &TimelineRow) {
             if !details.is_empty() {
                 ui.small(details.join(" · "));
             }
-            if let Some(error) = error.as_deref() {
-                ui.colored_label(egui::Color32::LIGHT_RED, error);
+
+            let has_stdout = stdout_text
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty());
+            let has_stderr = stderr_text
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty());
+            let has_error = error.as_deref().is_some_and(|text| !text.trim().is_empty());
+            if has_stdout || has_stderr || has_error {
+                let mut output_meta = Vec::new();
+                if let Some(text) = stdout_text.as_deref() {
+                    let chars = text.chars().count();
+                    if chars > 0 {
+                        output_meta.push(format!("stdout {chars}c"));
+                    }
+                }
+                if let Some(text) = stderr_text.as_deref() {
+                    let chars = text.chars().count();
+                    if chars > 0 {
+                        output_meta.push(format!("stderr {chars}c"));
+                    }
+                }
+                if has_error {
+                    output_meta.push("error".to_string());
+                }
+                let title = if output_meta.is_empty() {
+                    "Output".to_string()
+                } else {
+                    format!("Output ({})", output_meta.join(" · "))
+                };
+                egui::CollapsingHeader::new(title)
+                    .id_salt(format!("timeline_shell_output_{request_id:x}"))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        if let Some(text) = stdout_text
+                            .as_deref()
+                            .filter(|text| !text.trim().is_empty())
+                        {
+                            ui.small("stdout");
+                            render_blob_aware_text(ui, text, None, None);
+                        }
+                        if let Some(text) = stderr_text
+                            .as_deref()
+                            .filter(|text| !text.trim().is_empty())
+                        {
+                            ui.small("stderr");
+                            render_blob_aware_text(ui, text, Some(egui::Color32::LIGHT_RED), None);
+                        }
+                        if let Some(text) = error.as_deref().filter(|text| !text.trim().is_empty())
+                        {
+                            ui.small("error");
+                            ui.colored_label(egui::Color32::LIGHT_RED, text);
+                        }
+                    });
             }
         }
         TimelineEvent::Cognition { summary } => {
