@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use triblespace::core::blob::schemas::longstring::LongString;
 use triblespace::core::blob::schemas::simplearchive::SimpleArchive;
 use triblespace::core::id::{ExclusiveId, Id};
@@ -109,6 +109,7 @@ const RELATIONS_SCROLL_HEIGHT: f32 = 260.0;
 const TEAMS_SCROLL_HEIGHT: f32 = 520.0;
 const TEAMS_CHAT_LIST_WIDTH: f32 = 220.0;
 const WORKSPACE_SNAPSHOT_LIMIT: usize = 10;
+const SNAPSHOT_REFRESH_MS: u64 = 1000;
 
 static DIAGNOSTICS_PILE_OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
 static DIAGNOSTICS_HEADLESS: AtomicBool = AtomicBool::new(false);
@@ -229,6 +230,7 @@ struct DashboardState {
     context_selection_stack: Vec<Id>,
     context_show_children: bool,
     context_show_origins: bool,
+    last_snapshot_refresh_at: Option<Instant>,
 }
 
 impl Drop for DashboardState {
@@ -263,6 +265,7 @@ impl Default for DashboardState {
             context_selection_stack: Vec::new(),
             context_show_children: false,
             context_show_origins: false,
+            last_snapshot_refresh_at: None,
         }
     }
 }
@@ -692,12 +695,16 @@ _Live view of the agent pile, exec queue, and message activity._"
                 if let Err(err) = repo_open_result {
                     state.snapshot = Some(Err(err.to_string()));
                 } else {
-                    refresh_snapshot(state);
+                    if should_refresh_snapshot(&state) {
+                        refresh_snapshot(state);
+                        state.last_snapshot_refresh_at = Some(Instant::now());
+                    }
                 }
                 if diagnostics_is_headless() {
                     // In headless capture we only need one snapshot.
                 } else {
-                    ui.ctx().request_repaint_after(Duration::from_millis(250));
+                    ui.ctx()
+                        .request_repaint_after(Duration::from_millis(SNAPSHOT_REFRESH_MS));
                 }
             });
         },
@@ -1041,6 +1048,16 @@ fn refresh_snapshot(state: &mut DashboardState) {
         }
     }
     state.snapshot = Some(result);
+}
+
+fn should_refresh_snapshot(state: &DashboardState) -> bool {
+    if diagnostics_is_headless() {
+        return true;
+    }
+    match state.last_snapshot_refresh_at {
+        None => true,
+        Some(last) => last.elapsed() >= Duration::from_millis(SNAPSHOT_REFRESH_MS),
+    }
 }
 
 fn apply_branch_defaults_from_agent_config(state: &mut DashboardState, config: &AgentConfigRow) {
