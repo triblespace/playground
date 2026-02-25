@@ -611,11 +611,13 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
 
 fn model_supports_images(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
+    if model.contains("mistral") {
+        return true;
+    }
     !(model.contains("codex")
         || model.contains("gpt-oss")
         || model.contains("llama")
         || model.contains("qwen")
-        || model.contains("mistral")
         || model.contains("deepseek"))
 }
 
@@ -821,9 +823,66 @@ fn id_prefix(id: Id) -> String {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::extract_reasoning_text;
+    use ed25519_dalek::SigningKey;
+    use serde_json::json;
+    use triblespace::core::blob::Blob;
+    use triblespace::core::repo::Repository;
+    use triblespace::core::repo::Workspace;
+    use triblespace::core::repo::pile::Pile;
+    use triblespace::prelude::valueschemas::{Blake3, Handle};
+    use triblespace::prelude::*;
+
+    use super::{
+        Bytes, JsonValue, UnknownBlob, build_prompt_input_content, extract_reasoning_text,
+    };
+
+    fn test_repo_path() -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "playground-llm-worker-test-{}-{ts}.pile",
+            std::process::id()
+        ))
+    }
+
+    fn put_test_png(ws: &mut Workspace<Pile<Blake3>>) -> String {
+        // 1x1 PNG (black).
+        let png_bytes: [u8; 68] = [
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
+            0x00, 0xB5, 0x1C, 0x0C, 0x02, 0x00, 0x00, 0x00, 0x0B, b'I', b'D', b'A', b'T', 0x78,
+            0xDA, 0x63, 0xFC, 0xFF, 0x1F, 0x00, 0x03, 0x03, 0x02, 0x00, 0xED, 0x29, 0xEB, 0x14,
+            0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let blob: Blob<UnknownBlob> = Blob::new(Bytes::from(png_bytes.to_vec()));
+        let handle: Value<Handle<Blake3, UnknownBlob>> = ws.put(blob);
+        handle
+            .raw
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect()
+    }
+
+    fn with_test_workspace<T>(f: impl FnOnce(&mut Workspace<Pile<Blake3>>) -> T) -> T {
+        let path = test_repo_path();
+        let mut pile = Pile::<Blake3>::open(path.as_path()).expect("open test pile");
+        pile.restore().expect("restore test pile");
+        let mut repo = Repository::new(pile, SigningKey::from_bytes(&[7u8; 32]));
+        let branch_id = repo
+            .create_branch("test", None)
+            .expect("create test branch")
+            .release();
+        let mut ws = repo.pull(branch_id).expect("pull test workspace");
+        let output = f(&mut ws);
+        let _ = repo.close();
+        let _ = std::fs::remove_file(path);
+        output
+    }
 
     #[test]
     fn extracts_openai_reasoning_summary() {
@@ -871,5 +930,41 @@ mod tests {
             ]
         });
         assert!(extract_reasoning_text(&response).is_none());
+    }
+
+    #[test]
+    fn blob_marker_becomes_image_part_for_vision_models() {
+        with_test_workspace(|ws| {
+            let digest_hex = put_test_png(ws);
+            let prompt = format!(
+                "inspect this image ![sample](blob:blake3:{digest_hex}?mime=image%2Fpng&name=sample.png)"
+            );
+            let content = build_prompt_input_content(ws, "gpt-4.1", prompt.as_str());
+            assert!(
+                content
+                    .iter()
+                    .any(|part| part.get("type").and_then(JsonValue::as_str) == Some("image_url")),
+                "expected one image_url part in prompt content"
+            );
+        });
+    }
+
+    #[test]
+    fn blob_marker_falls_back_to_text_for_non_vision_models() {
+        with_test_workspace(|ws| {
+            let digest_hex = put_test_png(ws);
+            let prompt = format!("![sample](blob:blake3:{digest_hex}?mime=image%2Fpng)");
+            let content = build_prompt_input_content(ws, "gpt-oss-120b", prompt.as_str());
+            assert_eq!(content.len(), 1);
+            assert_eq!(
+                content[0].get("type").and_then(JsonValue::as_str),
+                Some("text")
+            );
+            let text = content[0]
+                .get("text")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            assert!(text.contains("vision unavailable"));
+        });
     }
 }
