@@ -4627,7 +4627,7 @@ struct SemanticCompactor {
     memory_lenses: Vec<MemoryLensConfig>,
 }
 
-const DEFAULT_COMPACTION_PROMPT: &str = "You are a context compaction module.\n\nGiven one or more prior memory chunks from a terminal-based agent, write a concise merged summary that preserves:\n- key actions taken\n- important results/outputs\n- errors and their causes\n- paths/ids that matter for follow-up\n\nOutput plain text only (no markdown), no code fences, no tool calls.\n";
+const DEFAULT_COMPACTION_PROMPT: &str = include_str!("../prompts/llm_compaction_prompt.md");
 const FAILED_EXEC_MEMORY_INPUT_LABELS: &str =
     "TURN_ID, COMMAND, REASONING, STDOUT, STDERR, ERROR, EXIT_CODE";
 
