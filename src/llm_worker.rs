@@ -101,8 +101,8 @@ impl ChatCompletionsClient {
                 Err(failure) => {
                     eprintln!(
                         "warning: llm send attempt {attempt}/{SEND_MAX_ATTEMPTS} to {} failed: {err:#}",
-                        self.endpoint_url
-                        ,err = failure.error
+                        self.endpoint_url,
+                        err = failure.error
                     );
                     last_error = Some(failure.error);
                     if !failure.retryable {
@@ -122,7 +122,10 @@ impl ChatCompletionsClient {
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("request failed without error detail")))
     }
 
-    fn send_payload_once(&self, payload: &JsonValue) -> std::result::Result<OpenAIResult, SendFailure> {
+    fn send_payload_once(
+        &self,
+        payload: &JsonValue,
+    ) -> std::result::Result<OpenAIResult, SendFailure> {
         let response = self.send_request(payload).map_err(|err| SendFailure {
             retryable: is_retryable_transport_error(&err),
             error: err,

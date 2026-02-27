@@ -164,7 +164,8 @@ pub(crate) fn run_exec_loop(
                         return Ok(None);
                     }
 
-                    let mut ws = pull_workspace(&mut repo, branch_id, "pull workspace for control")?;
+                    let mut ws =
+                        pull_workspace(&mut repo, branch_id, "pull workspace for control")?;
                     let delta =
                         refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
                     request_index.apply_delta(&cached_catalog, &delta, worker_id);
@@ -380,9 +381,8 @@ fn execute_command(
         .unwrap_or_default();
 
     if timed_out {
-        let timeout_hint = format_timeout_hint(
-            timed_out_after.unwrap_or_else(|| wait_started.elapsed()),
-        );
+        let timeout_hint =
+            format_timeout_hint(timed_out_after.unwrap_or_else(|| wait_started.elapsed()));
         let mut msg = format!("{timeout_hint}\n").into_bytes();
         msg.extend_from_slice(&stderr);
         stderr = msg;

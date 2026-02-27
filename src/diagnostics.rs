@@ -860,9 +860,10 @@ _Live view of the agent pile, exec queue, and message activity._"
                 ui.small("custom");
                 let mut custom_limit = state.timeline_limit as u64;
                 if ui
-                    .add(egui::DragValue::new(&mut custom_limit).range(
-                        TIMELINE_LIMIT_MIN as u64..=TIMELINE_LIMIT_MAX as u64,
-                    ))
+                    .add(
+                        egui::DragValue::new(&mut custom_limit)
+                            .range(TIMELINE_LIMIT_MIN as u64..=TIMELINE_LIMIT_MAX as u64),
+                    )
                     .changed()
                 {
                     state.timeline_limit = custom_limit as usize;
