@@ -26,6 +26,12 @@ const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 1024;
 const DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS: u64 = 512;
 const DEFAULT_PROMPT_CHARS_PER_TOKEN: u64 = 4;
 const DEFAULT_COMPACTION_MERGE_ARITY: u64 = 8;
+const DEFAULT_MEMORY_LENS_FACTUAL_PROMPT: &str = "You are writing a factual memory for a terminal-based agent.\n\nGiven one execution turn, write a concise objective memory of what happened.\n\nRules:\n- output plain text only\n- focus on externally observable facts and outcomes\n- include important ids/paths/errors if relevant\n- no shell commands\n- if this turn has no useful factual memory, output nothing";
+const DEFAULT_MEMORY_LENS_TECHNICAL_PROMPT: &str = "You are writing a technical memory for a terminal-based agent.\n\nGiven one execution turn, write a concise diagnostic memory for future troubleshooting.\n\nRules:\n- output plain text only\n- highlight root cause, failure mode, and corrective next step\n- do not quote long raw command payloads, prompts, transcript diffs, or chat scaffolding\n- no shell commands\n- if there is no useful technical lesson, output nothing";
+const DEFAULT_MEMORY_LENS_EMOTIONAL_PROMPT: &str = "You are writing an emotional/affective memory for a terminal-based agent.\n\nGiven one execution turn, write a short affective reflection only if it would genuinely help future behavior.\n\nRules:\n- output plain text only\n- keep it grounded in the observed turn\n- avoid melodrama\n- no shell commands\n- if no meaningful affective memory exists, output nothing";
+const DEFAULT_MEMORY_LENS_FACTUAL_MAX_OUTPUT_TOKENS: u64 = 192;
+const DEFAULT_MEMORY_LENS_TECHNICAL_MAX_OUTPUT_TOKENS: u64 = 224;
+const DEFAULT_MEMORY_LENS_EMOTIONAL_MAX_OUTPUT_TOKENS: u64 = 96;
 const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a terminal-based agent.
 
 Core contract:
@@ -82,6 +88,12 @@ const DEFAULT_PILE_PATH: &str = "self.pile";
 const CONFIG_BRANCH: &str = "config";
 #[allow(non_upper_case_globals)]
 const CONFIG_BRANCH_ID: Id = id_hex!("4790808CF044F979FC7C2E47FCCB4A64");
+#[allow(non_upper_case_globals)]
+const MEMORY_LENS_ID_FACTUAL: Id = id_hex!("E39414C1875CB127BC7E2F4C42CB3C17");
+#[allow(non_upper_case_globals)]
+const MEMORY_LENS_ID_TECHNICAL: Id = id_hex!("6D6BC80F284B56CAA2AFDE8C841EE894");
+#[allow(non_upper_case_globals)]
+const MEMORY_LENS_ID_EMOTIONAL: Id = id_hex!("1B7C34E5C9718DE01020CA3C0EF50387");
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -92,6 +104,7 @@ pub struct Config {
     pub llm_compaction_profile_id: Option<Id>,
     pub llm_compaction_prompt: Option<String>,
     pub llm_compaction_merge_arity: u64,
+    pub memory_lenses: Vec<MemoryLensConfig>,
     pub tavily_api_key: Option<String>,
     pub exa_api_key: Option<String>,
     pub exec: ExecConfig,
@@ -130,6 +143,14 @@ pub struct LlmConfig {
 pub struct ExecConfig {
     pub default_cwd: Option<PathBuf>,
     pub sandbox_profile: Option<Id>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryLensConfig {
+    pub id: Id,
+    pub name: String,
+    pub prompt: String,
+    pub max_output_tokens: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -278,6 +299,7 @@ fn default_config(pile_path: PathBuf) -> Config {
         llm_compaction_profile_id: None,
         llm_compaction_prompt: None,
         llm_compaction_merge_arity: default_compaction_merge_arity(),
+        memory_lenses: default_memory_lenses(),
         tavily_api_key: None,
         exa_api_key: None,
         exec: ExecConfig::default(),
@@ -315,7 +337,8 @@ fn load_from_pile(pile_path: &Path) -> Result<Config> {
         };
 
         let ids_changed = ensure_registered_branch_ids(&mut config);
-        if ids_changed {
+        let lenses_missing = !has_memory_lens_entries(&catalog);
+        if ids_changed || lenses_missing {
             store_config(&mut ws, &config).context("store config with branch ids")?;
             push_workspace(&mut repo, &mut ws).context("push config with branch ids")?;
         }
@@ -431,6 +454,18 @@ fn ensure_registered_branches_exist(repo: &mut Repository<Pile>, config: &Config
         })?;
     }
     Ok(())
+}
+
+fn has_memory_lens_entries(catalog: &TribleSet) -> bool {
+    find!(
+        (entity_id: Id),
+        pattern!(catalog, [{
+            ?entity_id @ playground_config::kind: playground_config::kind_memory_lens
+        }])
+    )
+    .into_iter()
+    .next()
+    .is_some()
 }
 
 fn close_repo(repo: Repository<Pile>) -> Result<()> {
@@ -627,6 +662,11 @@ fn load_latest_config(
         }
     }
 
+    let lenses = load_latest_memory_lenses(ws, catalog)?;
+    if !lenses.is_empty() {
+        config.memory_lenses = lenses;
+    }
+
     Ok(Some(config))
 }
 
@@ -718,12 +758,72 @@ fn load_latest_llm_profile(
     Ok(Some((llm, name)))
 }
 
+fn load_latest_memory_lenses(
+    ws: &mut Workspace<Pile>,
+    catalog: &TribleSet,
+) -> Result<Vec<MemoryLensConfig>> {
+    let mut latest: HashMap<Id, (Id, i128)> = HashMap::new();
+    for (entry_id, lens_id, updated_at) in find!(
+        (
+            entry_id: Id,
+            lens_id: Value<GenId>,
+            updated_at: Value<NsTAIInterval>
+        ),
+        pattern!(catalog, [{
+            ?entry_id @
+            playground_config::kind: playground_config::kind_memory_lens,
+            playground_config::updated_at: ?updated_at,
+            playground_config::memory_lens_id: ?lens_id,
+        }])
+    ) {
+        let lens_id = Id::from_value(&lens_id);
+        let key = interval_key(updated_at);
+        latest
+            .entry(lens_id)
+            .and_modify(|slot| {
+                if key > slot.1 {
+                    *slot = (entry_id, key);
+                }
+            })
+            .or_insert((entry_id, key));
+    }
+
+    let mut lenses = Vec::new();
+    for (lens_id, (entry_id, _)) in latest {
+        let name = load_string_attr(ws, catalog, entry_id, metadata::name)?
+            .unwrap_or_else(|| format!("lens-{lens_id:x}"));
+        let prompt =
+            load_string_attr(ws, catalog, entry_id, playground_config::memory_lens_prompt)?
+                .ok_or_else(|| anyhow!("memory lens {lens_id:x} missing prompt"))?;
+        let max_output_tokens = load_u256_attr(
+            catalog,
+            entry_id,
+            playground_config::memory_lens_max_output_tokens,
+        )
+        .and_then(u256be_to_u64)
+        .ok_or_else(|| anyhow!("memory lens {lens_id:x} missing max_output_tokens"))?;
+        lenses.push(MemoryLensConfig {
+            id: lens_id,
+            name,
+            prompt,
+            max_output_tokens,
+        });
+    }
+    lenses.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    Ok(lenses)
+}
+
 fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     let now = epoch_interval(now_epoch());
     let config_id = ufoid();
     let profile_id = config
         .llm_profile_id
         .ok_or_else(|| anyhow!("config missing active LLM profile id"))?;
+    let memory_lenses = if config.memory_lenses.is_empty() {
+        default_memory_lenses()
+    } else {
+        config.memory_lenses.clone()
+    };
 
     let system_prompt = ws.put(config.system_prompt.clone());
     let branch = ws.put(config.branch.clone());
@@ -829,6 +929,21 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
         playground_config::llm_prompt_chars_per_token: llm_prompt_chars_per_token,
     };
 
+    for lens in &memory_lenses {
+        let lens_entry_id = ufoid();
+        let lens_name = ws.put(lens.name.clone());
+        let lens_prompt = ws.put(lens.prompt.clone());
+        let lens_max_output_tokens: Value<U256BE> = lens.max_output_tokens.to_value();
+        change += entity! { &lens_entry_id @
+            playground_config::kind: playground_config::kind_memory_lens,
+            playground_config::updated_at: now,
+            playground_config::memory_lens_id: lens.id,
+            metadata::name: lens_name,
+            playground_config::memory_lens_prompt: lens_prompt,
+            playground_config::memory_lens_max_output_tokens: lens_max_output_tokens,
+        };
+    }
+
     if let Some(key) = config.llm.api_key.as_ref() {
         let handle = ws.put(key.clone());
         change += entity! { &profile_entry_id @ playground_config::llm_api_key: handle };
@@ -932,6 +1047,35 @@ fn default_prompt_chars_per_token() -> u64 {
 
 fn default_compaction_merge_arity() -> u64 {
     DEFAULT_COMPACTION_MERGE_ARITY
+}
+
+fn default_memory_lenses() -> Vec<MemoryLensConfig> {
+    vec![
+        MemoryLensConfig {
+            id: MEMORY_LENS_ID_FACTUAL,
+            name: "factual".to_string(),
+            prompt: DEFAULT_MEMORY_LENS_FACTUAL_PROMPT.to_string(),
+            max_output_tokens: DEFAULT_MEMORY_LENS_FACTUAL_MAX_OUTPUT_TOKENS,
+        },
+        MemoryLensConfig {
+            id: MEMORY_LENS_ID_TECHNICAL,
+            name: "technical".to_string(),
+            prompt: DEFAULT_MEMORY_LENS_TECHNICAL_PROMPT.to_string(),
+            max_output_tokens: DEFAULT_MEMORY_LENS_TECHNICAL_MAX_OUTPUT_TOKENS,
+        },
+        MemoryLensConfig {
+            id: MEMORY_LENS_ID_EMOTIONAL,
+            name: "emotional".to_string(),
+            prompt: DEFAULT_MEMORY_LENS_EMOTIONAL_PROMPT.to_string(),
+            max_output_tokens: DEFAULT_MEMORY_LENS_EMOTIONAL_MAX_OUTPUT_TOKENS,
+        },
+    ]
+}
+
+pub fn default_memory_lens_by_name(name: &str) -> Option<MemoryLensConfig> {
+    default_memory_lenses()
+        .into_iter()
+        .find(|lens| lens.name.eq_ignore_ascii_case(name))
 }
 
 fn default_branch() -> String {

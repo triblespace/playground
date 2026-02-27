@@ -42,6 +42,9 @@ pub mod playground_config {
         "095FAECDB8FF205DF591DF594E593B01" as pub llm_prompt_chars_per_token: U256BE;
         "1844C507906202EFF676D8C561E89704" as pub llm_compaction_prompt: Handle<Blake3, LongString>;
         "167BABF8DFCD69AB4DB69773AAB18C4B" as pub llm_compaction_merge_arity: U256BE;
+        "24CF9D532E03C44CF719546DDE7E0493" as pub memory_lens_id: GenId;
+        "1F0A596CD677F732CD5C506F74C61F6B" as pub memory_lens_prompt: Handle<Blake3, LongString>;
+        "84F32838DC66B0FB6F774150854521F8" as pub memory_lens_max_output_tokens: U256BE;
         "120F9C6BBB103FAFFB31A66E2ABC15E6" as pub exec_default_cwd: Handle<Blake3, LongString>;
         "D18A351B6E03A460E4F400D97D285F96" as pub exec_sandbox_profile: GenId;
     }
@@ -57,6 +60,9 @@ pub mod playground_config {
     /// Tag for LLM profile entries (versioned by `updated_at`).
     #[allow(non_upper_case_globals)]
     pub const kind_llm_profile: Id = id_hex!("B08E356C4B08F44AB7EC177D47129447");
+    /// Tag for memory lens entries (versioned by `updated_at`).
+    #[allow(non_upper_case_globals)]
+    pub const kind_memory_lens: Id = id_hex!("D982F64C48F263A312D6E342D09554B0");
 
     /// Tag for playground_config protocol metadata.
     #[allow(non_upper_case_globals)]
@@ -134,6 +140,14 @@ where
         metadata::tag: playground_config::tag_kind,
     };
 
+    tribles += entity! { ExclusiveId::force_ref(&playground_config::kind_memory_lens) @
+        metadata::name: blobs.put("kind_memory_lens".to_string())?,
+        metadata::description: blobs.put(
+            "Memory lens entry entity kind.".to_string(),
+        )?,
+        metadata::tag: playground_config::tag_kind,
+    };
+
     Ok(tribles)
 }
 
@@ -184,6 +198,9 @@ where
     metadata += describe_attribute(blobs, &playground_config::llm_prompt_chars_per_token)?;
     metadata += describe_attribute(blobs, &playground_config::llm_compaction_prompt)?;
     metadata += describe_attribute(blobs, &playground_config::llm_compaction_merge_arity)?;
+    metadata += describe_attribute(blobs, &playground_config::memory_lens_id)?;
+    metadata += describe_attribute(blobs, &playground_config::memory_lens_prompt)?;
+    metadata += describe_attribute(blobs, &playground_config::memory_lens_max_output_tokens)?;
     metadata += describe_attribute(blobs, &playground_config::exec_default_cwd)?;
     metadata += describe_attribute(blobs, &playground_config::exec_sandbox_profile)?;
 

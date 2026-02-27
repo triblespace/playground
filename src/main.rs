@@ -39,7 +39,7 @@ mod workspace_snapshot;
 
 use archive_schema::{playground_archive, playground_archive_import};
 use chat_prompt::ChatMessage;
-use config::Config;
+use config::{Config, MemoryLensConfig};
 use relations_schema::playground_relations;
 use repo_util::{
     close_repo, current_branch_head, init_repo, load_text, pull_workspace, push_workspace,
@@ -246,6 +246,12 @@ enum ConfigField {
     LlmCompactionProfileId,
     LlmCompactionPrompt,
     LlmCompactionMergeArity,
+    MemoryLensFactualPrompt,
+    MemoryLensTechnicalPrompt,
+    MemoryLensEmotionalPrompt,
+    MemoryLensFactualMaxOutputTokens,
+    MemoryLensTechnicalMaxOutputTokens,
+    MemoryLensEmotionalMaxOutputTokens,
     ExecDefaultCwd,
     ExecSandboxProfile,
 }
@@ -261,6 +267,12 @@ enum OptionalConfigField {
     LlmReasoningEffort,
     LlmCompactionProfileId,
     LlmCompactionPrompt,
+    MemoryLensFactualPrompt,
+    MemoryLensTechnicalPrompt,
+    MemoryLensEmotionalPrompt,
+    MemoryLensFactualMaxOutputTokens,
+    MemoryLensTechnicalMaxOutputTokens,
+    MemoryLensEmotionalMaxOutputTokens,
     ExecDefaultCwd,
     ExecSandboxProfile,
 }
@@ -1049,6 +1061,14 @@ fn resolve_profile_selector(config: &Config, raw: &str) -> Result<Id> {
     Ok(first.id)
 }
 
+fn get_memory_lens_mut<'a>(config: &'a mut Config, name: &str) -> Result<&'a mut MemoryLensConfig> {
+    config
+        .memory_lenses
+        .iter_mut()
+        .find(|lens| lens.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| anyhow!("memory lens '{name}' not configured"))
+}
+
 fn apply_config_set(config: &mut Config, args: ConfigSetArgs) -> Result<()> {
     match args.field {
         ConfigField::SystemPrompt => {
@@ -1173,6 +1193,34 @@ fn apply_config_set(config: &mut Config, args: ConfigSetArgs) -> Result<()> {
             }
             config.llm_compaction_merge_arity = factor;
         }
+        ConfigField::MemoryLensFactualPrompt => {
+            let prompt = load_value_or_file(args.value.as_str(), "memory_lens_factual_prompt")?;
+            get_memory_lens_mut(config, "factual")?.prompt = prompt;
+        }
+        ConfigField::MemoryLensTechnicalPrompt => {
+            let prompt = load_value_or_file(args.value.as_str(), "memory_lens_technical_prompt")?;
+            get_memory_lens_mut(config, "technical")?.prompt = prompt;
+        }
+        ConfigField::MemoryLensEmotionalPrompt => {
+            let prompt = load_value_or_file(args.value.as_str(), "memory_lens_emotional_prompt")?;
+            get_memory_lens_mut(config, "emotional")?.prompt = prompt;
+        }
+        ConfigField::MemoryLensFactualMaxOutputTokens => {
+            get_memory_lens_mut(config, "factual")?.max_output_tokens =
+                parse_u64(args.value.as_str(), "memory_lens_factual_max_output_tokens")?;
+        }
+        ConfigField::MemoryLensTechnicalMaxOutputTokens => {
+            get_memory_lens_mut(config, "technical")?.max_output_tokens = parse_u64(
+                args.value.as_str(),
+                "memory_lens_technical_max_output_tokens",
+            )?;
+        }
+        ConfigField::MemoryLensEmotionalMaxOutputTokens => {
+            get_memory_lens_mut(config, "emotional")?.max_output_tokens = parse_u64(
+                args.value.as_str(),
+                "memory_lens_emotional_max_output_tokens",
+            )?;
+        }
         ConfigField::ExecDefaultCwd => {
             let value = load_value_or_file(args.value.as_str(), "exec_default_cwd")?;
             config.exec.default_cwd = Some(PathBuf::from(value.trim()));
@@ -1195,6 +1243,30 @@ fn apply_config_unset(config: &mut Config, field: OptionalConfigField) -> Result
         OptionalConfigField::LlmReasoningEffort => config.llm.reasoning_effort = None,
         OptionalConfigField::LlmCompactionProfileId => config.llm_compaction_profile_id = None,
         OptionalConfigField::LlmCompactionPrompt => config.llm_compaction_prompt = None,
+        OptionalConfigField::MemoryLensFactualPrompt
+        | OptionalConfigField::MemoryLensFactualMaxOutputTokens => {
+            let default = config::default_memory_lens_by_name("factual")
+                .ok_or_else(|| anyhow!("missing default memory lens 'factual'"))?;
+            let lens = get_memory_lens_mut(config, "factual")?;
+            lens.prompt = default.prompt;
+            lens.max_output_tokens = default.max_output_tokens;
+        }
+        OptionalConfigField::MemoryLensTechnicalPrompt
+        | OptionalConfigField::MemoryLensTechnicalMaxOutputTokens => {
+            let default = config::default_memory_lens_by_name("technical")
+                .ok_or_else(|| anyhow!("missing default memory lens 'technical'"))?;
+            let lens = get_memory_lens_mut(config, "technical")?;
+            lens.prompt = default.prompt;
+            lens.max_output_tokens = default.max_output_tokens;
+        }
+        OptionalConfigField::MemoryLensEmotionalPrompt
+        | OptionalConfigField::MemoryLensEmotionalMaxOutputTokens => {
+            let default = config::default_memory_lens_by_name("emotional")
+                .ok_or_else(|| anyhow!("missing default memory lens 'emotional'"))?;
+            let lens = get_memory_lens_mut(config, "emotional")?;
+            lens.prompt = default.prompt;
+            lens.max_output_tokens = default.max_output_tokens;
+        }
         OptionalConfigField::ExecDefaultCwd => config.exec.default_cwd = None,
         OptionalConfigField::ExecSandboxProfile => config.exec.sandbox_profile = None,
     }
@@ -1582,6 +1654,24 @@ fn print_config(config: &Config, show_secrets: bool) {
         "compaction_merge_arity = {}",
         config.llm_compaction_merge_arity
     );
+    println!("memory_lens_count = {}", config.memory_lenses.len());
+    for lens in &config.memory_lenses {
+        println!(
+            "memory_lens.{}.id = \"{:x}\"",
+            lens.name.replace(' ', "-"),
+            lens.id
+        );
+        println!(
+            "memory_lens.{}.max_output_tokens = {}",
+            lens.name.replace(' ', "-"),
+            lens.max_output_tokens
+        );
+        println!(
+            "memory_lens.{}.prompt = \"{}\"",
+            lens.name.replace(' ', "-"),
+            lens.prompt.replace('\"', "\\\"")
+        );
+    }
 
     println!("\n[integrations]");
     match (&config.tavily_api_key, show_secrets) {
@@ -2980,7 +3070,8 @@ fn ingest_exec_context_chunks(
             command.as_str(),
             exec_output,
             reasoning_text.as_deref(),
-        );
+            semantic_compactor,
+        )?;
         let leaf_summary_handle = ws.put(leaf_summary);
         let now = epoch_interval(now_epoch());
         let chunk_id = ufoid();
@@ -3124,7 +3215,8 @@ fn build_prompt_messages_with_compaction(
     )?;
 
     let (mut messages, _used_chars) = build_memory_cover_messages(ws, &index, body_budget_chars)?;
-    if let Some(guard) = memory_loop_guard_message(ws, core_index, results.as_slice(), current_pos)? {
+    if let Some(guard) = memory_loop_guard_message(ws, core_index, results.as_slice(), current_pos)?
+    {
         messages.push(ChatMessage::user(guard));
     }
     Ok((messages, compact_change))
@@ -3382,6 +3474,19 @@ fn memory_command_id(command: &str) -> Option<&str> {
     parts.next()
 }
 
+fn memory_lookup_failed_text(stderr: &str, error: &str) -> bool {
+    let failure_text = if error.is_empty() {
+        stderr.to_string()
+    } else if stderr.is_empty() {
+        error.to_string()
+    } else {
+        format!("{stderr}\n{error}")
+    };
+    failure_text
+        .to_ascii_lowercase()
+        .contains("memory lookup failed")
+}
+
 fn memory_lookup_failed_result(command: &str, result: &ExecResult) -> bool {
     if memory_command_id(command).is_none() {
         return false;
@@ -3389,16 +3494,7 @@ fn memory_lookup_failed_result(command: &str, result: &ExecResult) -> bool {
 
     let stderr = format_output_text(result.stderr_text.clone(), result.stderr.clone());
     let error = result.error.clone().unwrap_or_default();
-    let failure_text = if error.is_empty() {
-        stderr
-    } else if stderr.is_empty() {
-        error
-    } else {
-        format!("{stderr}\n{error}")
-    };
-    failure_text
-        .to_ascii_lowercase()
-        .contains("memory lookup failed")
+    memory_lookup_failed_text(stderr.as_str(), error.as_str())
 }
 
 fn memory_loop_guard_message(
@@ -4388,9 +4484,12 @@ struct SemanticCompactor {
     model: String,
     chars_per_token: u64,
     system_prompt: String,
+    memory_lenses: Vec<MemoryLensConfig>,
 }
 
 const DEFAULT_COMPACTION_PROMPT: &str = "You are a context compaction module.\n\nGiven one or more prior memory chunks from a terminal-based agent, write a concise merged summary that preserves:\n- key actions taken\n- important results/outputs\n- errors and their causes\n- paths/ids that matter for follow-up\n\nOutput plain text only (no markdown), no code fences, no tool calls.\n";
+const FAILED_EXEC_MEMORY_INPUT_LABELS: &str =
+    "TURN_ID, COMMAND, REASONING, STDOUT, STDERR, ERROR, EXIT_CODE";
 
 impl SemanticCompactor {
     fn new(config: &Config) -> Result<Self> {
@@ -4430,6 +4529,7 @@ impl SemanticCompactor {
                 .llm_compaction_prompt
                 .clone()
                 .unwrap_or_else(|| DEFAULT_COMPACTION_PROMPT.to_string()),
+            memory_lenses: config.memory_lenses.clone(),
         })
     }
 
@@ -4483,6 +4583,72 @@ impl SemanticCompactor {
         }
 
         Err(last_err.unwrap_or_else(|| anyhow!("semantic compaction failed without error detail")))
+    }
+
+    fn summarize_failed_exec(
+        &self,
+        turn_id: Id,
+        command: &str,
+        reasoning_text: Option<&str>,
+        stdout: &str,
+        stderr: &str,
+        error: &str,
+        exit_code: Option<u64>,
+    ) -> Result<String> {
+        let exit = exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let reasoning = reasoning_text.unwrap_or("");
+        let user = format!(
+            "Input fields: {FAILED_EXEC_MEMORY_INPUT_LABELS}\n\nTURN_ID:\n{turn_id:x}\n\nCOMMAND:\n{command}\n\nREASONING:\n{reasoning}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}\n\nERROR:\n{error}\n\nEXIT_CODE:\n{exit}\n"
+        );
+        if self.memory_lenses.is_empty() {
+            return Err(anyhow!("no configured memory lenses"));
+        }
+        let mut sections = Vec::new();
+        for lens in &self.memory_lenses {
+            let payload = serde_json::json!({
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": lens.prompt.as_str()},
+                    {"role": "user", "content": user},
+                ],
+                "stream": false,
+                "temperature": 0,
+                "max_tokens": lens.max_output_tokens,
+            });
+
+            let mut last_err = None;
+            let mut lens_output: Option<String> = None;
+            for attempt in 1..=3usize {
+                match self.send_once(&payload) {
+                    Ok(text) => {
+                        let text = text.trim().to_string();
+                        if !text.is_empty() {
+                            lens_output = Some(text);
+                        }
+                        break;
+                    }
+                    Err(err) => last_err = Some(err),
+                }
+                if attempt < 3 {
+                    let backoff = 250_u64.saturating_mul(1_u64 << (attempt - 1));
+                    sleep(Duration::from_millis(backoff));
+                }
+            }
+            if let Some(text) = lens_output {
+                sections.push(format!("lens: {}\n{text}", lens.name));
+            } else if let Some(err) = last_err {
+                return Err(anyhow!("memory lens '{}' failed: {err:#}", lens.name));
+            }
+        }
+
+        if sections.is_empty() {
+            return Err(anyhow!(
+                "all memory lenses returned empty output for failed exec turn {turn_id:x}"
+            ));
+        }
+        Ok(sections.join("\n\n"))
     }
 
     fn send_once(&self, payload: &serde_json::Value) -> Result<String> {
@@ -4598,28 +4764,54 @@ fn format_exec_output(
     command: &str,
     result: ExecResult,
     reasoning_text: Option<&str>,
-) -> String {
+    semantic_compactor: &SemanticCompactor,
+) -> Result<String> {
+    let ExecResult {
+        stdout_text,
+        stderr_text,
+        stdout,
+        stderr,
+        exit_code,
+        error,
+    } = result;
+    let stdout = format_output_text(stdout_text, stdout);
+    let stderr = format_output_text(stderr_text, stderr);
+    let error = error.unwrap_or_default();
+    let exit_code_value = exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    if exit_code.is_some_and(|code| code != 0) || !error.trim().is_empty() {
+        let summary = semantic_compactor.summarize_failed_exec(
+            turn_id,
+            command,
+            reasoning_text,
+            stdout.as_str(),
+            stderr.as_str(),
+            error.as_str(),
+            exit_code,
+        )?;
+        let mut text = String::new();
+        append_section(&mut text, "turn_id", format!("{turn_id:x}").as_str());
+        append_section(&mut text, "event", "failed_exec");
+        append_section(&mut text, "memory", summary.as_str());
+        text.push_str(&format!("exit_code: {exit_code_value}\n"));
+        return Ok(text);
+    }
+
     let mut text = String::new();
     append_section(&mut text, "turn_id", format!("{turn_id:x}").as_str());
-    append_section(&mut text, "command", command);
     if let Some(reasoning_text) = reasoning_text {
         append_section(&mut text, "reasoning", reasoning_text);
     }
-    let stdout = format_output_text(result.stdout_text, result.stdout);
+    append_section(&mut text, "command", command);
     append_section(&mut text, "stdout", stdout.as_str());
-    let stderr = format_output_text(result.stderr_text, result.stderr);
     append_section(&mut text, "stderr", stderr.as_str());
 
-    if let Some(error) = result.error {
+    if !error.is_empty() {
         append_section(&mut text, "error", error.as_str());
     }
-
-    let exit_code = result
-        .exit_code
-        .map(|code| code.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    text.push_str(&format!("exit_code: {exit_code}\n"));
-    text
+    text.push_str(&format!("exit_code: {exit_code_value}\n"));
+    Ok(text)
 }
 
 fn append_section(text: &mut String, label: &str, body: &str) {
