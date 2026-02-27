@@ -117,6 +117,14 @@ Prompts can also be loaded from files:
 cargo run --manifest-path playground/Cargo.toml -- --pile /path/to/pile/self.pile config set system-prompt @./system_prompt.txt
 ```
 
+Prompt files in `playground/prompts/*.md` are generated from templates in
+`playground/prompts/templates/*.tmpl.md`. Re-render after editing templates or shared fragments:
+
+```bash
+python3 playground/scripts/render_prompts.py
+python3 playground/scripts/render_prompts.py --check
+```
+
 You can pin branch ids in config (recommended) so faculties resolve stable branch identities:
 
 ```bash
