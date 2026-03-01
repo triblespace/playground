@@ -369,8 +369,8 @@ struct TurnMemoryRow {
     command: String,
     requested_at: Option<i128>,
     thought_id: Option<Id>,
-    prompt_messages: Vec<ChatMessage>,
-    prompt_error: Option<String>,
+    context_messages: Vec<ChatMessage>,
+    context_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -925,7 +925,7 @@ _Live view of the agent pile, exec queue, and message activity._"
     nb.view(move |ui| {
         let mut state = dashboard.read_mut(ui);
         with_padding(ui, padding, |ui| {
-            ui.heading("Turn memory view");
+            ui.heading("Turn context view");
             let snapshot = {
                 let Some(snapshot) = snapshot_or_message(ui, &state.snapshot) else {
                     return;
@@ -2301,41 +2301,41 @@ fn collect_turn_memory_rows(
         thought_by_request.insert(request_id, thought_id);
     }
 
-    let mut prompt_by_thought: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
-    for (thought_id, prompt_handle) in find!(
-        (thought_id: Id, prompt_handle: Value<Handle<Blake3, LongString>>),
+    let mut context_by_thought: HashMap<Id, Value<Handle<Blake3, LongString>>> = HashMap::new();
+    for (thought_id, context_handle) in find!(
+        (thought_id: Id, context_handle: Value<Handle<Blake3, LongString>>),
         pattern!(data, [{
             ?thought_id @
             playground_cog::kind: playground_cog::kind_thought,
-            playground_cog::prompt: ?prompt_handle,
+            playground_cog::context: ?context_handle,
         }])
     ) {
-        prompt_by_thought.insert(thought_id, prompt_handle);
+        context_by_thought.insert(thought_id, context_handle);
     }
 
     let mut rows = Vec::new();
     for exec in exec_rows.iter().take(TURN_MEMORY_MAX_ROWS) {
         let thought_id = thought_by_request.get(&exec.request_id).copied();
-        let mut prompt_messages = Vec::new();
-        let mut prompt_error = None;
+        let mut context_messages = Vec::new();
+        let mut context_error = None;
         if let Some(thought_id) = thought_id {
-            if let Some(prompt_handle) = prompt_by_thought.get(&thought_id).copied() {
-                match load_text(ws, prompt_handle) {
-                    Some(prompt_json) => match serde_json::from_str::<Vec<ChatMessage>>(&prompt_json) {
-                        Ok(messages) => prompt_messages = messages,
+            if let Some(context_handle) = context_by_thought.get(&thought_id).copied() {
+                match load_text(ws, context_handle) {
+                    Some(context_json) => match serde_json::from_str::<Vec<ChatMessage>>(&context_json) {
+                        Ok(messages) => context_messages = messages,
                         Err(err) => {
-                            prompt_error = Some(format!("prompt parse error: {err}"));
+                            context_error = Some(format!("context parse error: {err}"));
                         }
                     },
                     None => {
-                        prompt_error = Some("prompt blob missing".to_string());
+                        context_error = Some("context blob missing".to_string());
                     }
                 }
             } else {
-                prompt_error = Some("thought has no prompt handle".to_string());
+                context_error = Some("thought has no context handle".to_string());
             }
         } else {
-            prompt_error = Some("request has no thought link".to_string());
+            context_error = Some("request has no thought link".to_string());
         }
 
         rows.push(TurnMemoryRow {
@@ -2343,8 +2343,8 @@ fn collect_turn_memory_rows(
             command: exec.command.clone(),
             requested_at: exec.requested_at,
             thought_id,
-            prompt_messages,
-            prompt_error,
+            context_messages,
+            context_error,
         });
     }
     rows
@@ -5088,7 +5088,7 @@ fn render_turn_memory_view(
     }
 
     ui.horizontal_wrapped(|ui| {
-        ui.small(format!("Showing {} recent turn prompts.", rows.len()));
+        ui.small(format!("Showing {} recent turn contexts.", rows.len()));
         egui::ComboBox::from_id_salt("turn_memory_request_picker")
             .selected_text(
                 state
@@ -5117,7 +5117,7 @@ fn render_turn_memory_view(
         return;
     };
     let Some(row) = rows.iter().find(|row| row.request_id == selected_request) else {
-        ui.small("Selected turn prompt no longer available.");
+        ui.small("Selected turn context no longer available.");
         return;
     };
 
@@ -5127,13 +5127,13 @@ fn render_turn_memory_view(
         row.thought_id
             .map(id_prefix)
             .unwrap_or_else(|| "-".to_string()),
-        row.prompt_messages.len()
+        row.context_messages.len()
     ));
-    if let Some(err) = row.prompt_error.as_deref() {
+    if let Some(err) = row.context_error.as_deref() {
         ui.colored_label(egui::Color32::LIGHT_RED, err);
     }
-    if row.prompt_messages.is_empty() {
-        ui.small("No prompt messages captured for this turn.");
+    if row.context_messages.is_empty() {
+        ui.small("No context messages captured for this turn.");
         return;
     }
 
@@ -5143,7 +5143,7 @@ fn render_turn_memory_view(
         .min_scrolled_height(TURN_MEMORY_HEIGHT)
         .max_height(TURN_MEMORY_HEIGHT)
         .show(ui, |ui| {
-            for (idx, message) in row.prompt_messages.iter().enumerate() {
+            for (idx, message) in row.context_messages.iter().enumerate() {
                 let (label, fill) = turn_memory_role_style(message.role);
                 let chars = message.content.chars().count();
                 ui.horizontal_wrapped(|ui| {

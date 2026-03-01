@@ -1701,7 +1701,7 @@ struct CoreLlmRequest {
 struct CoreThought {
     id: Id,
     created_at: Option<Value<NsTAIInterval>>,
-    prompt: Option<Value<Handle<Blake3, LongString>>>,
+    context: Option<Value<Handle<Blake3, LongString>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1881,13 +1881,13 @@ fn create_thought_and_request(
             TribleSet::new(),
         )
     };
-    let prompt_handle = ws.put(prompt);
+    let context_handle = ws.put(prompt);
     let thought_id = ufoid();
     let mut change = TribleSet::new();
     change += compact_change;
     change += entity! { &thought_id @
         playground_cog::kind: playground_cog::kind_thought,
-        playground_cog::prompt: prompt_handle,
+        playground_cog::context: context_handle,
         playground_cog::created_at: now,
     };
     if let Some(exec_result_id) = about_exec_result {
@@ -1898,7 +1898,7 @@ fn create_thought_and_request(
     change += entity! { &request_id @
         llm_chat::kind: llm_chat::kind_request,
         llm_chat::about_thought: *thought_id,
-        llm_chat::prompt: prompt_handle,
+        llm_chat::context: context_handle,
         llm_chat::requested_at: now,
         llm_chat::model: config.llm.model.as_str(),
     };
@@ -1932,8 +1932,8 @@ fn create_request_for_thought_from_index(
         return Ok(request_id);
     }
 
-    let Some(prompt_handle) = core_index.thought_prompt_handle(thought_id) else {
-        return Err(anyhow!("thought {thought_id:x} missing prompt"));
+    let Some(context_handle) = core_index.thought_context_handle(thought_id) else {
+        return Err(anyhow!("thought {thought_id:x} missing context"));
     };
 
     let now = epoch_interval(now_epoch());
@@ -1942,7 +1942,7 @@ fn create_request_for_thought_from_index(
     change += entity! { &request_id @
         llm_chat::kind: llm_chat::kind_request,
         llm_chat::about_thought: thought_id,
-        llm_chat::prompt: prompt_handle,
+        llm_chat::context: context_handle,
         llm_chat::requested_at: now,
         llm_chat::model: config.llm.model.as_str(),
     };
@@ -2086,7 +2086,7 @@ impl CoreIndex {
             self.thoughts.entry(thought_id).or_insert(CoreThought {
                 id: thought_id,
                 created_at: None,
-                prompt: None,
+                context: None,
             });
         }
 
@@ -2119,14 +2119,14 @@ impl CoreIndex {
             }
         }
 
-        for (thought_id, prompt) in find!(
-            (thought_id: Id, prompt: Value<Handle<Blake3, LongString>>),
+        for (thought_id, context) in find!(
+            (thought_id: Id, context: Value<Handle<Blake3, LongString>>),
             pattern_changes!(updated, delta, [{
-                ?thought_id @ playground_cog::prompt: ?prompt
+                ?thought_id @ playground_cog::context: ?context
             }])
         ) {
             if let Some(entry) = self.thoughts.get_mut(&thought_id) {
-                entry.prompt = Some(prompt);
+                entry.context = Some(context);
             }
         }
 
@@ -2530,10 +2530,10 @@ impl CoreIndex {
         self.thought_for_exec_result.get(&exec_result_id).copied()
     }
 
-    fn thought_prompt_handle(&self, thought_id: Id) -> Option<Value<Handle<Blake3, LongString>>> {
+    fn thought_context_handle(&self, thought_id: Id) -> Option<Value<Handle<Blake3, LongString>>> {
         self.thoughts
             .get(&thought_id)
-            .and_then(|thought| thought.prompt)
+            .and_then(|thought| thought.context)
     }
 
     fn latest_llm_result(&self, request_id: Id) -> Option<LlmResultInfo> {

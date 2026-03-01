@@ -14,7 +14,7 @@ pub mod llm_chat {
         "5A14A02113CE43A59881D0717726F465" as pub about_request: GenId;
         "DA8E31E47919337B3E00724EBE32D14E" as pub about_thought: GenId;
         "C1FFE9D4FEC549C09C96639665561DFE" as pub model: ShortString;
-        "B6BF5BEE9961D6C0F4F825088DD2C3F2" as pub prompt: Handle<Blake3, LongString>;
+        "B6BF5BEE9961D6C0F4F825088DD2C3F2" as pub context: Handle<Blake3, LongString>;
         "0DA5DD275AA34F86B0297CC35F1B7395" as pub requested_at: NsTAIInterval;
         "430B9CD43A3BC414E730B29BCFD6349B" as pub request_raw: Handle<Blake3, LongString>;
         "4FC561A8EC8E9D750445AE8A0BE5E094" as pub worker: GenId;
@@ -146,7 +146,7 @@ where
     metadata += describe_attribute(blobs, &llm_chat::about_request)?;
     metadata += describe_attribute(blobs, &llm_chat::about_thought)?;
     metadata += describe_attribute(blobs, &llm_chat::model)?;
-    metadata += describe_attribute(blobs, &llm_chat::prompt)?;
+    metadata += describe_attribute(blobs, &llm_chat::context)?;
     metadata += describe_attribute(blobs, &llm_chat::requested_at)?;
     metadata += describe_attribute(blobs, &llm_chat::request_raw)?;
     metadata += describe_attribute(blobs, &llm_chat::worker)?;

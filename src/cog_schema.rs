@@ -9,7 +9,7 @@ pub mod playground_cog {
 
     attributes! {
         "07F063ECF1DC9FB3C1984BDB10B98BFA" as pub kind: GenId;
-        "FA6090FB00EEE2F5EF1E51F1F68EA5B8" as pub prompt: Handle<Blake3, LongString>;
+        "FA6090FB00EEE2F5EF1E51F1F68EA5B8" as pub context: Handle<Blake3, LongString>;
         "99F834C6A6A050DECBE42D639288B559" as pub created_at: NsTAIInterval;
         "D986EF113EFA588E6247420A06DA87BA" as pub about_exec_result: GenId;
         "CC8828B7462BFDA45A296C0A12C6333C" as pub moment_boundary_turn_id: GenId;
@@ -118,7 +118,7 @@ where
     metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
 
     metadata += describe_attribute(blobs, &playground_cog::kind)?;
-    metadata += describe_attribute(blobs, &playground_cog::prompt)?;
+    metadata += describe_attribute(blobs, &playground_cog::context)?;
     metadata += describe_attribute(blobs, &playground_cog::created_at)?;
     metadata += describe_attribute(blobs, &playground_cog::about_exec_result)?;
     metadata += describe_attribute(blobs, &playground_cog::moment_boundary_turn_id)?;

@@ -31,7 +31,7 @@ use crate::time_util::{epoch_interval, interval_key, now_epoch};
 #[derive(Debug, Clone)]
 struct LlmRequest {
     id: Id,
-    prompt: Value<Handle<Blake3, LongString>>,
+    context: Value<Handle<Blake3, LongString>>,
     model: Option<Value<ShortString>>,
     requested_at: Option<Value<NsTAIInterval>>,
 }
@@ -244,19 +244,19 @@ pub(crate) fn run_llm_loop(
                 break;
             }
 
-            let prompt = load_text(&mut ws, request.prompt).context("load prompt")?;
+            let context_text = load_text(&mut ws, request.context).context("load context")?;
             let model = request
                 .model
                 .map(|value| String::from_value(&value))
                 .unwrap_or_else(|| config.llm.model.clone());
 
             let attempt: u64 = 1;
-            let messages: Vec<ChatMessage> = match serde_json::from_str(prompt.as_str()) {
+            let messages: Vec<ChatMessage> = match serde_json::from_str(context_text.as_str()) {
                 Ok(messages) => messages,
                 Err(err) => {
                     let finished_at = epoch_interval(now_epoch());
                     let result_id = ufoid();
-                    let handle = ws.put(format!("parse chat prompt: {err}"));
+                    let handle = ws.put(format!("parse chat context: {err}"));
                     let mut change = TribleSet::new();
                     change += entity! { &result_id @
                         llm_chat::kind: llm_chat::kind_result,
@@ -265,8 +265,8 @@ pub(crate) fn run_llm_loop(
                         llm_chat::attempt: attempt,
                         llm_chat::error: handle,
                     };
-                    ws.commit(change, None, Some("llm_chat result (prompt parse error)"));
-                    push_workspace(&mut repo, &mut ws).context("push prompt parse error")?;
+                    ws.commit(change, None, Some("llm_chat result (context parse error)"));
+                    push_workspace(&mut repo, &mut ws).context("push context parse error")?;
                     sleep(Duration::from_millis(poll_ms));
                     continue;
                 }
@@ -401,19 +401,19 @@ impl LlmRequestIndex {
             return;
         }
 
-        for (request_id, prompt) in find!(
-            (request_id: Id, prompt: Value<Handle<Blake3, LongString>>),
+        for (request_id, context) in find!(
+            (request_id: Id, context: Value<Handle<Blake3, LongString>>),
             pattern_changes!(updated, delta, [{
                 ?request_id @
                 llm_chat::kind: llm_chat::kind_request,
-                llm_chat::prompt: ?prompt,
+                llm_chat::context: ?context,
             }])
         ) {
             self.requests.insert(
                 request_id,
                 LlmRequest {
                     id: request_id,
-                    prompt,
+                    context,
                     model: None,
                     requested_at: None,
                 },
