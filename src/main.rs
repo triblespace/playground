@@ -49,6 +49,20 @@ use repo_util::{
 use schema::{llm_chat, playground_cog, playground_context, playground_exec};
 use time_util::{epoch_interval, interval_key, now_epoch};
 
+mod reason_events {
+    use triblespace::prelude::attributes;
+    use triblespace::prelude::blobschemas;
+    use triblespace::prelude::valueschemas;
+
+    attributes! {
+        "B10329D5D1087D15A3DAFF7A7CC50696" as text: valueschemas::Handle<valueschemas::Blake3, blobschemas::LongString>;
+        "FBA9BC32A457C7BFFDB7E0181D3E82A4" as created_at: valueschemas::NsTAIInterval;
+        "E6B1C728F1AE9F46CAB4DBB60D1A9528" as about_turn: valueschemas::GenId;
+        "721DED6DA776F2CF4FB91C54D9F82358" as worker: valueschemas::GenId;
+        "514F4FE9F560FB155450462C8CF50749" as command_text: valueschemas::Handle<valueschemas::Blake3, blobschemas::LongString>;
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum CommandMode {
     #[command(about = "Run core + LLM and start the exec worker in a Lima VM")]
@@ -1707,12 +1721,23 @@ struct CoreCommandRequest {
 
 #[derive(Debug, Clone)]
 struct LlmResultEntry {
+    id: Id,
     about_request: Option<Id>,
     finished_at: Option<Value<NsTAIInterval>>,
     attempt: Option<Value<U256BE>>,
     output_text: Option<Value<Handle<Blake3, LongString>>>,
     reasoning_text: Option<Value<Handle<Blake3, LongString>>>,
     error: Option<Value<Handle<Blake3, LongString>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CoreReasonEvent {
+    id: Id,
+    about_turn: Option<Id>,
+    created_at: Option<Value<NsTAIInterval>>,
+    text: Option<Value<Handle<Blake3, LongString>>>,
+    command_text: Option<Value<Handle<Blake3, LongString>>>,
+    worker: Option<Id>,
 }
 
 #[derive(Default)]
@@ -1730,6 +1755,8 @@ struct CoreIndex {
     command_done_requests: HashSet<Id>,
     command_results: HashMap<Id, CommandResultInfo>,
     used_exec_results: HashSet<Id>,
+    reason_events: HashMap<Id, CoreReasonEvent>,
+    reason_event_ids_by_turn: HashMap<Id, HashSet<Id>>,
 }
 
 fn ensure_llm_request(
@@ -1931,6 +1958,7 @@ struct LlmResult {
 
 #[derive(Debug, Clone)]
 struct LlmResultInfo {
+    id: Id,
     output_text: Option<Value<Handle<Blake3, LongString>>>,
     reasoning_text: Option<Value<Handle<Blake3, LongString>>>,
     error: Option<Value<Handle<Blake3, LongString>>>,
@@ -2134,6 +2162,7 @@ impl CoreIndex {
         ) {
             self.llm_done_requests.insert(about_request);
             let entry = self.llm_results.entry(result_id).or_insert(LlmResultEntry {
+                id: result_id,
                 about_request: None,
                 finished_at: None,
                 attempt: None,
@@ -2362,6 +2391,105 @@ impl CoreIndex {
                 entry.error = Some(error);
             }
         }
+
+        for (reason_id, text) in find!(
+            (reason_id: Id, text: Value<Handle<Blake3, LongString>>),
+            pattern_changes!(updated, delta, [{
+                ?reason_id @ reason_events::text: ?text
+            }])
+        ) {
+            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
+                id: reason_id,
+                about_turn: None,
+                created_at: None,
+                text: None,
+                command_text: None,
+                worker: None,
+            });
+            entry.text = Some(text);
+        }
+
+        for (reason_id, created_at) in find!(
+            (reason_id: Id, created_at: Value<NsTAIInterval>),
+            pattern_changes!(updated, delta, [{
+                ?reason_id @ reason_events::created_at: ?created_at
+            }])
+        ) {
+            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
+                id: reason_id,
+                about_turn: None,
+                created_at: None,
+                text: None,
+                command_text: None,
+                worker: None,
+            });
+            entry.created_at = Some(created_at);
+        }
+
+        for (reason_id, turn_id) in find!(
+            (reason_id: Id, turn_id: Id),
+            pattern_changes!(updated, delta, [{
+                ?reason_id @ reason_events::about_turn: ?turn_id
+            }])
+        ) {
+            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
+                id: reason_id,
+                about_turn: None,
+                created_at: None,
+                text: None,
+                command_text: None,
+                worker: None,
+            });
+            if let Some(previous_turn) = entry.about_turn {
+                if previous_turn != turn_id {
+                    if let Some(ids) = self.reason_event_ids_by_turn.get_mut(&previous_turn) {
+                        ids.remove(&reason_id);
+                        if ids.is_empty() {
+                            self.reason_event_ids_by_turn.remove(&previous_turn);
+                        }
+                    }
+                }
+            }
+            entry.about_turn = Some(turn_id);
+            self.reason_event_ids_by_turn
+                .entry(turn_id)
+                .or_default()
+                .insert(reason_id);
+        }
+
+        for (reason_id, command_text) in find!(
+            (reason_id: Id, command_text: Value<Handle<Blake3, LongString>>),
+            pattern_changes!(updated, delta, [{
+                ?reason_id @ reason_events::command_text: ?command_text
+            }])
+        ) {
+            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
+                id: reason_id,
+                about_turn: None,
+                created_at: None,
+                text: None,
+                command_text: None,
+                worker: None,
+            });
+            entry.command_text = Some(command_text);
+        }
+
+        for (reason_id, worker_id) in find!(
+            (reason_id: Id, worker_id: Id),
+            pattern_changes!(updated, delta, [{
+                ?reason_id @ reason_events::worker: ?worker_id
+            }])
+        ) {
+            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
+                id: reason_id,
+                about_turn: None,
+                created_at: None,
+                text: None,
+                command_text: None,
+                worker: None,
+            });
+            entry.worker = Some(worker_id);
+        }
     }
 
     fn latest_pending_llm_request(&self) -> Option<LlmRequestInfo> {
@@ -2414,10 +2542,23 @@ impl CoreIndex {
             .filter(|result| result.about_request == Some(request_id))
             .max_by_key(|result| llm_result_rank(result.attempt, result.finished_at))
             .map(|result| LlmResultInfo {
+                id: result.id,
                 output_text: result.output_text,
                 reasoning_text: result.reasoning_text,
                 error: result.error,
             })
+    }
+
+    fn reason_events_for_turn(&self, turn_id: Id) -> Vec<CoreReasonEvent> {
+        let Some(ids) = self.reason_event_ids_by_turn.get(&turn_id) else {
+            return Vec::new();
+        };
+        let mut events: Vec<CoreReasonEvent> = ids
+            .iter()
+            .filter_map(|id| self.reason_events.get(id).cloned())
+            .collect();
+        events.sort_by_key(|event| (event.created_at.map(interval_key).unwrap_or(i128::MIN), event.id));
+        events
     }
 
     fn has_pending_command_request(&self) -> bool {
@@ -3049,14 +3190,13 @@ fn ingest_exec_context_chunks(
         let finished_at = result
             .finished_at
             .context("command result missing finished_at")?;
-        let command = load_command_for_result(ws, core_index, result)?;
-        let reasoning_text = load_reasoning_for_exec_result(ws, core_index, result)?;
+        let turn_projection = load_exec_turn_projection(ws, core_index, result)?;
         let exec_output = load_exec_result(ws, result.clone())?;
         let leaf_outputs = format_exec_outputs_by_lens(
             result.id,
-            command.as_str(),
+            turn_projection.command.as_str(),
             exec_output,
-            reasoning_text.as_deref(),
+            turn_projection.reason_events.as_slice(),
             semantic_compactor,
         )?;
         let leaf_output_by_lens: HashMap<Id, String> = leaf_outputs.into_iter().collect();
@@ -3593,7 +3733,7 @@ fn load_reasoning_for_exec_result(
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     exec_result: &CommandResultInfo,
-) -> Result<Option<String>> {
+) -> Result<Option<(Id, String)>> {
     let Some(thought_id) = core_index.thought_for_command_request(exec_result.about_request) else {
         return Ok(None);
     };
@@ -3610,7 +3750,7 @@ fn load_reasoning_for_exec_result(
     if reasoning_text.trim().is_empty() {
         return Ok(None);
     }
-    Ok(Some(reasoning_text))
+    Ok(Some((llm_result.id, reasoning_text)))
 }
 
 fn archive_projection_attr_ids() -> [Id; 12] {
@@ -4541,9 +4681,6 @@ struct SemanticCompactor {
     memory_lenses: Vec<MemoryLensConfig>,
 }
 
-const FAILED_EXEC_MEMORY_INPUT_LABELS: &str =
-    "TURN_ID, COMMAND, REASONING, STDOUT, STDERR, ERROR, EXIT_CODE";
-
 impl SemanticCompactor {
     fn new(config: &Config) -> Result<Self> {
         let client = Client::builder()
@@ -4628,64 +4765,6 @@ impl SemanticCompactor {
         }
 
         Err(last_err.unwrap_or_else(|| anyhow!("semantic compaction failed without error detail")))
-    }
-
-    fn summarize_failed_exec_by_lens(
-        &self,
-        turn_id: Id,
-        command: &str,
-        reasoning_text: Option<&str>,
-        stdout: &str,
-        stderr: &str,
-        error: &str,
-        exit_code: Option<u64>,
-    ) -> Result<HashMap<Id, String>> {
-        let exit = exit_code
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "none".to_string());
-        let reasoning = reasoning_text.unwrap_or("");
-        let user = format!(
-            "Input fields: {FAILED_EXEC_MEMORY_INPUT_LABELS}\n\nTURN_ID:\n{turn_id:x}\n\nCOMMAND:\n{command}\n\nREASONING:\n{reasoning}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}\n\nERROR:\n{error}\n\nEXIT_CODE:\n{exit}\n"
-        );
-        if self.memory_lenses.is_empty() {
-            return Err(anyhow!("no configured memory lenses"));
-        }
-        let mut by_lens = HashMap::new();
-        for lens in &self.memory_lenses {
-            let payload =
-                self.build_payload(lens.prompt.as_str(), user.as_str(), lens.max_output_tokens);
-
-            let mut last_err = None;
-            let mut lens_output: Option<String> = None;
-            for attempt in 1..=3usize {
-                match self.send_once(&payload) {
-                    Ok(text) => {
-                        let text = text.trim().to_string();
-                        if !text.is_empty() {
-                            lens_output = Some(text);
-                        }
-                        break;
-                    }
-                    Err(err) => last_err = Some(err),
-                }
-                if attempt < 3 {
-                    let backoff = 250_u64.saturating_mul(1_u64 << (attempt - 1));
-                    sleep(Duration::from_millis(backoff));
-                }
-            }
-            if let Some(text) = lens_output {
-                by_lens.insert(lens.id, text);
-            } else if let Some(err) = last_err {
-                return Err(anyhow!("memory lens '{}' failed: {err:#}", lens.name));
-            }
-        }
-
-        if by_lens.is_empty() {
-            return Err(anyhow!(
-                "all memory lenses returned empty output for failed exec turn {turn_id:x}"
-            ));
-        }
-        Ok(by_lens)
     }
 
     fn send_once(&self, payload: &serde_json::Value) -> Result<String> {
@@ -4776,6 +4855,26 @@ fn extract_output_text(json: &serde_json::Value) -> String {
     String::new()
 }
 
+#[derive(Debug, Clone)]
+struct ReasonProjectionEvent {
+    id: Id,
+    text: String,
+    command_text: Option<String>,
+    source: ReasonProjectionSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReasonProjectionSource {
+    Logged,
+    Llm,
+}
+
+#[derive(Debug, Clone)]
+struct ExecTurnProjection {
+    command: String,
+    reason_events: Vec<ReasonProjectionEvent>,
+}
+
 fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Result<ExecResult> {
     let stdout_text = result
         .stdout_text
@@ -4809,11 +4908,98 @@ fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Resu
     })
 }
 
+fn load_exec_turn_projection(
+    ws: &mut Workspace<Pile>,
+    core_index: &CoreIndex,
+    exec_result: &CommandResultInfo,
+) -> Result<ExecTurnProjection> {
+    let mut reason_events = Vec::new();
+    for event in core_index.reason_events_for_turn(exec_result.about_request) {
+        let text = event
+            .text
+            .map(|handle| load_text(ws, handle))
+            .transpose()
+            .context("load reason event text")?
+            .unwrap_or_default();
+        let command_text = event
+            .command_text
+            .map(|handle| load_text(ws, handle))
+            .transpose()
+            .context("load reason event command text")?;
+        reason_events.push(ReasonProjectionEvent {
+            id: event.id,
+            text,
+            command_text,
+            source: ReasonProjectionSource::Logged,
+        });
+    }
+
+    if let Some((result_id, reasoning_text)) =
+        load_reasoning_for_exec_result(ws, core_index, exec_result)?
+    {
+        reason_events.push(ReasonProjectionEvent {
+            id: result_id,
+            text: reasoning_text,
+            command_text: None,
+            source: ReasonProjectionSource::Llm,
+        });
+    }
+
+    let command = if let Some(command) = command_override_from_reason_events(reason_events.as_slice()) {
+        command
+    } else {
+        load_command_for_result(ws, core_index, exec_result)
+            .context("load command for exec turn projection")?
+    };
+    Ok(ExecTurnProjection {
+        command,
+        reason_events,
+    })
+}
+
+fn command_override_from_reason_events(reason_events: &[ReasonProjectionEvent]) -> Option<String> {
+    reason_events
+        .iter()
+        .rev()
+        .find_map(|event| event.command_text.as_ref())
+        .map(|command| command.clone())
+}
+
+fn should_project_reason_event(event: &ReasonProjectionEvent) -> bool {
+    let reason_text = event.text.trim();
+    if reason_text.is_empty() {
+        return false;
+    }
+    if let Some(command_text) = event.command_text.as_deref() {
+        if reason_text == command_text.trim() {
+            return false;
+        }
+    }
+    true
+}
+
+fn synthetic_reason_command(reason_text: &str) -> String {
+    let compact = reason_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let escaped = compact
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+    format!("reason \"{escaped}\"")
+}
+
+fn synthetic_reason_output(event: &ReasonProjectionEvent) -> String {
+    let source = match event.source {
+        ReasonProjectionSource::Logged => "logged",
+        ReasonProjectionSource::Llm => "llm",
+    };
+    format!("reason_id: {:x}\nsource: {source}", event.id)
+}
+
 fn format_exec_outputs_by_lens(
     turn_id: Id,
     command: &str,
     result: ExecResult,
-    reasoning_text: Option<&str>,
+    reason_events: &[ReasonProjectionEvent],
     semantic_compactor: &SemanticCompactor,
 ) -> Result<Vec<(Id, String)>> {
     let ExecResult {
@@ -4830,43 +5016,26 @@ fn format_exec_outputs_by_lens(
     let exit_code_value = exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "none".to_string());
-    if exit_code.is_some_and(|code| code != 0) || !error.trim().is_empty() {
-        let summaries = semantic_compactor.summarize_failed_exec_by_lens(
-            turn_id,
-            command,
-            reasoning_text,
-            stdout.as_str(),
-            stderr.as_str(),
-            error.as_str(),
-            exit_code,
-        )?;
-        let mut outputs = Vec::new();
-        for lens in semantic_compactor.lenses() {
-            let Some(summary) = summaries.get(&lens.id) else {
-                continue;
-            };
-            let mut text = String::new();
-            append_section(&mut text, "turn_id", format!("{turn_id:x}").as_str());
-            append_section(&mut text, "event", "failed_exec");
-            append_section(&mut text, "memory", summary.as_str());
-            text.push_str(&format!("exit_code: {exit_code_value}\n"));
-            outputs.push((lens.id, text));
-        }
-        return Ok(outputs);
-    }
+    let status = if exit_code.is_some_and(|code| code != 0) || !error.trim().is_empty() {
+        "error"
+    } else {
+        "ok"
+    };
 
     let mut text = String::new();
     append_section(&mut text, "turn_id", format!("{turn_id:x}").as_str());
-    if let Some(reasoning_text) = reasoning_text {
-        append_section(&mut text, "reasoning", reasoning_text);
+    for event in reason_events {
+        if !should_project_reason_event(event) {
+            continue;
+        }
+        append_section(&mut text, "assistant", synthetic_reason_command(event.text.as_str()).as_str());
+        append_section(&mut text, "user", synthetic_reason_output(event).as_str());
     }
     append_section(&mut text, "command", command);
     append_section(&mut text, "stdout", stdout.as_str());
     append_section(&mut text, "stderr", stderr.as_str());
-
-    if !error.is_empty() {
-        append_section(&mut text, "error", error.as_str());
-    }
+    append_section(&mut text, "error", error.as_str());
+    append_section(&mut text, "status", status);
     text.push_str(&format!("exit_code: {exit_code_value}\n"));
     Ok(semantic_compactor
         .lenses()
