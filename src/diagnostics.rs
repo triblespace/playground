@@ -537,24 +537,24 @@ struct AgentConfigRow {
     author: Option<String>,
     author_role: Option<String>,
     poll_ms: Option<u64>,
-    llm_profile_id: Option<Id>,
-    llm_profile_name: Option<String>,
-    llm_model: Option<String>,
-    llm_base_url: Option<String>,
-    llm_reasoning_effort: Option<String>,
-    llm_reasoning_summary: Option<String>,
-    llm_stream: Option<bool>,
-    llm_context_window_tokens: Option<u64>,
-    llm_max_output_tokens: Option<u64>,
-    llm_prompt_safety_margin_tokens: Option<u64>,
-    llm_prompt_chars_per_token: Option<u64>,
-    llm_api_key: Option<String>,
-    llm_compaction_profile_id: Option<Id>,
-    llm_compaction_profile_name: Option<String>,
-    llm_compaction_model: Option<String>,
-    llm_compaction_base_url: Option<String>,
-    llm_compaction_chars_per_token: Option<u64>,
-    llm_compaction_api_key: Option<String>,
+    model_profile_id: Option<Id>,
+    model_profile_name: Option<String>,
+    model_name: Option<String>,
+    model_base_url: Option<String>,
+    model_reasoning_effort: Option<String>,
+    model_reasoning_summary: Option<String>,
+    model_stream: Option<bool>,
+    model_context_window_tokens: Option<u64>,
+    model_max_output_tokens: Option<u64>,
+    model_context_safety_margin_tokens: Option<u64>,
+    model_chars_per_token: Option<u64>,
+    model_api_key: Option<String>,
+    compaction_profile_id: Option<Id>,
+    compaction_profile_name: Option<String>,
+    compaction_model: Option<String>,
+    compaction_base_url: Option<String>,
+    compaction_chars_per_token: Option<u64>,
+    compaction_api_key: Option<String>,
     memory_compaction_arity: Option<u64>,
     tavily_api_key: Option<String>,
     exa_api_key: Option<String>,
@@ -1823,10 +1823,10 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
     let author_role =
         load_optional_string_attr(data, ws, config_id, playground_config::author_role);
     let poll_ms = load_optional_u64_attr(data, config_id, playground_config::poll_ms);
-    let llm_profile_id =
-        load_optional_id_attr(data, config_id, playground_config::active_llm_profile_id);
-    let (llm_entity_id, llm_profile_name) = if let Some(profile_id) = llm_profile_id {
-        if let Some(entry_id) = latest_llm_profile_entry_id(data, profile_id) {
+    let model_profile_id =
+        load_optional_id_attr(data, config_id, playground_config::active_model_profile_id);
+    let (model_entity_id, model_profile_name) = if let Some(profile_id) = model_profile_id {
+        if let Some(entry_id) = latest_model_profile_entry_id(data, profile_id) {
             (
                 entry_id,
                 load_optional_string_attr(data, ws, entry_id, metadata::name),
@@ -1838,86 +1838,86 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         (config_id, None)
     };
 
-    let llm_model =
-        load_optional_string_attr(data, ws, llm_entity_id, playground_config::llm_model);
-    let llm_base_url =
-        load_optional_string_attr(data, ws, llm_entity_id, playground_config::llm_base_url);
-    let llm_reasoning_effort = load_optional_string_attr(
+    let model_name =
+        load_optional_string_attr(data, ws, model_entity_id, playground_config::model_name);
+    let model_base_url =
+        load_optional_string_attr(data, ws, model_entity_id, playground_config::model_base_url);
+    let model_reasoning_effort = load_optional_string_attr(
         data,
         ws,
-        llm_entity_id,
-        playground_config::llm_reasoning_effort,
+        model_entity_id,
+        playground_config::model_reasoning_effort,
     );
-    let llm_reasoning_summary = load_optional_string_attr(
+    let model_reasoning_summary = load_optional_string_attr(
         data,
         ws,
-        llm_entity_id,
-        playground_config::llm_reasoning_summary,
+        model_entity_id,
+        playground_config::model_reasoning_summary,
     );
-    let llm_stream = load_optional_u64_attr(data, llm_entity_id, playground_config::llm_stream)
+    let model_stream = load_optional_u64_attr(data, model_entity_id, playground_config::model_stream)
         .map(|value| value != 0);
-    let llm_context_window_tokens = load_optional_u64_attr(
+    let model_context_window_tokens = load_optional_u64_attr(
         data,
-        llm_entity_id,
-        playground_config::llm_context_window_tokens,
+        model_entity_id,
+        playground_config::model_context_window_tokens,
     );
-    let llm_max_output_tokens = load_optional_u64_attr(
+    let model_max_output_tokens = load_optional_u64_attr(
         data,
-        llm_entity_id,
-        playground_config::llm_max_output_tokens,
+        model_entity_id,
+        playground_config::model_max_output_tokens,
     );
-    let llm_prompt_safety_margin_tokens = load_optional_u64_attr(
+    let model_context_safety_margin_tokens = load_optional_u64_attr(
         data,
-        llm_entity_id,
-        playground_config::llm_prompt_safety_margin_tokens,
+        model_entity_id,
+        playground_config::model_context_safety_margin_tokens,
     );
-    let llm_prompt_chars_per_token = load_optional_u64_attr(
+    let model_chars_per_token = load_optional_u64_attr(
         data,
-        llm_entity_id,
-        playground_config::llm_prompt_chars_per_token,
+        model_entity_id,
+        playground_config::model_chars_per_token,
     );
-    let llm_api_key =
-        load_optional_string_attr(data, ws, llm_entity_id, playground_config::llm_api_key);
-    let llm_compaction_profile_id = load_optional_id_attr(
+    let model_api_key =
+        load_optional_string_attr(data, ws, model_entity_id, playground_config::model_api_key);
+    let compaction_profile_id = load_optional_id_attr(
         data,
         config_id,
-        playground_config::active_llm_compaction_profile_id,
+        playground_config::active_compaction_profile_id,
     );
-    let (llm_compaction_entity_id, llm_compaction_profile_name) =
-        if let Some(profile_id) = llm_compaction_profile_id {
-            if let Some(entry_id) = latest_llm_profile_entry_id(data, profile_id) {
+    let (compaction_entity_id, compaction_profile_name) =
+        if let Some(profile_id) = compaction_profile_id {
+            if let Some(entry_id) = latest_model_profile_entry_id(data, profile_id) {
                 (
                     entry_id,
                     load_optional_string_attr(data, ws, entry_id, metadata::name),
                 )
             } else {
-                (llm_entity_id, None)
+                (model_entity_id, None)
             }
         } else {
-            (llm_entity_id, llm_profile_name.clone())
+            (model_entity_id, model_profile_name.clone())
         };
-    let llm_compaction_model = load_optional_string_attr(
+    let compaction_model = load_optional_string_attr(
         data,
         ws,
-        llm_compaction_entity_id,
-        playground_config::llm_model,
+        compaction_entity_id,
+        playground_config::model_name,
     );
-    let llm_compaction_base_url = load_optional_string_attr(
+    let compaction_base_url = load_optional_string_attr(
         data,
         ws,
-        llm_compaction_entity_id,
-        playground_config::llm_base_url,
+        compaction_entity_id,
+        playground_config::model_base_url,
     );
-    let llm_compaction_chars_per_token = load_optional_u64_attr(
+    let compaction_chars_per_token = load_optional_u64_attr(
         data,
-        llm_compaction_entity_id,
-        playground_config::llm_prompt_chars_per_token,
+        compaction_entity_id,
+        playground_config::model_chars_per_token,
     );
-    let llm_compaction_api_key = load_optional_string_attr(
+    let compaction_api_key = load_optional_string_attr(
         data,
         ws,
-        llm_compaction_entity_id,
-        playground_config::llm_api_key,
+        compaction_entity_id,
+        playground_config::model_api_key,
     );
     let memory_compaction_arity =
         load_optional_u64_attr(data, config_id, playground_config::memory_compaction_arity);
@@ -1950,24 +1950,24 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         author,
         author_role,
         poll_ms,
-        llm_profile_id,
-        llm_profile_name,
-        llm_model,
-        llm_base_url,
-        llm_reasoning_effort,
-        llm_reasoning_summary,
-        llm_stream,
-        llm_context_window_tokens,
-        llm_max_output_tokens,
-        llm_prompt_safety_margin_tokens,
-        llm_prompt_chars_per_token,
-        llm_api_key,
-        llm_compaction_profile_id,
-        llm_compaction_profile_name,
-        llm_compaction_model,
-        llm_compaction_base_url,
-        llm_compaction_chars_per_token,
-        llm_compaction_api_key,
+        model_profile_id,
+        model_profile_name,
+        model_name,
+        model_base_url,
+        model_reasoning_effort,
+        model_reasoning_summary,
+        model_stream,
+        model_context_window_tokens,
+        model_max_output_tokens,
+        model_context_safety_margin_tokens,
+        model_chars_per_token,
+        model_api_key,
+        compaction_profile_id,
+        compaction_profile_name,
+        compaction_model,
+        compaction_base_url,
+        compaction_chars_per_token,
+        compaction_api_key,
         memory_compaction_arity,
         tavily_api_key,
         exa_api_key,
@@ -1977,15 +1977,15 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
     })
 }
 
-fn latest_llm_profile_entry_id(data: &TribleSet, profile_id: Id) -> Option<Id> {
+fn latest_model_profile_entry_id(data: &TribleSet, profile_id: Id) -> Option<Id> {
     let mut latest: Option<(Id, i128)> = None;
     for (entry_id, updated_at) in find!(
         (entry_id: Id, updated_at: Value<NsTAIInterval>),
         pattern!(data, [{
             ?entry_id @
-            playground_config::kind: playground_config::kind_llm_profile,
+            playground_config::kind: playground_config::kind_model_profile,
             playground_config::updated_at: ?updated_at,
-            playground_config::llm_profile_id: profile_id,
+            playground_config::model_profile_id: profile_id,
         }])
     ) {
         let key = interval_key(updated_at);
@@ -4789,79 +4789,79 @@ fn render_agent_config(
             );
             ui.end_row();
 
-            ui.label("llm.profile");
+            ui.label("model.profile");
             ui.horizontal(|ui| {
-                ui.label(config.llm_profile_name.as_deref().unwrap_or("-"));
-                if let Some(id) = config.llm_profile_id {
+                ui.label(config.model_profile_name.as_deref().unwrap_or("-"));
+                if let Some(id) = config.model_profile_id {
                     ui.monospace(format!("({id:x})"));
                 }
             });
             ui.end_row();
 
-            ui.label("llm.model");
-            ui.label(config.llm_model.as_deref().unwrap_or("-"));
+            ui.label("model.model");
+            ui.label(config.model_name.as_deref().unwrap_or("-"));
             ui.end_row();
 
-            ui.label("llm.base_url");
-            ui.label(config.llm_base_url.as_deref().unwrap_or("-"));
+            ui.label("model.base_url");
+            ui.label(config.model_base_url.as_deref().unwrap_or("-"));
             ui.end_row();
 
-            ui.label("llm.reasoning_effort");
-            ui.label(config.llm_reasoning_effort.as_deref().unwrap_or("-"));
+            ui.label("model.reasoning_effort");
+            ui.label(config.model_reasoning_effort.as_deref().unwrap_or("-"));
             ui.end_row();
 
-            ui.label("llm.reasoning_summary");
-            ui.label(config.llm_reasoning_summary.as_deref().unwrap_or("-"));
+            ui.label("model.reasoning_summary");
+            ui.label(config.model_reasoning_summary.as_deref().unwrap_or("-"));
             ui.end_row();
 
-            ui.label("llm.stream");
+            ui.label("model.stream");
             ui.monospace(
                 config
-                    .llm_stream
+                    .model_stream
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             );
             ui.end_row();
 
-            ui.label("llm.context_window_tokens");
+            ui.label("model.context_window_tokens");
             ui.monospace(
                 config
-                    .llm_context_window_tokens
+                    .model_context_window_tokens
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             );
             ui.end_row();
 
-            ui.label("llm.max_output_tokens");
+            ui.label("model.max_output_tokens");
             ui.monospace(
                 config
-                    .llm_max_output_tokens
+                    .model_max_output_tokens
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             );
             ui.end_row();
 
-            ui.label("llm.prompt_safety_margin_tokens");
+            ui.label("model.context_safety_margin_tokens");
             ui.monospace(
                 config
-                    .llm_prompt_safety_margin_tokens
+                    .model_context_safety_margin_tokens
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             );
             ui.end_row();
 
-            ui.label("llm.prompt_chars_per_token");
+            ui.label("model.chars_per_token");
             ui.monospace(
                 config
-                    .llm_prompt_chars_per_token
+                    .model_chars_per_token
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             );
             ui.end_row();
 
-            ui.label("llm.api_key");
+            ui.label("model.api_key");
             ui.horizontal(|ui| {
-                let Some(key) = config.llm_api_key.as_deref() else {
+                let Some(key) = config.model_api_key.as_deref() else {
                     ui.label("-");
                     return;
                 };
@@ -4882,36 +4882,36 @@ fn render_agent_config(
             });
             ui.end_row();
 
-            ui.label("llm.compaction.profile");
+            ui.label("model.compaction.profile");
             ui.horizontal(|ui| {
-                let label = if config.llm_compaction_profile_id.is_none() {
-                    "inherits llm.profile".to_string()
+                let label = if config.compaction_profile_id.is_none() {
+                    "inherits model.profile".to_string()
                 } else {
                     config
-                        .llm_compaction_profile_name
+                        .compaction_profile_name
                         .as_deref()
                         .unwrap_or("-")
                         .to_string()
                 };
                 ui.label(label);
-                if let Some(id) = config.llm_compaction_profile_id {
+                if let Some(id) = config.compaction_profile_id {
                     ui.monospace(format!("({id:x})"));
                 }
             });
             ui.end_row();
 
-            ui.label("llm.compaction.model");
-            ui.label(config.llm_compaction_model.as_deref().unwrap_or("-"));
+            ui.label("model.compaction.model");
+            ui.label(config.compaction_model.as_deref().unwrap_or("-"));
             ui.end_row();
 
-            ui.label("llm.compaction.base_url");
-            ui.label(config.llm_compaction_base_url.as_deref().unwrap_or("-"));
+            ui.label("model.compaction.base_url");
+            ui.label(config.compaction_base_url.as_deref().unwrap_or("-"));
             ui.end_row();
 
-            ui.label("llm.compaction.prompt_chars_per_token");
+            ui.label("model.compaction.chars_per_token");
             ui.monospace(
                 config
-                    .llm_compaction_chars_per_token
+                    .compaction_chars_per_token
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             );
@@ -4926,9 +4926,9 @@ fn render_agent_config(
             );
             ui.end_row();
 
-            ui.label("llm.compaction.api_key");
+            ui.label("model.compaction.api_key");
             ui.horizontal(|ui| {
-                let Some(key) = config.llm_compaction_api_key.as_deref() else {
+                let Some(key) = config.compaction_api_key.as_deref() else {
                     ui.label("-");
                     return;
                 };

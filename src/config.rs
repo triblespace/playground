@@ -21,7 +21,7 @@ use crate::time_util::{epoch_interval, interval_key, now_epoch};
 const DEFAULT_MODEL: &str = "gpt-oss:120b";
 const DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
 const DEFAULT_STREAM: bool = false;
-const DEFAULT_REASONING_SUMMARY: LlmReasoningSummary = LlmReasoningSummary::Detailed;
+const DEFAULT_REASONING_SUMMARY: ModelReasoningSummary = ModelReasoningSummary::Detailed;
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 32 * 1024;
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 1024;
 const DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS: u64 = 512;
@@ -70,10 +70,10 @@ const MEMORY_LENS_ID_EMOTIONAL: Id = id_hex!("1B7C34E5C9718DE01020CA3C0EF50387")
 #[derive(Clone, Debug)]
 pub struct Config {
     pub pile_path: PathBuf,
-    pub llm: LlmConfig,
-    pub llm_profile_id: Option<Id>,
-    pub llm_profile_name: String,
-    pub llm_compaction_profile_id: Option<Id>,
+    pub model: ModelConfig,
+    pub model_profile_id: Option<Id>,
+    pub model_profile_name: String,
+    pub compaction_profile_id: Option<Id>,
     pub memory_compaction_arity: u64,
     pub memory_lenses: Vec<MemoryLensConfig>,
     pub tavily_api_key: Option<String>,
@@ -98,28 +98,28 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug)]
-pub struct LlmConfig {
+pub struct ModelConfig {
     pub model: String,
     pub base_url: String,
     pub api_key: Option<String>,
     pub reasoning_effort: Option<String>,
-    pub reasoning_summary: Option<LlmReasoningSummary>,
+    pub reasoning_summary: Option<ModelReasoningSummary>,
     pub stream: bool,
     pub context_window_tokens: u64,
     pub max_output_tokens: u64,
-    pub prompt_safety_margin_tokens: u64,
-    pub prompt_chars_per_token: u64,
+    pub context_safety_margin_tokens: u64,
+    pub chars_per_token: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LlmReasoningSummary {
+pub enum ModelReasoningSummary {
     Auto,
     Concise,
     Detailed,
     None,
 }
 
-impl LlmReasoningSummary {
+impl ModelReasoningSummary {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -164,7 +164,7 @@ impl Default for ExecConfig {
     }
 }
 
-impl Default for LlmConfig {
+impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             model: default_model(),
@@ -175,8 +175,8 @@ impl Default for LlmConfig {
             stream: default_stream(),
             context_window_tokens: default_context_window_tokens(),
             max_output_tokens: default_max_output_tokens(),
-            prompt_safety_margin_tokens: default_prompt_safety_margin_tokens(),
-            prompt_chars_per_token: default_prompt_chars_per_token(),
+            context_safety_margin_tokens: default_context_safety_margin_tokens(),
+            chars_per_token: default_chars_per_token(),
         }
     }
 }
@@ -214,14 +214,14 @@ impl Config {
     }
 }
 
-pub fn load_llm_profile(pile_path: &Path, profile_id: Id) -> Result<Option<(LlmConfig, String)>> {
+pub fn load_model_profile(pile_path: &Path, profile_id: Id) -> Result<Option<(ModelConfig, String)>> {
     let (mut repo, branch_id) = open_config_repo(pile_path)?;
-    let result = (|| -> Result<Option<(LlmConfig, String)>> {
+    let result = (|| -> Result<Option<(ModelConfig, String)>> {
         let mut ws = repo
             .pull(branch_id)
             .map_err(|err| anyhow!("pull config workspace: {err:?}"))?;
         let catalog = ws.checkout(..).context("checkout config workspace")?;
-        load_latest_llm_profile(&mut ws, &catalog, profile_id)
+        load_latest_model_profile(&mut ws, &catalog, profile_id)
     })();
 
     if let Err(err) = close_repo(repo).context("close config pile") {
@@ -237,10 +237,10 @@ pub fn load_llm_profile(pile_path: &Path, profile_id: Id) -> Result<Option<(LlmC
 fn default_config(pile_path: PathBuf) -> Config {
     Config {
         pile_path,
-        llm: LlmConfig::default(),
-        llm_profile_id: None,
-        llm_profile_name: "default".to_string(),
-        llm_compaction_profile_id: None,
+        model: ModelConfig::default(),
+        model_profile_id: None,
+        model_profile_name: "default".to_string(),
+        compaction_profile_id: None,
         memory_compaction_arity: default_memory_compaction_arity(),
         memory_lenses: default_memory_lenses(),
         tavily_api_key: None,
@@ -344,7 +344,7 @@ fn ensure_registered_branch_ids(config: &mut Config) -> bool {
     changed |= ensure_registered_branch_id(&mut config.archive_branch_id);
     changed |= ensure_registered_branch_id(&mut config.web_branch_id);
     changed |= ensure_registered_branch_id(&mut config.media_branch_id);
-    changed |= ensure_registered_llm_profile_id(&mut config.llm_profile_id);
+    changed |= ensure_registered_model_profile_id(&mut config.model_profile_id);
 
     changed
 }
@@ -357,7 +357,7 @@ fn ensure_registered_branch_id(slot: &mut Option<Id>) -> bool {
     true
 }
 
-fn ensure_registered_llm_profile_id(slot: &mut Option<Id>) -> bool {
+fn ensure_registered_model_profile_id(slot: &mut Option<Id>) -> bool {
     if slot.is_some() {
         return false;
     }
@@ -499,51 +499,51 @@ fn load_latest_config(
     if let Some(id) = load_id_attr(catalog, config_id, playground_config::persona_id) {
         config.persona_id = Some(id);
     }
-    if let Some(id) = load_id_attr(catalog, config_id, playground_config::active_llm_profile_id) {
-        config.llm_profile_id = Some(id);
+    if let Some(id) = load_id_attr(catalog, config_id, playground_config::active_model_profile_id) {
+        config.model_profile_id = Some(id);
     }
     if let Some(id) = load_id_attr(
         catalog,
         config_id,
-        playground_config::active_llm_compaction_profile_id,
+        playground_config::active_compaction_profile_id,
     ) {
-        config.llm_compaction_profile_id = Some(id);
+        config.compaction_profile_id = Some(id);
     }
-    if let Some(model) = load_string_attr(ws, catalog, config_id, playground_config::llm_model)? {
-        config.llm.model = model;
+    if let Some(model) = load_string_attr(ws, catalog, config_id, playground_config::model_name)? {
+        config.model.model = model;
     }
-    if let Some(url) = load_string_attr(ws, catalog, config_id, playground_config::llm_base_url)? {
-        config.llm.base_url = url;
+    if let Some(url) = load_string_attr(ws, catalog, config_id, playground_config::model_base_url)? {
+        config.model.base_url = url;
     }
     if let Some(effort) = load_string_attr(
         ws,
         catalog,
         config_id,
-        playground_config::llm_reasoning_effort,
+        playground_config::model_reasoning_effort,
     )? {
-        config.llm.reasoning_effort = Some(effort);
+        config.model.reasoning_effort = Some(effort);
     }
     if let Some(summary) = load_string_attr(
         ws,
         catalog,
         config_id,
-        playground_config::llm_reasoning_summary,
+        playground_config::model_reasoning_summary,
     )? {
-        if let Some(parsed) = LlmReasoningSummary::parse(summary.as_str()) {
-            config.llm.reasoning_summary = Some(parsed);
+        if let Some(parsed) = ModelReasoningSummary::parse(summary.as_str()) {
+            config.model.reasoning_summary = Some(parsed);
         } else {
             eprintln!(
-                "warning: unsupported llm reasoning summary '{summary}', using {}",
+                "warning: unsupported model reasoning summary '{summary}', using {}",
                 config
-                    .llm
+                    .model
                     .reasoning_summary
-                    .map(LlmReasoningSummary::as_str)
+                    .map(ModelReasoningSummary::as_str)
                     .unwrap_or("null")
             );
         }
     }
-    if let Some(key) = load_string_attr(ws, catalog, config_id, playground_config::llm_api_key)? {
-        config.llm.api_key = Some(key);
+    if let Some(key) = load_string_attr(ws, catalog, config_id, playground_config::model_api_key)? {
+        config.model.api_key = Some(key);
     }
     if let Some(key) = load_string_attr(ws, catalog, config_id, playground_config::tavily_api_key)?
     {
@@ -601,42 +601,42 @@ fn load_latest_config(
         config.poll_ms = poll_ms;
     }
     if let Some(stream) =
-        load_u256_attr(catalog, config_id, playground_config::llm_stream).and_then(u256be_to_u64)
+        load_u256_attr(catalog, config_id, playground_config::model_stream).and_then(u256be_to_u64)
     {
-        config.llm.stream = stream != 0;
+        config.model.stream = stream != 0;
     }
     if let Some(tokens) = load_u256_attr(
         catalog,
         config_id,
-        playground_config::llm_context_window_tokens,
+        playground_config::model_context_window_tokens,
     )
     .and_then(u256be_to_u64)
     {
-        config.llm.context_window_tokens = tokens;
+        config.model.context_window_tokens = tokens;
     }
     if let Some(tokens) =
-        load_u256_attr(catalog, config_id, playground_config::llm_max_output_tokens)
+        load_u256_attr(catalog, config_id, playground_config::model_max_output_tokens)
             .and_then(u256be_to_u64)
     {
-        config.llm.max_output_tokens = tokens;
+        config.model.max_output_tokens = tokens;
     }
     if let Some(tokens) = load_u256_attr(
         catalog,
         config_id,
-        playground_config::llm_prompt_safety_margin_tokens,
+        playground_config::model_context_safety_margin_tokens,
     )
     .and_then(u256be_to_u64)
     {
-        config.llm.prompt_safety_margin_tokens = tokens;
+        config.model.context_safety_margin_tokens = tokens;
     }
     if let Some(chars) = load_u256_attr(
         catalog,
         config_id,
-        playground_config::llm_prompt_chars_per_token,
+        playground_config::model_chars_per_token,
     )
     .and_then(u256be_to_u64)
     {
-        config.llm.prompt_chars_per_token = chars;
+        config.model.chars_per_token = chars;
     }
     if let Some(factor) = load_u256_attr(
         catalog,
@@ -648,10 +648,10 @@ fn load_latest_config(
         config.memory_compaction_arity = factor.max(2);
     }
 
-    if let Some(profile_id) = config.llm_profile_id {
-        if let Some((llm, name)) = load_latest_llm_profile(ws, catalog, profile_id)? {
-            config.llm = llm;
-            config.llm_profile_name = name;
+    if let Some(profile_id) = config.model_profile_id {
+        if let Some((model_cfg, name)) = load_latest_model_profile(ws, catalog, profile_id)? {
+            config.model = model_cfg;
+            config.model_profile_name = name;
         }
     }
 
@@ -663,20 +663,20 @@ fn load_latest_config(
     Ok(Some(config))
 }
 
-fn load_latest_llm_profile(
+fn load_latest_model_profile(
     ws: &mut Workspace<Pile>,
     catalog: &TribleSet,
     profile_id: Id,
-) -> Result<Option<(LlmConfig, String)>> {
+) -> Result<Option<(ModelConfig, String)>> {
     let mut latest: Option<(Id, i128)> = None;
 
     for (entry_id, updated_at) in find!(
         (entry_id: Id, updated_at: Value<NsTAIInterval>),
         pattern!(catalog, [{
             ?entry_id @
-            playground_config::kind: playground_config::kind_llm_profile,
+            playground_config::kind: playground_config::kind_model_profile,
             playground_config::updated_at: ?updated_at,
-            playground_config::llm_profile_id: profile_id,
+            playground_config::model_profile_id: profile_id,
         }])
     ) {
         let key = interval_key(updated_at);
@@ -691,76 +691,76 @@ fn load_latest_llm_profile(
         return Ok(None);
     };
 
-    let mut llm = LlmConfig::default();
-    if let Some(model) = load_string_attr(ws, catalog, entry_id, playground_config::llm_model)? {
-        llm.model = model;
+    let mut model = ModelConfig::default();
+    if let Some(name) = load_string_attr(ws, catalog, entry_id, playground_config::model_name)? {
+        model.model = name;
     }
-    if let Some(url) = load_string_attr(ws, catalog, entry_id, playground_config::llm_base_url)? {
-        llm.base_url = url;
+    if let Some(url) = load_string_attr(ws, catalog, entry_id, playground_config::model_base_url)? {
+        model.base_url = url;
     }
     if let Some(effort) = load_string_attr(
         ws,
         catalog,
         entry_id,
-        playground_config::llm_reasoning_effort,
+        playground_config::model_reasoning_effort,
     )? {
-        llm.reasoning_effort = Some(effort);
+        model.reasoning_effort = Some(effort);
     }
     if let Some(summary) = load_string_attr(
         ws,
         catalog,
         entry_id,
-        playground_config::llm_reasoning_summary,
+        playground_config::model_reasoning_summary,
     )? {
-        llm.reasoning_summary = Some(
-            LlmReasoningSummary::parse(summary.as_str())
-                .ok_or_else(|| anyhow!("unsupported llm reasoning summary '{summary}'"))?,
+        model.reasoning_summary = Some(
+            ModelReasoningSummary::parse(summary.as_str())
+                .ok_or_else(|| anyhow!("unsupported model reasoning summary '{summary}'"))?,
         );
     }
-    if let Some(key) = load_string_attr(ws, catalog, entry_id, playground_config::llm_api_key)? {
-        llm.api_key = Some(key);
+    if let Some(key) = load_string_attr(ws, catalog, entry_id, playground_config::model_api_key)? {
+        model.api_key = Some(key);
     }
     if let Some(stream) =
-        load_u256_attr(catalog, entry_id, playground_config::llm_stream).and_then(u256be_to_u64)
+        load_u256_attr(catalog, entry_id, playground_config::model_stream).and_then(u256be_to_u64)
     {
-        llm.stream = stream != 0;
+        model.stream = stream != 0;
     }
     if let Some(tokens) = load_u256_attr(
         catalog,
         entry_id,
-        playground_config::llm_context_window_tokens,
+        playground_config::model_context_window_tokens,
     )
     .and_then(u256be_to_u64)
     {
-        llm.context_window_tokens = tokens;
+        model.context_window_tokens = tokens;
     }
     if let Some(tokens) =
-        load_u256_attr(catalog, entry_id, playground_config::llm_max_output_tokens)
+        load_u256_attr(catalog, entry_id, playground_config::model_max_output_tokens)
             .and_then(u256be_to_u64)
     {
-        llm.max_output_tokens = tokens;
+        model.max_output_tokens = tokens;
     }
     if let Some(tokens) = load_u256_attr(
         catalog,
         entry_id,
-        playground_config::llm_prompt_safety_margin_tokens,
+        playground_config::model_context_safety_margin_tokens,
     )
     .and_then(u256be_to_u64)
     {
-        llm.prompt_safety_margin_tokens = tokens;
+        model.context_safety_margin_tokens = tokens;
     }
     if let Some(chars) = load_u256_attr(
         catalog,
         entry_id,
-        playground_config::llm_prompt_chars_per_token,
+        playground_config::model_chars_per_token,
     )
     .and_then(u256be_to_u64)
     {
-        llm.prompt_chars_per_token = chars;
+        model.chars_per_token = chars;
     }
     let name = load_string_attr(ws, catalog, entry_id, metadata::name)?
         .unwrap_or_else(|| format!("profile-{profile_id:x}"));
-    Ok(Some((llm, name)))
+    Ok(Some((model, name)))
 }
 
 fn load_memory_lenses_for_snapshot(
@@ -820,7 +820,7 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     let now = epoch_interval(now_epoch());
     let config_id = ufoid();
     let profile_id = config
-        .llm_profile_id
+        .model_profile_id
         .ok_or_else(|| anyhow!("config missing active LLM profile id"))?;
     let mut memory_lenses = if config.memory_lenses.is_empty() {
         default_memory_lenses()
@@ -849,7 +849,7 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
         playground_config::author: author,
         playground_config::author_role: author_role,
         playground_config::poll_ms: poll_ms,
-        playground_config::active_llm_profile_id: profile_id,
+        playground_config::active_model_profile_id: profile_id,
     };
     let memory_compaction_arity: Value<U256BE> = config.memory_compaction_arity.max(2).to_value();
     change += entity! { &config_id @
@@ -889,8 +889,8 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     if let Some(id) = config.persona_id {
         change += entity! { &config_id @ playground_config::persona_id: id };
     }
-    if let Some(id) = config.llm_compaction_profile_id {
-        change += entity! { &config_id @ playground_config::active_llm_compaction_profile_id: id };
+    if let Some(id) = config.compaction_profile_id {
+        change += entity! { &config_id @ playground_config::active_compaction_profile_id: id };
     }
     if let Some(key) = config.tavily_api_key.as_ref() {
         let handle = ws.put(key.clone());
@@ -909,28 +909,28 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     }
 
     let profile_entry_id = ufoid();
-    let profile_name = ws.put(config.llm_profile_name.clone());
-    let llm_model = ws.put(config.llm.model.clone());
-    let llm_base_url = ws.put(config.llm.base_url.clone());
-    let llm_stream: Value<U256BE> = if config.llm.stream { 1u64 } else { 0u64 }.to_value();
-    let llm_context_window_tokens: Value<U256BE> = config.llm.context_window_tokens.to_value();
-    let llm_max_output_tokens: Value<U256BE> = config.llm.max_output_tokens.to_value();
-    let llm_prompt_safety_margin_tokens: Value<U256BE> =
-        config.llm.prompt_safety_margin_tokens.to_value();
-    let llm_prompt_chars_per_token: Value<U256BE> = config.llm.prompt_chars_per_token.to_value();
+    let profile_name = ws.put(config.model_profile_name.clone());
+    let model_name = ws.put(config.model.model.clone());
+    let model_base_url = ws.put(config.model.base_url.clone());
+    let model_stream: Value<U256BE> = if config.model.stream { 1u64 } else { 0u64 }.to_value();
+    let model_context_window_tokens: Value<U256BE> = config.model.context_window_tokens.to_value();
+    let model_max_output_tokens: Value<U256BE> = config.model.max_output_tokens.to_value();
+    let model_context_safety_margin_tokens: Value<U256BE> =
+        config.model.context_safety_margin_tokens.to_value();
+    let model_chars_per_token: Value<U256BE> = config.model.chars_per_token.to_value();
 
     change += entity! { &profile_entry_id @
-        playground_config::kind: playground_config::kind_llm_profile,
+        playground_config::kind: playground_config::kind_model_profile,
         playground_config::updated_at: now,
-        playground_config::llm_profile_id: profile_id,
+        playground_config::model_profile_id: profile_id,
         metadata::name: profile_name,
-        playground_config::llm_model: llm_model,
-        playground_config::llm_base_url: llm_base_url,
-        playground_config::llm_stream: llm_stream,
-        playground_config::llm_context_window_tokens: llm_context_window_tokens,
-        playground_config::llm_max_output_tokens: llm_max_output_tokens,
-        playground_config::llm_prompt_safety_margin_tokens: llm_prompt_safety_margin_tokens,
-        playground_config::llm_prompt_chars_per_token: llm_prompt_chars_per_token,
+        playground_config::model_name: model_name,
+        playground_config::model_base_url: model_base_url,
+        playground_config::model_stream: model_stream,
+        playground_config::model_context_window_tokens: model_context_window_tokens,
+        playground_config::model_max_output_tokens: model_max_output_tokens,
+        playground_config::model_context_safety_margin_tokens: model_context_safety_margin_tokens,
+        playground_config::model_chars_per_token: model_chars_per_token,
     };
 
     for lens in &memory_lenses {
@@ -950,17 +950,17 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
         };
     }
 
-    if let Some(key) = config.llm.api_key.as_ref() {
+    if let Some(key) = config.model.api_key.as_ref() {
         let handle = ws.put(key.clone());
-        change += entity! { &profile_entry_id @ playground_config::llm_api_key: handle };
+        change += entity! { &profile_entry_id @ playground_config::model_api_key: handle };
     }
-    if let Some(effort) = config.llm.reasoning_effort.as_ref() {
+    if let Some(effort) = config.model.reasoning_effort.as_ref() {
         let handle = ws.put(effort.clone());
-        change += entity! { &profile_entry_id @ playground_config::llm_reasoning_effort: handle };
+        change += entity! { &profile_entry_id @ playground_config::model_reasoning_effort: handle };
     }
-    if let Some(summary) = config.llm.reasoning_summary {
+    if let Some(summary) = config.model.reasoning_summary {
         let handle = ws.put(summary.as_str().to_string());
-        change += entity! { &profile_entry_id @ playground_config::llm_reasoning_summary: handle };
+        change += entity! { &profile_entry_id @ playground_config::model_reasoning_summary: handle };
     }
 
     ws.commit(change, None, Some("playground config"));
@@ -1039,7 +1039,7 @@ fn default_stream() -> bool {
     DEFAULT_STREAM
 }
 
-fn default_reasoning_summary() -> LlmReasoningSummary {
+fn default_reasoning_summary() -> ModelReasoningSummary {
     DEFAULT_REASONING_SUMMARY
 }
 
@@ -1051,11 +1051,11 @@ fn default_max_output_tokens() -> u64 {
     DEFAULT_MAX_OUTPUT_TOKENS
 }
 
-fn default_prompt_safety_margin_tokens() -> u64 {
+fn default_context_safety_margin_tokens() -> u64 {
     DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS
 }
 
-fn default_prompt_chars_per_token() -> u64 {
+fn default_chars_per_token() -> u64 {
     DEFAULT_PROMPT_CHARS_PER_TOKEN
 }
 

@@ -332,11 +332,11 @@ fn run_with_exec(mut config: Config, args: RunArgs) -> Result<()> {
     config.poll_ms = poll_ms;
 
     let stop = Arc::new(AtomicBool::new(false));
-    let llm_stop = stop.clone();
-    let llm_config = config.clone();
-    let llm_worker_id = *ufoid();
-    let llm_handle = thread::spawn(move || {
-        model_worker::run_model_loop(llm_config, llm_worker_id, poll_ms, Some(llm_stop))
+    let model_stop = stop.clone();
+    let model_config = config.clone();
+    let model_worker_id = *ufoid();
+    let model_handle = thread::spawn(move || {
+        model_worker::run_model_loop(model_config, model_worker_id, poll_ms, Some(model_stop))
     });
 
     prepare_lima_service(&config, &args.lima)?;
@@ -344,12 +344,12 @@ fn run_with_exec(mut config: Config, args: RunArgs) -> Result<()> {
     let core_result = run_loop(config);
     stop.store(true, Ordering::Relaxed);
 
-    let llm_result = llm_handle
+    let model_result = model_handle
         .join()
         .map_err(|_| anyhow!("model worker panicked"))?;
 
     core_result?;
-    llm_result.context("model worker")?;
+    model_result.context("model worker")?;
     Ok(())
 }
 
@@ -604,25 +604,9 @@ fn run_memory_estimate(config: Config, args: MemoryEstimateArgs) -> Result<()> {
             archive_coverage.imported_message_total
         );
         println!(
-            "  archive_core_imported_messages: {}",
-            archive_coverage.core_imported_total
-        );
-        println!(
             "  archive_strict_imported_messages: {} ({:.2}%)",
             archive_coverage.strict_imported_total,
             archive_coverage.strict_imported_pct()
-        );
-        println!(
-            "  archive_missing_source_message_id: {}",
-            archive_coverage.missing_source_message_id()
-        );
-        println!(
-            "  archive_missing_source_author: {}",
-            archive_coverage.missing_source_author()
-        );
-        println!(
-            "  archive_missing_source_role: {}",
-            archive_coverage.missing_source_role()
         );
         println!("  leaves_to_add: {}", new_leaves);
         println!("  estimated_merge_calls: {}", sim.merge_calls);
@@ -745,25 +729,9 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
             archive_coverage.imported_message_total
         );
         println!(
-            "  archive_core_imported_messages: {}",
-            archive_coverage.core_imported_total
-        );
-        println!(
             "  archive_strict_imported_messages: {} ({:.2}%)",
             archive_coverage.strict_imported_total,
             archive_coverage.strict_imported_pct()
-        );
-        println!(
-            "  archive_missing_source_message_id: {}",
-            archive_coverage.missing_source_message_id()
-        );
-        println!(
-            "  archive_missing_source_author: {}",
-            archive_coverage.missing_source_author()
-        );
-        println!(
-            "  archive_missing_source_role: {}",
-            archive_coverage.missing_source_role()
         );
         if args.dry_run {
             println!("  mode: dry-run (no writes)");
@@ -907,17 +875,17 @@ fn run_memory_consolidate(config: Config, args: MemoryConsolidateArgs) -> Result
 }
 
 fn resolve_compaction_profile_info(config: &Config) -> CompactionProfileInfo {
-    let mut model = config.llm.model.clone();
-    let mut base_url = config.llm.base_url.clone();
-    let mut chars_per_token = config.llm.prompt_chars_per_token.max(1);
+    let mut model = config.model.model.clone();
+    let mut base_url = config.model.base_url.clone();
+    let mut chars_per_token = config.model.chars_per_token.max(1);
     let mut source = "active profile".to_string();
 
-    if let Some(profile_id) = config.llm_compaction_profile_id {
-        match config::load_llm_profile(config.pile_path.as_path(), profile_id) {
+    if let Some(profile_id) = config.compaction_profile_id {
+        match config::load_model_profile(config.pile_path.as_path(), profile_id) {
             Ok(Some((profile, name))) => {
                 model = profile.model;
                 base_url = profile.base_url;
-                chars_per_token = profile.prompt_chars_per_token.max(1);
+                chars_per_token = profile.chars_per_token.max(1);
                 source = format!("compaction profile {name}");
             }
             Ok(None) => {
@@ -1055,11 +1023,10 @@ fn sample_pending_archive_leaf_summary_chars(
         }
 
         let author_name = load_optional_text(ws, message.author_name)?;
-        let source_author = load_text(ws, message.source_author).context("load source_author")?;
-        let source_role = load_text(ws, message.source_role).context("load source_role")?;
-        let source_message_id =
-            load_text(ws, message.source_message_id).context("load source_message_id")?;
-        let conversation_id = load_optional_text(ws, message.conversation_id)?;
+        let source_author = load_text(ws, message.source_author)?;
+        let source_role = load_text(ws, message.source_role)?;
+        let source_message_id = load_text(ws, message.source_message_id)?;
+        let conversation_id = load_text(ws, message.conversation_id)?;
         let content = load_text(ws, message.content).context("load archive message content")?;
         let resolved_person = resolve_archive_person(
             relations,
@@ -1072,7 +1039,7 @@ fn sample_pending_archive_leaf_summary_chars(
             source_author.as_str(),
             source_role.as_str(),
             source_message_id.as_str(),
-            conversation_id.as_deref(),
+            conversation_id.as_str(),
             content.as_str(),
             resolved_person
                 .and_then(|person_id| relations.person_label.get(&person_id).map(|s| s.as_str())),
@@ -1517,14 +1484,14 @@ fn print_config(config: &Config, show_secrets: bool) {
     println!(
         "profile_id = {}",
         config
-            .llm_profile_id
+            .model_profile_id
             .map(|id| format!("\"{id:x}\""))
             .unwrap_or_else(|| "null".to_string())
     );
-    println!("profile_name = \"{}\"", config.llm_profile_name);
-    println!("model = \"{}\"", config.llm.model);
-    println!("base_url = \"{}\"", config.llm.base_url);
-    match (&config.llm.api_key, show_secrets) {
+    println!("profile_name = \"{}\"", config.model_profile_name);
+    println!("model = \"{}\"", config.model.model);
+    println!("base_url = \"{}\"", config.model.base_url);
+    match (&config.model.api_key, show_secrets) {
         (Some(key), true) => println!("api_key = \"{}\"", key),
         (Some(_), false) => println!("api_key = \"<redacted>\""),
         (None, _) => println!("api_key = null"),
@@ -1532,7 +1499,7 @@ fn print_config(config: &Config, show_secrets: bool) {
     println!(
         "reasoning_effort = {}",
         config
-            .llm
+            .model
             .reasoning_effort
             .as_ref()
             .map(|value| format!("\"{}\"", value))
@@ -1541,29 +1508,29 @@ fn print_config(config: &Config, show_secrets: bool) {
     println!(
         "reasoning_summary = {}",
         config
-            .llm
+            .model
             .reasoning_summary
             .map(|summary| format!("\"{}\"", summary.as_str()))
             .unwrap_or_else(|| "null".to_string())
     );
-    println!("stream = {}", config.llm.stream);
+    println!("stream = {}", config.model.stream);
     println!(
         "context_window_tokens = {}",
-        config.llm.context_window_tokens
+        config.model.context_window_tokens
     );
-    println!("max_output_tokens = {}", config.llm.max_output_tokens);
+    println!("max_output_tokens = {}", config.model.max_output_tokens);
     println!(
-        "prompt_safety_margin_tokens = {}",
-        config.llm.prompt_safety_margin_tokens
+        "context_safety_margin_tokens = {}",
+        config.model.context_safety_margin_tokens
     );
     println!(
-        "prompt_chars_per_token = {}",
-        config.llm.prompt_chars_per_token
+        "chars_per_token = {}",
+        config.model.chars_per_token
     );
     println!(
         "compaction_profile_id = {}",
         config
-            .llm_compaction_profile_id
+            .compaction_profile_id
             .map(|id| format!("\"{id:x}\""))
             .unwrap_or_else(|| "null".to_string())
     );
@@ -1641,9 +1608,9 @@ fn run_loop(config: Config) -> Result<()> {
         let mut request_info = ensure_model_request(&mut repo, branch_id, &config)?;
 
         loop {
-            let llm_result =
+            let model_result =
                 wait_for_model_result(&mut repo, branch_id, request_info.id, config.poll_ms)?;
-            if let Some(error) = llm_result.error {
+            if let Some(error) = model_result.error {
                 eprintln!(
                     "warning: model request {request_id:x} failed: {error}",
                     request_id = request_info.id
@@ -1653,7 +1620,7 @@ fn run_loop(config: Config) -> Result<()> {
                 continue;
             }
 
-            let command = llm_result.output_text.trim();
+            let command = model_result.output_text.trim();
             if command.eq_ignore_ascii_case("exit") {
                 break;
             }
@@ -1864,8 +1831,8 @@ fn create_thought_and_request(
     } else {
         TribleSet::new()
     };
-    let (prompt, compact_change) = if let Some(exec_result_id) = about_exec_result {
-        prompt_for_exec_result_with_history(
+    let (context_json, compact_change) = if let Some(exec_result_id) = about_exec_result {
+        context_for_exec_result_with_history(
             &mut ws,
             &core_index,
             &catalog,
@@ -1877,11 +1844,11 @@ fn create_thought_and_request(
     } else {
         (
             serde_json::to_string(&[ChatMessage::system(config.system_prompt.clone())])
-                .context("serialize chat prompt")?,
+                .context("serialize context messages")?,
             TribleSet::new(),
         )
     };
-    let context_handle = ws.put(prompt);
+    let context_handle = ws.put(context_json);
     let thought_id = ufoid();
     let mut change = TribleSet::new();
     change += compact_change;
@@ -1900,7 +1867,7 @@ fn create_thought_and_request(
         model_chat::about_thought: *thought_id,
         model_chat::context: context_handle,
         model_chat::requested_at: now,
-        model_chat::model: config.llm.model.as_str(),
+        model_chat::model: config.model.model.as_str(),
     };
 
     ws.commit(change, None, Some("create thought + model request"));
@@ -1944,7 +1911,7 @@ fn create_request_for_thought_from_index(
         model_chat::about_thought: thought_id,
         model_chat::context: context_handle,
         model_chat::requested_at: now,
-        model_chat::model: config.llm.model.as_str(),
+        model_chat::model: config.model.model.as_str(),
     };
     ws.commit(change, None, Some("create model request"));
     Ok(*request_id)
@@ -2896,9 +2863,10 @@ fn load_archive_messages_incremental(
 
     let coverage = archive_coverage_report(&projection_catalog);
     if coverage.strict_imported_total < coverage.imported_message_total {
-        memory_status(format!(
-            "{label}: archive coverage warning: strict imported pattern matches {}/{} message(s)",
-            coverage.strict_imported_total, coverage.imported_message_total
+        return Err(anyhow!(
+            "{label}: archive coverage mismatch: strict imported pattern matches {}/{} imported message(s)",
+            coverage.strict_imported_total,
+            coverage.imported_message_total
         ));
     }
     let messages = load_archive_messages(&projection_catalog)?;
@@ -2942,8 +2910,8 @@ struct ArchiveMessageInfo {
     content: Value<Handle<Blake3, LongString>>,
     created_at: Value<NsTAIInterval>,
     thread_root_id: Id,
-    conversation_id: Option<Value<Handle<Blake3, LongString>>>,
-    source_format: Option<String>,
+    conversation_id: Value<Handle<Blake3, LongString>>,
+    source_format: String,
     source_message_id: Value<Handle<Blake3, LongString>>,
     source_author: Value<Handle<Blake3, LongString>>,
     source_role: Value<Handle<Blake3, LongString>>,
@@ -2953,11 +2921,7 @@ struct ArchiveMessageInfo {
 struct ArchiveCoverageReport {
     kind_message_total: usize,
     imported_message_total: usize,
-    core_imported_total: usize,
     strict_imported_total: usize,
-    with_source_message_id_total: usize,
-    with_source_author_total: usize,
-    with_source_role_total: usize,
 }
 
 impl ArchiveCoverageReport {
@@ -2968,20 +2932,6 @@ impl ArchiveCoverageReport {
         (self.strict_imported_total as f64) * 100.0 / (self.imported_message_total as f64)
     }
 
-    fn missing_source_message_id(&self) -> usize {
-        self.imported_message_total
-            .saturating_sub(self.with_source_message_id_total)
-    }
-
-    fn missing_source_author(&self) -> usize {
-        self.imported_message_total
-            .saturating_sub(self.with_source_author_total)
-    }
-
-    fn missing_source_role(&self) -> usize {
-        self.imported_message_total
-            .saturating_sub(self.with_source_role_total)
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3056,11 +3006,10 @@ fn ingest_archive_context_chunks(
         }
 
         let author_name = load_optional_text(ws, message.author_name)?;
-        let source_author = load_text(ws, message.source_author).context("load source_author")?;
-        let source_role = load_text(ws, message.source_role).context("load source_role")?;
-        let source_message_id =
-            load_text(ws, message.source_message_id).context("load source_message_id")?;
-        let conversation_id = load_optional_text(ws, message.conversation_id)?;
+        let source_author = load_text(ws, message.source_author)?;
+        let source_role = load_text(ws, message.source_role)?;
+        let source_message_id = load_text(ws, message.source_message_id)?;
+        let conversation_id = load_text(ws, message.conversation_id)?;
         let content = load_text(ws, message.content).context("load archive message content")?;
         let resolved_person = resolve_archive_person(
             relations,
@@ -3073,7 +3022,7 @@ fn ingest_archive_context_chunks(
             source_author.as_str(),
             source_role.as_str(),
             source_message_id.as_str(),
-            conversation_id.as_deref(),
+            conversation_id.as_str(),
             content.as_str(),
             resolved_person
                 .and_then(|person_id| relations.person_label.get(&person_id).map(|s| s.as_str())),
@@ -3099,12 +3048,10 @@ fn ingest_archive_context_chunks(
             if let Some(person_id) = resolved_person {
                 *change += entity! { &chunk_id @ playground_context::archive_person: person_id };
             }
-            if let Some(conversation_id) = message.conversation_id {
-                *change += entity! { &chunk_id @ playground_context::archive_conversation: conversation_id };
-            }
-            if let Some(source_format) = message.source_format.as_deref() {
-                *change += entity! { &chunk_id @ playground_context::archive_source_format: source_format };
-            }
+            *change += entity! { &chunk_id @
+                playground_context::archive_conversation: message.conversation_id,
+                playground_context::archive_source_format: message.source_format.as_str(),
+            };
 
             let chunk = ContextChunk {
                 id: *chunk_id,
@@ -3119,8 +3066,8 @@ fn ingest_archive_context_chunks(
                 archive_author: Some(message.author_id),
                 archive_person: resolved_person,
                 archive_thread_root: Some(message.thread_root_id),
-                archive_conversation: message.conversation_id,
-                archive_source_format: message.source_format.clone(),
+                archive_conversation: Some(message.conversation_id),
+                archive_source_format: Some(message.source_format.clone()),
             };
             index
                 .chunk_for_archive_message
@@ -3266,7 +3213,7 @@ fn ingest_exec_context_chunks(
     Ok(added)
 }
 
-fn prompt_for_exec_result_with_history(
+fn context_for_exec_result_with_history(
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     catalog: &TribleSet,
@@ -3275,7 +3222,7 @@ fn prompt_for_exec_result_with_history(
     exec_result_id: Id,
     config: &Config,
 ) -> Result<(String, TribleSet)> {
-    let (mut messages, compact_change) = build_prompt_messages_with_compaction(
+    let (mut messages, compact_change) = build_context_messages_with_compaction(
         ws,
         core_index,
         catalog,
@@ -3284,14 +3231,12 @@ fn prompt_for_exec_result_with_history(
         exec_result_id,
         config,
     )?;
-    // Store the system prompt as an actual system role message instead of concatenating into a
-    // monolithic user prompt string.
     messages.insert(0, ChatMessage::system(config.system_prompt.clone()));
-    let prompt_json = serde_json::to_string(&messages).context("serialize chat prompt")?;
-    Ok((prompt_json, compact_change))
+    let context_json = serde_json::to_string(&messages).context("serialize context messages")?;
+    Ok((context_json, compact_change))
 }
 
-fn build_prompt_messages_with_compaction(
+fn build_context_messages_with_compaction(
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     catalog: &TribleSet,
@@ -3301,7 +3246,7 @@ fn build_prompt_messages_with_compaction(
     config: &Config,
 ) -> Result<(Vec<ChatMessage>, TribleSet)> {
     let mut index = load_context_chunks(catalog);
-    let body_budget_chars = prompt_body_budget_chars(config);
+    let body_budget_chars = context_body_budget_chars(config);
     let semantic_compactor = SemanticCompactor::new(config)?;
     let merge_arity = config.memory_compaction_arity as usize;
     let primary_lens_id = config
@@ -3361,13 +3306,52 @@ fn build_prompt_messages_with_compaction(
         results.as_slice(),
         core_index.latest_moment_boundary_turn_id(),
     );
-    let (mut messages, _used_chars) = build_memory_cover_messages(
+    let (mut messages, used_chars, breath_idx) = build_memory_cover_messages(
         ws,
         &index,
         primary_lens_id,
         body_budget_chars,
         moment_boundary_end_key,
     )?;
+
+    // Insert breath boundary between memory and moment segments.
+    if !messages.is_empty() {
+        let fill_pct = if body_budget_chars > 0 {
+            (used_chars * 100) / body_budget_chars
+        } else {
+            0
+        };
+        let breath_output = format!(
+            "context filled to {fill_pct}%. present moment begins."
+        );
+        messages.insert(breath_idx, ChatMessage::user(breath_output));
+        messages.insert(breath_idx, ChatMessage::assistant("breath".to_string()));
+    }
+
+    // Project post-boundary exec results as raw shell interaction turns.
+    if let Some(boundary) = moment_boundary_end_key {
+        for result in &results {
+            let Some(finished_at) = result.finished_at else {
+                continue;
+            };
+            if interval_key(finished_at) <= boundary {
+                continue;
+            }
+            let projection = load_exec_turn_projection(ws, core_index, result)?;
+            let exec_output = load_exec_result(ws, result.clone())?;
+
+            for event in &projection.reason_events {
+                if should_project_reason_event(event) {
+                    messages.push(ChatMessage::assistant(synthetic_reason_command(&event.text)));
+                    messages.push(ChatMessage::user(synthetic_reason_output(event)));
+                }
+            }
+
+            messages.push(ChatMessage::assistant(projection.command));
+            messages.push(ChatMessage::user(format_moment_output(&exec_output)));
+        }
+    }
+
     if let Some(guard) = memory_loop_guard_message(ws, core_index, results.as_slice(), current_pos)?
     {
         messages.push(ChatMessage::user(guard));
@@ -3375,15 +3359,15 @@ fn build_prompt_messages_with_compaction(
     Ok((messages, compact_change))
 }
 
-fn prompt_body_budget_chars(config: &Config) -> usize {
+fn context_body_budget_chars(config: &Config) -> usize {
     // This is an intentionally cheap heuristic: we approximate tokens->chars and reserve space
     // for model output plus a small safety margin.
     let reserved = config
-        .llm
+        .model
         .max_output_tokens
-        .saturating_add(config.llm.prompt_safety_margin_tokens);
-    let input_tokens = config.llm.context_window_tokens.saturating_sub(reserved);
-    let chars_per_token = config.llm.prompt_chars_per_token.max(1);
+        .saturating_add(config.model.context_safety_margin_tokens);
+    let input_tokens = config.model.context_window_tokens.saturating_sub(reserved);
+    let chars_per_token = config.model.chars_per_token.max(1);
 
     let input_chars = u128_to_usize_saturating((input_tokens as u128) * (chars_per_token as u128));
     let system_chars = config.system_prompt.chars().count();
@@ -3423,15 +3407,16 @@ struct SplitCandidate {
     recency_key: i128,
 }
 
+/// Returns (messages, used_chars, breath_insert_index).
 fn build_memory_cover_messages(
     ws: &mut Workspace<Pile>,
     index: &ContextChunkIndex,
     lens_id: Id,
     budget_chars: usize,
     moment_boundary_end_key: Option<i128>,
-) -> Result<(Vec<ChatMessage>, usize)> {
+) -> Result<(Vec<ChatMessage>, usize, usize)> {
     if budget_chars == 0 {
-        return Ok((Vec::new(), 0));
+        return Ok((Vec::new(), 0, 0));
     }
 
     let mut seen_roots = HashSet::new();
@@ -3448,6 +3433,16 @@ fn build_memory_cover_messages(
         })
         .filter(|id| seen_roots.insert(*id))
         .filter(|id| index.chunks.contains_key(id))
+        // Exclude post-boundary chunks: moment turns are projected as raw shell
+        // interaction, not as memory cover entries.
+        .filter(|id| {
+            moment_boundary_end_key.is_none_or(|boundary| {
+                index
+                    .chunks
+                    .get(id)
+                    .is_some_and(|chunk| interval_key(chunk.end_at) <= boundary)
+            })
+        })
         .collect();
     cover.sort_by_key(|id| {
         index
@@ -3457,7 +3452,7 @@ fn build_memory_cover_messages(
             .unwrap_or(i128::MAX)
     });
     if cover.is_empty() {
-        return Ok((Vec::new(), 0));
+        return Ok((Vec::new(), 0, 0));
     }
 
     let mut turn_cache: HashMap<Id, MemoryCoverTurn> = HashMap::new();
@@ -3475,7 +3470,7 @@ fn build_memory_cover_messages(
         used = used.saturating_sub(turn.cost);
     }
     if cover.is_empty() {
-        return Ok((Vec::new(), 0));
+        return Ok((Vec::new(), 0, 0));
     }
 
     loop {
@@ -3489,11 +3484,6 @@ fn build_memory_cover_messages(
             let Some(parent_chunk) = index.chunks.get(parent_id) else {
                 continue;
             };
-            if moment_boundary_end_key
-                .is_some_and(|boundary| interval_key(parent_chunk.end_at) <= boundary)
-            {
-                continue;
-            }
             if parent_chunk.children.len() < 2 {
                 continue;
             }
@@ -3539,7 +3529,10 @@ fn build_memory_cover_messages(
         messages.push(ChatMessage::user(turn.output.clone()));
     }
 
-    Ok((messages, used))
+    // All cover entries are memory (post-boundary chunks are excluded above),
+    // so breath goes at the end.
+    let breath_insert_index = messages.len();
+    Ok((messages, used, breath_insert_index))
 }
 
 fn memory_cover_turn(
@@ -3676,7 +3669,7 @@ fn memory_lookup_failed_result(command: &str, result: &ExecResult) -> bool {
         return false;
     }
 
-    let stderr = format_output_text(result.stderr_text.clone(), result.stderr.clone());
+    let stderr = format_output_text(result.stderr_text.as_deref(), result.stderr.as_ref());
     let error = result.error.clone().unwrap_or_default();
     memory_lookup_failed_text(stderr.as_str(), error.as_str())
 }
@@ -3740,17 +3733,17 @@ fn load_reasoning_for_exec_result(
     let Some(request_id) = core_index.request_for_thought(thought_id) else {
         return Ok(None);
     };
-    let Some(llm_result) = core_index.latest_model_result(request_id) else {
+    let Some(result) = core_index.latest_model_result(request_id) else {
         return Ok(None);
     };
-    let Some(reasoning_handle) = llm_result.reasoning_text else {
+    let Some(reasoning_handle) = result.reasoning_text else {
         return Ok(None);
     };
     let reasoning_text = load_text(ws, reasoning_handle).context("load reasoning text")?;
     if reasoning_text.trim().is_empty() {
         return Ok(None);
     }
-    Ok(Some((llm_result.id, reasoning_text)))
+    Ok(Some((result.id, reasoning_text)))
 }
 
 fn archive_projection_attr_ids() -> [Id; 12] {
@@ -3789,12 +3782,14 @@ struct ArchiveProjectionCounts {
 }
 
 #[derive(Debug, Clone)]
-struct StrictArchiveMessageRow {
+struct CoreArchiveMessageRow {
     message_id: Id,
     author_id: Id,
     content: Value<Handle<Blake3, LongString>>,
     created_at: Value<NsTAIInterval>,
     batch_id: Id,
+    source_format: String,
+    conversation_id: Value<Handle<Blake3, LongString>>,
     source_message_id: Value<Handle<Blake3, LongString>>,
     source_author: Value<Handle<Blake3, LongString>>,
     source_role: Value<Handle<Blake3, LongString>>,
@@ -3872,37 +3867,15 @@ fn load_archive_messages(catalog: &TribleSet) -> Result<Vec<ArchiveMessageInfo>>
             .or_insert(author_name);
     }
 
-    let mut source_format_by_batch = HashMap::new();
-    for (batch_id, source_format) in find!(
-        (batch_id: Id, source_format: String),
-        pattern!(&catalog, [{
-            ?batch_id @ playground_archive_import::source_format: ?source_format,
-        }])
-    ) {
-        source_format_by_batch
-            .entry(batch_id)
-            .or_insert(source_format);
-    }
-
-    let mut conversation_by_batch = HashMap::new();
-    for (batch_id, conversation_id) in find!(
-        (batch_id: Id, conversation_id: Value<Handle<Blake3, LongString>>),
-        pattern!(&catalog, [{
-            ?batch_id @ playground_archive_import::source_conversation_id: ?conversation_id,
-        }])
-    ) {
-        conversation_by_batch
-            .entry(batch_id)
-            .or_insert(conversation_id);
-    }
-
-    let mut strict_rows: Vec<StrictArchiveMessageRow> = find!(
+    let mut core_rows: Vec<CoreArchiveMessageRow> = find!(
         (
             message_id: Id,
             author_id: Id,
             content: Value<Handle<Blake3, LongString>>,
             created_at: Value<NsTAIInterval>,
             batch_id: Id,
+            source_format: String,
+            conversation_id: Value<Handle<Blake3, LongString>>,
             source_message_id: Value<Handle<Blake3, LongString>>,
             source_author: Value<Handle<Blake3, LongString>>,
             source_role: Value<Handle<Blake3, LongString>>
@@ -3917,6 +3890,10 @@ fn load_archive_messages(catalog: &TribleSet) -> Result<Vec<ArchiveMessageInfo>>
                 playground_archive_import::source_message_id: ?source_message_id,
                 playground_archive_import::source_author: ?source_author,
                 playground_archive_import::source_role: ?source_role,
+        },{
+            ?batch_id @
+                playground_archive_import::source_format: ?source_format,
+                playground_archive_import::source_conversation_id: ?conversation_id,
         }])
     )
     .map(
@@ -3926,15 +3903,19 @@ fn load_archive_messages(catalog: &TribleSet) -> Result<Vec<ArchiveMessageInfo>>
             content,
             created_at,
             batch_id,
+            source_format,
+            conversation_id,
             source_message_id,
             source_author,
             source_role,
-        )| StrictArchiveMessageRow {
+        )| CoreArchiveMessageRow {
             message_id,
             author_id,
             content,
             created_at,
             batch_id,
+            source_format,
+            conversation_id,
             source_message_id,
             source_author,
             source_role,
@@ -3942,14 +3923,14 @@ fn load_archive_messages(catalog: &TribleSet) -> Result<Vec<ArchiveMessageInfo>>
     )
     .collect();
 
-    strict_rows.sort_by_key(|row| {
+    core_rows.sort_by_key(|row| {
         let message_sort_key: [u8; 16] = row.message_id.into();
         let batch_sort_key: [u8; 16] = row.batch_id.into();
         (message_sort_key, batch_sort_key)
     });
 
-    let mut by_message = HashMap::<Id, StrictArchiveMessageRow>::new();
-    for row in strict_rows {
+    let mut by_message = HashMap::<Id, CoreArchiveMessageRow>::new();
+    for row in core_rows {
         match by_message.entry(row.message_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(row);
@@ -3968,8 +3949,6 @@ fn load_archive_messages(catalog: &TribleSet) -> Result<Vec<ArchiveMessageInfo>>
     let mut messages = Vec::with_capacity(by_message.len());
     for (message_id, row) in by_message {
         let thread_root_id = archive_thread_root(message_id, &reply_to);
-        let conversation_id = conversation_by_batch.get(&row.batch_id).copied();
-        let source_format = source_format_by_batch.get(&row.batch_id).cloned();
         messages.push(ArchiveMessageInfo {
             id: message_id,
             author_id: row.author_id,
@@ -3977,8 +3956,8 @@ fn load_archive_messages(catalog: &TribleSet) -> Result<Vec<ArchiveMessageInfo>>
             content: row.content,
             created_at: row.created_at,
             thread_root_id,
-            conversation_id,
-            source_format,
+            conversation_id: row.conversation_id,
+            source_format: row.source_format,
             source_message_id: row.source_message_id,
             source_author: row.source_author,
             source_role: row.source_role,
@@ -4009,56 +3988,6 @@ fn archive_coverage_report(catalog: &TribleSet) -> ArchiveCoverageReport {
     .collect::<HashSet<_>>()
     .len();
 
-    let core_imported_total = find!(
-        (message_id: Id),
-        pattern!(catalog, [{
-            ?message_id @
-                playground_archive::kind: playground_archive::kind_message,
-                playground_archive_import::batch: _?batch_id,
-                playground_archive::author: _?author_id,
-                playground_archive::content: _?content,
-                playground_archive::created_at: _?created_at,
-        }])
-    )
-    .collect::<HashSet<_>>()
-    .len();
-
-    let with_source_message_id_total = find!(
-        (message_id: Id),
-        pattern!(catalog, [{
-            ?message_id @
-                playground_archive::kind: playground_archive::kind_message,
-                playground_archive_import::batch: _?batch_id,
-                playground_archive_import::source_message_id: _?source_message_id,
-        }])
-    )
-    .collect::<HashSet<_>>()
-    .len();
-
-    let with_source_author_total = find!(
-        (message_id: Id),
-        pattern!(catalog, [{
-            ?message_id @
-                playground_archive::kind: playground_archive::kind_message,
-                playground_archive_import::batch: _?batch_id,
-                playground_archive_import::source_author: _?source_author,
-        }])
-    )
-    .collect::<HashSet<_>>()
-    .len();
-
-    let with_source_role_total = find!(
-        (message_id: Id),
-        pattern!(catalog, [{
-            ?message_id @
-                playground_archive::kind: playground_archive::kind_message,
-                playground_archive_import::batch: _?batch_id,
-                playground_archive_import::source_role: _?source_role,
-        }])
-    )
-    .collect::<HashSet<_>>()
-    .len();
-
     let strict_imported_total = find!(
         (message_id: Id),
         pattern!(catalog, [{
@@ -4079,11 +4008,7 @@ fn archive_coverage_report(catalog: &TribleSet) -> ArchiveCoverageReport {
     ArchiveCoverageReport {
         kind_message_total,
         imported_message_total,
-        core_imported_total,
         strict_imported_total,
-        with_source_message_id_total,
-        with_source_author_total,
-        with_source_role_total,
     }
 }
 
@@ -4283,7 +4208,7 @@ fn format_archive_output(
     source_author: &str,
     source_role: &str,
     source_message_id: &str,
-    conversation_id: Option<&str>,
+    conversation_id: &str,
     content: &str,
     person_label: Option<&str>,
     person_id: Option<Id>,
@@ -4305,12 +4230,8 @@ fn format_archive_output(
         "archive_thread_root_id",
         format!("{:x}", message.thread_root_id).as_str(),
     );
-    if let Some(source_format) = message.source_format.as_deref() {
-        append_section(&mut text, "archive_source_format", source_format);
-    }
-    if let Some(conversation_id) = conversation_id {
-        append_section(&mut text, "archive_conversation_id", conversation_id);
-    }
+    append_section(&mut text, "archive_source_format", message.source_format.as_str());
+    append_section(&mut text, "archive_conversation_id", conversation_id);
     append_section(&mut text, "source_message_id", source_message_id);
     if let Some(author_name) = author_name {
         append_section(&mut text, "author_name", author_name);
@@ -4688,23 +4609,23 @@ impl SemanticCompactor {
             .build()
             .context("build semantic compaction http client")?;
 
-        let mut model = config.llm.model.clone();
-        let mut base_url = config.llm.base_url.clone();
-        let mut api_key = config.llm.api_key.clone();
-        let mut chars_per_token = config.llm.prompt_chars_per_token.max(1);
-        if let Some(profile_id) = config.llm_compaction_profile_id {
-            match config::load_llm_profile(config.pile_path.as_path(), profile_id) {
+        let mut model = config.model.model.clone();
+        let mut base_url = config.model.base_url.clone();
+        let mut api_key = config.model.api_key.clone();
+        let mut chars_per_token = config.model.chars_per_token.max(1);
+        if let Some(profile_id) = config.compaction_profile_id {
+            match config::load_model_profile(config.pile_path.as_path(), profile_id) {
                 Ok(Some((profile, _name))) => {
                     model = profile.model;
                     base_url = profile.base_url;
                     api_key = profile.api_key;
-                    chars_per_token = profile.prompt_chars_per_token.max(1);
+                    chars_per_token = profile.chars_per_token.max(1);
                 }
                 Ok(None) => eprintln!(
-                    "warning: compaction profile {profile_id:x} not found; using active llm profile"
+                    "warning: compaction profile {profile_id:x} not found; using active model profile"
                 ),
                 Err(err) => eprintln!(
-                    "warning: failed to load compaction profile {profile_id:x}: {err:#}; using active llm profile"
+                    "warning: failed to load compaction profile {profile_id:x}: {err:#}; using active model profile"
                 ),
             }
         }
@@ -5010,8 +4931,8 @@ fn format_exec_outputs_by_lens(
         exit_code,
         error,
     } = result;
-    let stdout = format_output_text(stdout_text, stdout);
-    let stderr = format_output_text(stderr_text, stderr);
+    let stdout = format_output_text(stdout_text.as_deref(), stdout.as_ref());
+    let stderr = format_output_text(stderr_text.as_deref(), stderr.as_ref());
     let error = error.unwrap_or_default();
     let exit_code_value = exit_code
         .map(|code| code.to_string())
@@ -5054,14 +4975,53 @@ fn append_section(text: &mut String, label: &str, body: &str) {
     text.push('\n');
 }
 
-fn format_output_text(text: Option<String>, bytes: Option<Bytes>) -> String {
+fn format_output_text(text: Option<&str>, bytes: Option<&Bytes>) -> String {
     if let Some(text) = text {
-        return text;
+        return text.to_string();
     }
     if let Some(bytes) = bytes {
         return String::from_utf8_lossy(bytes.as_ref()).to_string();
     }
     String::new()
+}
+
+/// Formats an exec result as concise shell output for moment turns.
+/// Unlike `format_exec_outputs_by_lens`, this produces raw output without
+/// section headers or lens duplication — just what the model would see from
+/// an actual shell command.
+fn format_moment_output(result: &ExecResult) -> String {
+    let stdout = format_output_text(result.stdout_text.as_deref(), result.stdout.as_ref());
+    let stderr = format_output_text(result.stderr_text.as_deref(), result.stderr.as_ref());
+    let mut text = String::new();
+    if !stdout.is_empty() {
+        text.push_str(&stdout);
+        if !stdout.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    if !stderr.is_empty() {
+        text.push_str("stderr:\n");
+        text.push_str(&stderr);
+        if !stderr.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    if let Some(error) = &result.error {
+        if !error.is_empty() {
+            text.push_str("error: ");
+            text.push_str(error);
+            if !error.ends_with('\n') {
+                text.push('\n');
+            }
+        }
+    }
+    if result.exit_code.is_some_and(|code| code != 0) {
+        text.push_str(&format!("exit: {}\n", result.exit_code.unwrap()));
+    }
+    if text.is_empty() {
+        text.push_str("[ok]\n");
+    }
+    text
 }
 
 fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {

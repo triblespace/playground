@@ -84,12 +84,12 @@ impl ModelHttpClient {
             .timeout(Duration::from_secs(MODEL_REQUEST_TIMEOUT_SECS))
             .build()
             .context("build http client")?;
-        let endpoint_url = chat_completions_url(config.llm.base_url.as_str());
+        let endpoint_url = chat_completions_url(config.model.base_url.as_str());
         Ok(Self {
             client,
             endpoint_url,
-            api_key: config.llm.api_key.clone(),
-            stream: config.llm.stream,
+            api_key: config.model.api_key.clone(),
+            stream: config.model.stream,
         })
     }
 
@@ -248,7 +248,7 @@ pub(crate) fn run_model_loop(
             let model = request
                 .model
                 .map(|value| String::from_value(&value))
-                .unwrap_or_else(|| config.llm.model.clone());
+                .unwrap_or_else(|| config.model.model.clone());
 
             let attempt: u64 = 1;
             let messages: Vec<ChatMessage> = match serde_json::from_str(context_text.as_str()) {
@@ -529,11 +529,11 @@ fn build_payload(
     messages: &[ChatMessage],
 ) -> JsonValue {
     let messages = build_chat_payload_messages(ws, model, messages);
-    let max_tokens = config.llm.max_output_tokens.max(1);
+    let max_tokens = config.model.max_output_tokens.max(1);
     serde_json::json!({
         "model": model,
         "messages": messages,
-        "stream": config.llm.stream,
+        "stream": config.model.stream,
         "max_tokens": max_tokens,
     })
 }
@@ -939,7 +939,7 @@ mod tests {
     fn test_config() -> Config {
         let path = test_repo_path();
         let mut config = Config::load(Some(path.as_path())).expect("load default config");
-        config.llm.model = "gpt-5".to_string();
+        config.model.model = "gpt-5".to_string();
         let _ = std::fs::remove_file(path);
         config
     }

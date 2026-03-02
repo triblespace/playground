@@ -25,22 +25,22 @@ pub mod playground_config {
         "F0F90572249284CD57E48580369DEB6D" as pub author: Handle<Blake3, LongString>;
         "98A194178CFD7CBB915C1BC9EB561A7F" as pub author_role: Handle<Blake3, LongString>;
         "D1DC11B303725409AB8A30C6B59DB2D7" as pub persona_id: GenId;
-        "79E1B50756FB64A30916E9353225E179" as pub active_llm_profile_id: GenId;
-        "B919F28377B1241E4275808DBB1D423D" as pub active_llm_compaction_profile_id: GenId;
+        "79E1B50756FB64A30916E9353225E179" as pub active_model_profile_id: GenId;
+        "B919F28377B1241E4275808DBB1D423D" as pub active_compaction_profile_id: GenId;
         "698519DFB681FABC3F06160ACAC9DA8E" as pub poll_ms: U256BE;
-        "6691CF3F872C6107DCFAD0BCF7CDC1A0" as pub llm_profile_id: GenId;
-        "85BE7BDA465B3CB0F800F76EEF8FAC9B" as pub llm_model: Handle<Blake3, LongString>;
-        "B216CFBBF85AA1350B142D510E26268B" as pub llm_base_url: Handle<Blake3, LongString>;
-        "55F3FFD721AF7C1258E45BC91CDBF30F" as pub llm_api_key: Handle<Blake3, LongString>;
+        "6691CF3F872C6107DCFAD0BCF7CDC1A0" as pub model_profile_id: GenId;
+        "85BE7BDA465B3CB0F800F76EEF8FAC9B" as pub model_name: Handle<Blake3, LongString>;
+        "B216CFBBF85AA1350B142D510E26268B" as pub model_base_url: Handle<Blake3, LongString>;
+        "55F3FFD721AF7C1258E45BC91CDBF30F" as pub model_api_key: Handle<Blake3, LongString>;
         "328B29CE81665EE719C5A6E91695D4D4" as pub tavily_api_key: Handle<Blake3, LongString>;
         "AB0DF9F03F28A27A6DB95B693CC0EC53" as pub exa_api_key: Handle<Blake3, LongString>;
-        "BA4E05799CA2ACDCF3F9350FC8742F2F" as pub llm_reasoning_effort: Handle<Blake3, LongString>;
-        "73876213CFB8CF73CF0139E20B9770A1" as pub llm_reasoning_summary: Handle<Blake3, LongString>;
-        "5F04F7A0EB4EBBE6161022B336F83513" as pub llm_stream: U256BE;
-        "F9CEA1A2E81D738BB125B4D144B7A746" as pub llm_context_window_tokens: U256BE;
-        "4200F6746B36F2784DEBA1555595D6AC" as pub llm_max_output_tokens: U256BE;
-        "1FF004BB48F7A4F8F72541F4D4FA75FF" as pub llm_prompt_safety_margin_tokens: U256BE;
-        "095FAECDB8FF205DF591DF594E593B01" as pub llm_prompt_chars_per_token: U256BE;
+        "BA4E05799CA2ACDCF3F9350FC8742F2F" as pub model_reasoning_effort: Handle<Blake3, LongString>;
+        "73876213CFB8CF73CF0139E20B9770A1" as pub model_reasoning_summary: Handle<Blake3, LongString>;
+        "5F04F7A0EB4EBBE6161022B336F83513" as pub model_stream: U256BE;
+        "F9CEA1A2E81D738BB125B4D144B7A746" as pub model_context_window_tokens: U256BE;
+        "4200F6746B36F2784DEBA1555595D6AC" as pub model_max_output_tokens: U256BE;
+        "1FF004BB48F7A4F8F72541F4D4FA75FF" as pub model_context_safety_margin_tokens: U256BE;
+        "095FAECDB8FF205DF591DF594E593B01" as pub model_chars_per_token: U256BE;
         "167BABF8DFCD69AB4DB69773AAB18C4B" as pub memory_compaction_arity: U256BE;
         "24CF9D532E03C44CF719546DDE7E0493" as pub memory_lens_id: GenId;
         "1F0A596CD677F732CD5C506F74C61F6B" as pub memory_lens_prompt: Handle<Blake3, LongString>;
@@ -58,9 +58,9 @@ pub mod playground_config {
     #[allow(non_upper_case_globals)]
     pub const kind_config: Id = id_hex!("A8DCBFD625F386AA7CDFD62A81183E82");
 
-    /// Tag for LLM profile entries (versioned by `updated_at`).
+    /// Tag for model profile entries (versioned by `updated_at`).
     #[allow(non_upper_case_globals)]
-    pub const kind_llm_profile: Id = id_hex!("B08E356C4B08F44AB7EC177D47129447");
+    pub const kind_model_profile: Id = id_hex!("B08E356C4B08F44AB7EC177D47129447");
     /// Tag for memory lens entries (versioned by `updated_at`).
     #[allow(non_upper_case_globals)]
     pub const kind_memory_lens: Id = id_hex!("D982F64C48F263A312D6E342D09554B0");
@@ -133,10 +133,10 @@ where
         metadata::tag: playground_config::tag_kind,
     };
 
-    tribles += entity! { ExclusiveId::force_ref(&playground_config::kind_llm_profile) @
-        metadata::name: blobs.put("kind_llm_profile".to_string())?,
+    tribles += entity! { ExclusiveId::force_ref(&playground_config::kind_model_profile) @
+        metadata::name: blobs.put("kind_model_profile".to_string())?,
         metadata::description: blobs.put(
-            "LLM profile entry entity kind.".to_string(),
+            "Model profile entry entity kind.".to_string(),
         )?,
         metadata::tag: playground_config::tag_kind,
     };
@@ -182,22 +182,22 @@ where
     metadata += describe_attribute(blobs, &playground_config::author)?;
     metadata += describe_attribute(blobs, &playground_config::author_role)?;
     metadata += describe_attribute(blobs, &playground_config::persona_id)?;
-    metadata += describe_attribute(blobs, &playground_config::active_llm_profile_id)?;
-    metadata += describe_attribute(blobs, &playground_config::active_llm_compaction_profile_id)?;
+    metadata += describe_attribute(blobs, &playground_config::active_model_profile_id)?;
+    metadata += describe_attribute(blobs, &playground_config::active_compaction_profile_id)?;
     metadata += describe_attribute(blobs, &playground_config::poll_ms)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_profile_id)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_model)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_base_url)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_api_key)?;
+    metadata += describe_attribute(blobs, &playground_config::model_profile_id)?;
+    metadata += describe_attribute(blobs, &playground_config::model_name)?;
+    metadata += describe_attribute(blobs, &playground_config::model_base_url)?;
+    metadata += describe_attribute(blobs, &playground_config::model_api_key)?;
     metadata += describe_attribute(blobs, &playground_config::tavily_api_key)?;
     metadata += describe_attribute(blobs, &playground_config::exa_api_key)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_reasoning_effort)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_reasoning_summary)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_stream)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_context_window_tokens)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_max_output_tokens)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_prompt_safety_margin_tokens)?;
-    metadata += describe_attribute(blobs, &playground_config::llm_prompt_chars_per_token)?;
+    metadata += describe_attribute(blobs, &playground_config::model_reasoning_effort)?;
+    metadata += describe_attribute(blobs, &playground_config::model_reasoning_summary)?;
+    metadata += describe_attribute(blobs, &playground_config::model_stream)?;
+    metadata += describe_attribute(blobs, &playground_config::model_context_window_tokens)?;
+    metadata += describe_attribute(blobs, &playground_config::model_max_output_tokens)?;
+    metadata += describe_attribute(blobs, &playground_config::model_context_safety_margin_tokens)?;
+    metadata += describe_attribute(blobs, &playground_config::model_chars_per_token)?;
     metadata += describe_attribute(blobs, &playground_config::memory_compaction_arity)?;
     metadata += describe_attribute(blobs, &playground_config::memory_lens_id)?;
     metadata += describe_attribute(blobs, &playground_config::memory_lens_prompt)?;
