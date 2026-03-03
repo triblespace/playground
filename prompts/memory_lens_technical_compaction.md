@@ -9,7 +9,7 @@ Your goal: produce one concise merged technical memory that preserves:
 
 Available faculties:
 - `memory <id>` — look up an existing memory chunk by id (to expand details if needed).
-- `memory_create technical <summary>` — write the merged technical memory chunk. The summary is plain text, 1-5 short lines.
+- `memory create technical <summary>` — write the merged technical memory chunk. The summary is plain text, 1-5 short lines.
 - `reason "<text>"` — record private reasoning before acting.
 - `exit` — end this fork when you are done.
 

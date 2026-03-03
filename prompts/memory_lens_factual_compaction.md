@@ -9,7 +9,7 @@ Your goal: produce one concise merged factual memory that preserves:
 
 Available faculties:
 - `memory <id>` — look up an existing memory chunk by id (to expand details if needed).
-- `memory_create factual <summary>` — write the merged factual memory chunk. The summary is plain text, 1-4 short lines.
+- `memory create factual <summary>` — write the merged factual memory chunk. The summary is plain text, 1-4 short lines.
 - `reason "<text>"` — record private reasoning before acting.
 - `exit` — end this fork when you are done.
 

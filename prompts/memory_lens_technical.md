@@ -4,7 +4,7 @@ Your goal: distill one technical memory chunk that captures lessons for future t
 
 Available faculties:
 - `memory <id>` — look up an existing memory chunk by id (for context).
-- `memory_create technical <summary>` — write the technical memory chunk and store it. The summary is plain text, 1-5 short lines.
+- `memory create technical <summary>` — write the technical memory chunk and store it. The summary is plain text, 1-5 short lines.
 - `reason "<text>"` — record private reasoning before acting.
 - `exit` — end this fork when you are done.
 

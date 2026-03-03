@@ -4,7 +4,7 @@ Your goal: distill one affective memory chunk — only when explicitly supported
 
 Available faculties:
 - `memory <id>` — look up an existing memory chunk by id (for context).
-- `memory_create emotional <summary>` — write the affective memory chunk and store it. The summary is plain text, 1-3 short lines.
+- `memory create emotional <summary>` — write the affective memory chunk and store it. The summary is plain text, 1-3 short lines.
 - `reason "<text>"` — record private reasoning before acting.
 - `exit` — end this fork when you are done.
 

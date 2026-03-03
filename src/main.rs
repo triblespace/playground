@@ -4714,7 +4714,7 @@ fn insert_chunk_with_carry(
 
 /// Build the ExecCommandEnv for fork loops. Faculties read config from the
 /// pile (via PILE and CONFIG_BRANCH_ID). Per-invocation env vars like
-/// FORK_EVENT_TIME_NS are NOT set, so `memory_create` runs in validate mode.
+/// FORK_EVENT_TIME_NS are NOT set, so `memory create` runs in validate mode.
 fn build_fork_env(config: &config::Config) -> exec_worker::ExecCommandEnv {
     exec_worker::ExecCommandEnv {
         pile: config.pile_path.to_string_lossy().to_string(),
@@ -4881,7 +4881,7 @@ impl ForkContext {
     /// message, then loops: send_turn → parse command → execute_command →
     /// format output → append messages.
     ///
-    /// Returns `Ok(Some(summary_text))` if the model called `memory_create`,
+    /// Returns `Ok(Some(summary_text))` if the model called `memory create`,
     /// or `Ok(None)` if it exited without creating.
     fn run_fork_loop(
         &self,
@@ -4908,7 +4908,7 @@ impl ForkContext {
                 break;
             }
 
-            // Detect memory_create: capture summary from command arguments.
+            // Detect `memory create`: capture summary from command arguments.
             if let Some(summary) = parse_memory_create_summary(&command) {
                 captured_summary = Some(summary);
             }
@@ -4932,14 +4932,16 @@ impl ForkContext {
     }
 }
 
-/// Parse the summary text from a `memory_create <lens> <summary...>` command.
+/// Parse the summary text from a `memory create <lens> <summary...>` command.
 fn parse_memory_create_summary(command: &str) -> Option<String> {
     let trimmed = command.trim();
-    let rest = trimmed.strip_prefix("memory_create")?;
+    let rest = trimmed.strip_prefix("memory")?;
+    // Must be followed by whitespace then "create".
+    let rest = rest.strip_prefix(char::is_whitespace)?;
+    let rest = rest.trim_start().strip_prefix("create")?;
     if rest.is_empty() {
         return None;
     }
-    // Must be followed by whitespace (not a different command like memory_create_foo).
     let rest = rest.strip_prefix(char::is_whitespace)?;
     // Skip the lens name (first word).
     let rest = rest.trim_start();
@@ -5053,7 +5055,7 @@ fn extract_output_text(json: &serde_json::Value) -> String {
 
 /// Create a level-0 memory chunk by running a fork agent loop with the full
 /// memory | breath | moment structure. The model runs real commands through
-/// a real shell, and when it calls `memory_create`, the summary text is
+/// a real shell, and when it calls `memory create`, the summary text is
 /// captured. Returns `Ok(Some(summary))` if a chunk was created, `Ok(None)`
 /// if the model shut down without creating.
 fn fork_summarize_leaf(

@@ -4,7 +4,7 @@ Your goal: distill one factual memory chunk that captures what concretely happen
 
 Available faculties:
 - `memory <id>` — look up an existing memory chunk by id (for context, not for creating new ones).
-- `memory_create factual <summary>` — write the factual memory chunk and store it. The summary is plain text, 1-4 short lines.
+- `memory create factual <summary>` — write the factual memory chunk and store it. The summary is plain text, 1-4 short lines.
 - `reason "<text>"` — record private reasoning before acting.
 - `exit` — end this fork when you are done.
 
