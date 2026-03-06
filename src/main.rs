@@ -44,10 +44,10 @@ use config::{Config, MemoryLensConfig};
 use relations_schema::playground_relations;
 use repo_util::{
     close_repo, current_branch_head, init_repo, load_text, pull_workspace, push_workspace,
-    refresh_cached_checkout,
+    refresh_cached_checkout, CommitHandle,
 };
 use schema::{model_chat, playground_cog, playground_context, playground_exec};
-use time_util::{epoch_interval, interval_key, now_epoch};
+use time_util::{epoch_interval, format_tai_timestamp, format_time_range, interval_key, now_epoch};
 
 mod reason_events {
     use triblespace::prelude::attributes;
@@ -769,14 +769,16 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
             .default_cwd
             .as_deref()
             .map(|p| p.to_str().unwrap_or("/workspace"));
-        let mut change = TribleSet::new();
         let mut stats = CompactionRunStats::default();
+        let mut cached_head = ws.head();
         memory_status("backfilling archive memory chunks...");
         let stage = Instant::now();
         let archive_added = ingest_archive_context_chunks(
+            &mut repo,
+            branch_id,
+            &mut cached_head,
             &mut ws,
             &mut index,
-            &mut change,
             archive_messages.as_slice(),
             &relations,
             None,
@@ -797,10 +799,12 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
             let stage = Instant::now();
             let results = sorted_finished_command_results(&core_index);
             let exec_added = ingest_exec_context_chunks(
+                &mut repo,
+                branch_id,
+                &mut cached_head,
                 &mut ws,
                 &core_index,
                 &mut index,
-                &mut change,
                 results.as_slice(),
                 None,
                 merge_arity,
@@ -819,17 +823,12 @@ fn run_memory_build(config: Config, args: MemoryBuildArgs) -> Result<()> {
             0
         };
 
-        if change.is_empty() {
+        if archive_added == 0 && exec_added == 0 {
             println!("  no pending memory chunks to backfill.");
             memory_status("build complete (nothing to write).");
             return Ok(());
         }
 
-        memory_status("committing/pushing backfill to pile...");
-        let stage = Instant::now();
-        ws.commit(change, None, Some("memory backfill"));
-        push_workspace(&mut repo, &mut ws).context("push memory backfill")?;
-        memory_status_timed("backfill committed and pushed", stage);
         println!("  archive_leaves_added: {}", archive_added);
         println!("  exec_leaves_added: {}", exec_added);
         println!("  merge_calls: {}", stats.merge_calls);
@@ -1873,8 +1872,10 @@ fn create_thought_and_request(
     } else {
         TribleSet::new()
     };
-    let (context_json, compact_change) = if let Some(exec_result_id) = about_exec_result {
+    let context_json = if let Some(exec_result_id) = about_exec_result {
         context_for_exec_result_with_history(
+            repo,
+            branch_id,
             &mut ws,
             &core_index,
             &catalog,
@@ -1884,16 +1885,12 @@ fn create_thought_and_request(
             config,
         )?
     } else {
-        (
-            serde_json::to_string(&[ChatMessage::system(config.system_prompt.clone())])
-                .context("serialize context messages")?,
-            TribleSet::new(),
-        )
+        serde_json::to_string(&[ChatMessage::system(config.system_prompt.clone())])
+            .context("serialize context messages")?
     };
     let context_handle = ws.put(context_json);
     let thought_id = ufoid();
     let mut change = TribleSet::new();
-    change += compact_change;
     change += entity! { &thought_id @
         playground_cog::kind: playground_cog::kind_thought,
         playground_cog::context: context_handle,
@@ -2926,11 +2923,6 @@ struct ContextChunk {
     children: Vec<Id>,
     about_exec_result: Option<Id>,
     about_archive_message: Option<Id>,
-    archive_author: Option<Id>,
-    archive_person: Option<Id>,
-    archive_thread_root: Option<Id>,
-    archive_conversation: Option<Value<Handle<Blake3, LongString>>>,
-    archive_source_format: Option<String>,
 }
 
 #[derive(Default)]
@@ -3007,9 +2999,11 @@ fn sorted_finished_command_results(core_index: &CoreIndex) -> Vec<CommandResultI
 }
 
 fn ingest_archive_context_chunks(
+    repo: &mut Repository<Pile>,
+    branch_id: Id,
+    cached_head: &mut Option<CommitHandle>,
     ws: &mut Workspace<Pile>,
     index: &mut ContextChunkIndex,
-    change: &mut TribleSet,
     archive_messages: &[ArchiveMessageInfo],
     relations: &RelationsIndex,
     max_created_at_key: Option<i128>,
@@ -3081,7 +3075,7 @@ fn ingest_archive_context_chunks(
             .primary_lens_id()
             .context("no configured memory lenses")?;
         for lens in missing_lenses {
-            let leaf_summary = match fork_summarize_leaf(
+            fork_summarize_leaf(
                 ws,
                 fork,
                 index,
@@ -3090,61 +3084,28 @@ fn ingest_archive_context_chunks(
                 event_command.as_str(),
                 event_output.as_str(),
                 &[], // archive messages have no reason events
+                message.created_at,
                 event_time_key,
                 fork_env,
                 exec_cwd,
-            )? {
-                Some(summary) => summary,
-                None => continue, // model decided nothing worth storing
-            };
-            let leaf_summary_handle = ws.put(leaf_summary);
-            let now = epoch_interval(now_epoch());
-            let chunk_id = ufoid();
+            )?;
 
-            *change += entity! { &chunk_id @
-                playground_context::kind: playground_context::kind_chunk,
-                playground_context::lens_id: lens.id,
-                playground_context::level: 0u64,
-                playground_context::summary: leaf_summary_handle,
-                playground_context::created_at: now,
-                playground_context::start_at: message.created_at,
-                playground_context::end_at: message.created_at,
-                playground_context::about_archive_message: message.id,
-                playground_context::archive_author: message.author_id,
-                playground_context::archive_thread_root: message.thread_root_id,
-            };
-            if let Some(person_id) = resolved_person {
-                *change += entity! { &chunk_id @ playground_context::archive_person: person_id };
-            }
-            *change += entity! { &chunk_id @
-                playground_context::archive_conversation: message.conversation_id,
-                playground_context::archive_source_format: message.source_format.as_str(),
+            // Faculty writes leaf chunk to pile. Delta-detect it.
+            let new_chunks = detect_context_delta(repo, branch_id, cached_head, index)?;
+            let leaf = new_chunks
+                .into_iter()
+                .find(|c| c.lens_id == lens.id && c.level == 0);
+            let Some(leaf) = leaf else {
+                continue; // model decided nothing worth storing
             };
 
-            let chunk = ContextChunk {
-                id: *chunk_id,
-                lens_id: lens.id,
-                level: 0,
-                summary: leaf_summary_handle,
-                start_at: message.created_at,
-                end_at: message.created_at,
-                children: Vec::new(),
-                about_exec_result: None,
-                about_archive_message: Some(message.id),
-                archive_author: Some(message.author_id),
-                archive_person: resolved_person,
-                archive_thread_root: Some(message.thread_root_id),
-                archive_conversation: Some(message.conversation_id),
-                archive_source_format: Some(message.source_format.clone()),
-            };
-            index
-                .chunk_for_archive_message
-                .insert((message.id, lens.id), chunk.id);
             insert_chunk_with_carry(
+                repo,
+                branch_id,
+                cached_head,
                 ws,
                 index,
-                change,
-                chunk,
+                leaf,
                 lens,
                 merge_arity,
                 fork,
@@ -3171,10 +3132,12 @@ fn ingest_archive_context_chunks(
 }
 
 fn ingest_exec_context_chunks(
+    repo: &mut Repository<Pile>,
+    branch_id: Id,
+    cached_head: &mut Option<CommitHandle>,
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     index: &mut ContextChunkIndex,
-    change: &mut TribleSet,
     exec_results: &[CommandResultInfo],
     max_new: Option<usize>,
     merge_arity: usize,
@@ -3217,7 +3180,7 @@ fn ingest_exec_context_chunks(
             .primary_lens_id()
             .context("no configured memory lenses")?;
         for lens in missing_lenses {
-            let leaf_summary = match fork_summarize_leaf(
+            fork_summarize_leaf(
                 ws,
                 fork,
                 index,
@@ -3226,52 +3189,28 @@ fn ingest_exec_context_chunks(
                 turn_projection.command.as_str(),
                 event_output.as_str(),
                 turn_projection.reason_events.as_slice(),
+                finished_at,
                 event_time_key,
                 fork_env,
                 exec_cwd,
-            )? {
-                Some(summary) => summary,
-                None => continue, // model decided nothing worth storing
-            };
-            let leaf_summary_handle = ws.put(leaf_summary);
-            let now = epoch_interval(now_epoch());
-            let chunk_id = ufoid();
+            )?;
 
-            *change += entity! { &chunk_id @
-                playground_context::kind: playground_context::kind_chunk,
-                playground_context::lens_id: lens.id,
-                playground_context::level: 0u64,
-                playground_context::summary: leaf_summary_handle,
-                playground_context::created_at: now,
-                playground_context::start_at: finished_at,
-                playground_context::end_at: finished_at,
-                playground_context::about_exec_result: result.id,
+            // Faculty writes leaf chunk to pile. Delta-detect it.
+            let new_chunks = detect_context_delta(repo, branch_id, cached_head, index)?;
+            let leaf = new_chunks
+                .into_iter()
+                .find(|c| c.lens_id == lens.id && c.level == 0);
+            let Some(leaf) = leaf else {
+                continue; // model decided nothing worth storing
             };
 
-            let chunk = ContextChunk {
-                id: *chunk_id,
-                lens_id: lens.id,
-                level: 0,
-                summary: leaf_summary_handle,
-                start_at: finished_at,
-                end_at: finished_at,
-                children: Vec::new(),
-                about_exec_result: Some(result.id),
-                about_archive_message: None,
-                archive_author: None,
-                archive_person: None,
-                archive_thread_root: None,
-                archive_conversation: None,
-                archive_source_format: None,
-            };
-            index
-                .chunk_for_exec_result
-                .insert((result.id, lens.id), chunk.id);
             insert_chunk_with_carry(
+                repo,
+                branch_id,
+                cached_head,
                 ws,
                 index,
-                change,
-                chunk,
+                leaf,
                 lens,
                 merge_arity,
                 fork,
@@ -3298,6 +3237,8 @@ fn ingest_exec_context_chunks(
 }
 
 fn context_for_exec_result_with_history(
+    repo: &mut Repository<Pile>,
+    context_branch_id: Id,
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     catalog: &TribleSet,
@@ -3305,8 +3246,10 @@ fn context_for_exec_result_with_history(
     relations_catalog: &TribleSet,
     exec_result_id: Id,
     config: &Config,
-) -> Result<(String, TribleSet)> {
-    let (mut messages, compact_change) = build_context_messages_with_compaction(
+) -> Result<String> {
+    let mut messages = build_context_messages_with_compaction(
+        repo,
+        context_branch_id,
         ws,
         core_index,
         catalog,
@@ -3317,10 +3260,12 @@ fn context_for_exec_result_with_history(
     )?;
     messages.insert(0, ChatMessage::system(config.system_prompt.clone()));
     let context_json = serde_json::to_string(&messages).context("serialize context messages")?;
-    Ok((context_json, compact_change))
+    Ok(context_json)
 }
 
 fn build_context_messages_with_compaction(
+    repo: &mut Repository<Pile>,
+    context_branch_id: Id,
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     catalog: &TribleSet,
@@ -3328,7 +3273,7 @@ fn build_context_messages_with_compaction(
     relations_catalog: &TribleSet,
     exec_result_id: Id,
     config: &Config,
-) -> Result<(Vec<ChatMessage>, TribleSet)> {
+) -> Result<Vec<ChatMessage>> {
     let mut index = load_context_chunks(catalog);
     let body_budget_chars = context_body_budget_chars(config);
     let fork_context = ForkContext::new(config)?;
@@ -3345,6 +3290,9 @@ fn build_context_messages_with_compaction(
         .map(|lens| lens.id)
         .ok_or_else(|| anyhow!("no configured memory lenses"))?;
 
+    // Track context branch head for delta detection after forks.
+    let mut cached_head = ws.head();
+
     // Sort all command results in chronological order (oldest -> newest).
     let results = sorted_finished_command_results(core_index);
 
@@ -3360,15 +3308,16 @@ fn build_context_messages_with_compaction(
     let current_finished_key = interval_key(current_finished_at);
     let results = results[..=current_pos].to_vec();
 
-    let mut compact_change = TribleSet::new();
     let mut compaction_stats = CompactionRunStats::default();
     if index.chunk_for_archive_message.is_empty() && !archive_catalog.is_empty() {
         let relations = load_relations_index(ws, relations_catalog)?;
         let archive_messages = load_archive_messages(archive_catalog)?;
         ingest_archive_context_chunks(
+            repo,
+            context_branch_id,
+            &mut cached_head,
             ws,
             &mut index,
-            &mut compact_change,
             archive_messages.as_slice(),
             &relations,
             Some(current_finished_key),
@@ -3382,10 +3331,12 @@ fn build_context_messages_with_compaction(
         )?;
     }
     ingest_exec_context_chunks(
+        repo,
+        context_branch_id,
+        &mut cached_head,
         ws,
         core_index,
         &mut index,
-        &mut compact_change,
         results.as_slice(),
         None,
         merge_arity,
@@ -3417,8 +3368,10 @@ fn build_context_messages_with_compaction(
         } else {
             0
         };
+        let now = now_epoch();
         let breath_output = format!(
-            "context filled to {fill_pct}%. present moment begins."
+            "{} — context filled to {fill_pct}%. present moment begins.",
+            format_tai_timestamp(now),
         );
         messages.insert(breath_idx, ChatMessage::user(breath_output));
         messages.insert(breath_idx, ChatMessage::assistant(format!("breath {fill_pct}")));
@@ -3439,7 +3392,7 @@ fn build_context_messages_with_compaction(
             for event in &projection.reason_events {
                 if should_project_reason_event(event) {
                     messages.push(ChatMessage::assistant(synthetic_reason_command(&event.text)));
-                    messages.push(ChatMessage::user(synthetic_reason_output(event)));
+                    messages.push(ChatMessage::user(synthetic_reason_output_brief(event)));
                 }
             }
 
@@ -3452,7 +3405,7 @@ fn build_context_messages_with_compaction(
     {
         messages.push(ChatMessage::user(guard));
     }
-    Ok((messages, compact_change))
+    Ok(messages)
 }
 
 fn context_body_budget_chars(config: &Config) -> usize {
@@ -3648,8 +3601,8 @@ fn memory_cover_turn(
         .chunks
         .get(&chunk_id)
         .with_context(|| format!("missing context chunk {:x}", chunk_id))?;
-    let command = format!("memory {}", memory_ref(chunk.id));
-    let output = format_memory_output(ws, chunk)?;
+    let command = format!("memory {}", memory_ref(chunk));
+    let output = load_text(ws, chunk.summary).context("load memory chunk summary")?;
     let cost = command
         .chars()
         .count()
@@ -3679,53 +3632,6 @@ fn is_better_split_candidate(candidate: &SplitCandidate, current: Option<&SplitC
     candidate.parent_id < current.parent_id
 }
 
-fn format_memory_output(ws: &mut Workspace<Pile>, chunk: &ContextChunk) -> Result<String> {
-    let mut header = format!(
-        "mem {} lens={} lvl={}",
-        memory_ref(chunk.id),
-        id_prefix(chunk.lens_id),
-        chunk.level
-    );
-    if let Some(exec_id) = chunk.about_exec_result {
-        header.push_str(&format!(" turn_id={exec_id:x}"));
-    }
-    if let Some(message_id) = chunk.about_archive_message {
-        header.push_str(&format!(" archive_msg={}", id_prefix(message_id)));
-    }
-    if let Some(author_id) = chunk.archive_author {
-        header.push_str(&format!(" archive_author={}", id_prefix(author_id)));
-    }
-    if let Some(person_id) = chunk.archive_person {
-        header.push_str(&format!(" person={}", id_prefix(person_id)));
-    }
-    if let Some(thread_root_id) = chunk.archive_thread_root {
-        header.push_str(&format!(" thread={}", id_prefix(thread_root_id)));
-    }
-    if !chunk.children.is_empty() {
-        header.push_str(" children=");
-        for (idx, child_id) in chunk.children.iter().enumerate() {
-            if idx > 0 {
-                header.push(',');
-            }
-            header.push_str(memory_ref(*child_id).as_str());
-        }
-    }
-    if let Some(source_format) = chunk.archive_source_format.as_deref() {
-        header.push_str(&format!(" source={source_format}"));
-    }
-
-    let summary = load_text(ws, chunk.summary).context("load compacted history chunk")?;
-    if let Some(conversation) = chunk.archive_conversation {
-        let conversation_id =
-            load_text(ws, conversation).context("load archive conversation id")?;
-        return Ok(format!(
-            "{header}\nconversation: {conversation_id}\n{}\n",
-            summary.trim_end()
-        ));
-    }
-    Ok(format!("{header}\n{}\n", summary.trim_end()))
-}
-
 fn id_prefix(id: Id) -> String {
     let raw: [u8; 16] = id.into();
     let mut out = String::with_capacity(8);
@@ -3735,10 +3641,8 @@ fn id_prefix(id: Id) -> String {
     out
 }
 
-fn memory_ref(id: Id) -> String {
-    let hex = format!("{id:x}");
-    let end = usize::min(12, hex.len());
-    hex[..end].to_string()
+fn memory_ref(chunk: &ContextChunk) -> String {
+    format_time_range(chunk.start_at, chunk.end_at)
 }
 
 fn memory_command_id(command: &str) -> Option<&str> {
@@ -4312,7 +4216,7 @@ fn format_archive_output(
     person_label: Option<&str>,
     person_id: Option<Id>,
 ) -> String {
-    let mut text = String::new();
+    let mut text = format!("id:{:x}\n", message.id);
     append_section(&mut text, "source", "archive");
     append_section(
         &mut text,
@@ -4382,11 +4286,6 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
                 children: Vec::new(),
                 about_exec_result: None,
                 about_archive_message: None,
-                archive_author: None,
-                archive_person: None,
-                archive_thread_root: None,
-                archive_conversation: None,
-                archive_source_format: None,
             },
         );
     }
@@ -4478,71 +4377,6 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
         }
     }
 
-    for (chunk_id, archive_author_id) in find!(
-        (chunk_id: Id, archive_author_id: Id),
-        pattern!(catalog, [{
-            ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
-            playground_context::archive_author: ?archive_author_id,
-        }])
-    ) {
-        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
-            chunk.archive_author = Some(archive_author_id);
-        }
-    }
-
-    for (chunk_id, archive_person_id) in find!(
-        (chunk_id: Id, archive_person_id: Id),
-        pattern!(catalog, [{
-            ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
-            playground_context::archive_person: ?archive_person_id,
-        }])
-    ) {
-        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
-            chunk.archive_person = Some(archive_person_id);
-        }
-    }
-
-    for (chunk_id, thread_root_id) in find!(
-        (chunk_id: Id, thread_root_id: Id),
-        pattern!(catalog, [{
-            ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
-            playground_context::archive_thread_root: ?thread_root_id,
-        }])
-    ) {
-        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
-            chunk.archive_thread_root = Some(thread_root_id);
-        }
-    }
-
-    for (chunk_id, conversation_id) in find!(
-        (chunk_id: Id, conversation_id: Value<Handle<Blake3, LongString>>),
-        pattern!(catalog, [{
-            ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
-            playground_context::archive_conversation: ?conversation_id,
-        }])
-    ) {
-        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
-            chunk.archive_conversation = Some(conversation_id);
-        }
-    }
-
-    for (chunk_id, source_format) in find!(
-        (chunk_id: Id, source_format: String),
-        pattern!(catalog, [{
-            ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
-            playground_context::archive_source_format: ?source_format,
-        }])
-    ) {
-        if let Some(chunk) = index.chunks.get_mut(&chunk_id) {
-            chunk.archive_source_format = Some(source_format);
-        }
-    }
-
     // Determine the LSM frontier by removing all chunks that are referenced as children.
     let mut children = HashSet::new();
     for chunk in index.chunks.values() {
@@ -4574,10 +4408,53 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
     index
 }
 
+/// After a fork pushes chunks to the context branch, detect new chunk
+/// entities by comparing the current branch head against the cached head.
+/// Returns new chunks found in the delta and merges them into `index`.
+fn detect_context_delta(
+    repo: &mut Repository<Pile>,
+    branch_id: Id,
+    cached_head: &mut Option<CommitHandle>,
+    index: &mut ContextChunkIndex,
+) -> Result<Vec<ContextChunk>> {
+    let new_head = current_branch_head(repo, branch_id)?;
+    if *cached_head == new_head {
+        return Ok(Vec::new());
+    }
+    let mut delta_ws = pull_workspace(repo, branch_id, "pull for delta detection")?;
+    let delta = delta_ws
+        .checkout(*cached_head..new_head)
+        .context("delta checkout")?;
+    *cached_head = new_head;
+
+    let delta_index = load_context_chunks(&delta);
+    let new_chunks: Vec<ContextChunk> = delta_index.chunks.into_values().collect();
+
+    // Merge new chunks into the main index.
+    for chunk in &new_chunks {
+        index.chunks.insert(chunk.id, chunk.clone());
+        if let Some(exec_id) = chunk.about_exec_result {
+            index
+                .chunk_for_exec_result
+                .insert((exec_id, chunk.lens_id), chunk.id);
+        }
+        if let Some(archive_id) = chunk.about_archive_message {
+            index
+                .chunk_for_archive_message
+                .insert((archive_id, chunk.lens_id), chunk.id);
+        }
+        // Note: roots_by_lens_level is managed by insert_chunk_with_carry.
+    }
+
+    Ok(new_chunks)
+}
+
 fn insert_chunk_with_carry(
+    repo: &mut Repository<Pile>,
+    branch_id: Id,
+    cached_head: &mut Option<CommitHandle>,
     ws: &mut Workspace<Pile>,
     index: &mut ContextChunkIndex,
-    change: &mut TribleSet,
     carry: ContextChunk,
     lens: &MemoryLensConfig,
     merge_arity: usize,
@@ -4639,7 +4516,7 @@ fn insert_chunk_with_carry(
         let primary_lens_id = fork
             .primary_lens_id()
             .unwrap_or(lens.id);
-        let merged_text = match fork_summarize_merge(
+        fork_summarize_merge(
             ws,
             fork,
             index,
@@ -4649,72 +4526,39 @@ fn insert_chunk_with_carry(
             fork_env,
             exec_cwd,
         )
-        .context("fork merge context chunks")?
-        {
-            Some(text) => text,
-            None => {
-                // Model decided nothing worth merging; keep children as separate roots.
-                return Ok(());
-            }
+        .context("fork merge context chunks")?;
+
+        // Faculty writes parent chunk to pile. Delta-detect it.
+        let new_chunks = detect_context_delta(repo, branch_id, cached_head, index)?;
+        let parent = new_chunks
+            .into_iter()
+            .find(|c| c.lens_id == lens.id && c.level > level);
+
+        let Some(parent) = parent else {
+            // Model decided nothing worth merging; keep children as separate roots.
+            return Ok(());
         };
-        let output_chars = merged_text.chars().count();
+
+        // Note: ws may not see the faculty-written blob until pile refresh;
+        // stats fallback to 0 if the blob isn't visible yet.
+        let output_chars = load_text(ws, parent.summary)
+            .map(|t| t.chars().count())
+            .unwrap_or(0);
         stats.merge_calls = stats.merge_calls.saturating_add(1);
         stats.merged_children_total = stats.merged_children_total.saturating_add(children.len());
         stats.merge_input_chars_total = stats.merge_input_chars_total.saturating_add(input_chars);
         stats.merge_output_chars_total =
             stats.merge_output_chars_total.saturating_add(output_chars);
-        let merged_handle = ws.put(merged_text);
 
-        let now = epoch_interval(now_epoch());
-        let parent_id = ufoid();
-        let parent_level = level + 1;
-        let start_at = children
-            .first()
-            .map(|chunk| chunk.start_at)
-            .context("carry merge missing first child")?;
-        let end_at = children
-            .last()
-            .map(|chunk| chunk.end_at)
-            .context("carry merge missing last child")?;
-
-        *change += entity! { &parent_id @
-            playground_context::kind: playground_context::kind_chunk,
-            playground_context::lens_id: lens.id,
-            playground_context::level: parent_level,
-            playground_context::summary: merged_handle,
-            playground_context::created_at: now,
-            playground_context::start_at: start_at,
-            playground_context::end_at: end_at,
-        };
-        for child in &children {
-            *change += entity! { &parent_id @
-                playground_context::child: child.id,
-            };
-        }
-
-        carry = ContextChunk {
-            id: *parent_id,
-            lens_id: lens.id,
-            level: parent_level,
-            summary: merged_handle,
-            start_at,
-            end_at,
-            children: children.iter().map(|chunk| chunk.id).collect(),
-            about_exec_result: None,
-            about_archive_message: None,
-            archive_author: None,
-            archive_person: None,
-            archive_thread_root: None,
-            archive_conversation: None,
-            archive_source_format: None,
-        };
-        level = parent_level;
+        carry = parent;
+        level = carry.level;
     }
 }
 
 /// Build the ExecCommandEnv for fork loops. Faculties read config from the
-/// pile (via PILE and CONFIG_BRANCH_ID). Per-invocation env vars like
-/// FORK_EVENT_TIME_NS are NOT set, so `memory create` runs in validate mode.
+/// pile (via PILE and CONFIG_BRANCH_ID). The `memory create` faculty is fully
+/// self-contained: it scans the summary for id: links and resolves all
+/// metadata from the pile.
 fn build_fork_env(config: &config::Config) -> exec_worker::ExecCommandEnv {
     exec_worker::ExecCommandEnv {
         pile: config.pile_path.to_string_lossy().to_string(),
@@ -4881,22 +4725,20 @@ impl ForkContext {
     /// message, then loops: send_turn → parse command → execute_command →
     /// format output → append messages.
     ///
-    /// Returns `Ok(Some(summary_text))` if the model called `memory create`,
-    /// or `Ok(None)` if it exited without creating.
+    /// The faculty writes chunks directly to the pile. The caller detects
+    /// results via delta queries after this returns.
     fn run_fork_loop(
         &self,
         mut messages: Vec<ChatMessage>,
         lens_instructions: &str,
         fork_env: &exec_worker::ExecCommandEnv,
         exec_cwd: Option<&str>,
-    ) -> Result<Option<String>> {
+    ) -> Result<()> {
         const MAX_TURNS: usize = 16;
 
         // Lens instructions delivered as user message (shell response to
         // `memory summarise <lens>`).
         messages.push(ChatMessage::user(lens_instructions.to_string()));
-
-        let mut captured_summary: Option<String> = None;
 
         for _turn in 0..MAX_TURNS {
             let response = self.send_turn(&messages, self.max_output_tokens)?;
@@ -4906,11 +4748,6 @@ impl ForkContext {
             // The model calls `exit` to terminate the fork.
             if command == "exit" || command.starts_with("exit ") {
                 break;
-            }
-
-            // Detect `memory create`: capture summary from command arguments.
-            if let Some(summary) = parse_memory_create_summary(&command) {
-                captured_summary = Some(summary);
             }
 
             // Execute through the real shell.
@@ -4928,43 +4765,11 @@ impl ForkContext {
             messages.push(ChatMessage::user(user_msg));
         }
 
-        Ok(captured_summary)
+        Ok(())
     }
 }
 
 /// Parse the summary text from a `memory create <lens> <summary...>` command.
-fn parse_memory_create_summary(command: &str) -> Option<String> {
-    let trimmed = command.trim();
-    let rest = trimmed.strip_prefix("memory")?;
-    // Must be followed by whitespace then "create".
-    let rest = rest.strip_prefix(char::is_whitespace)?;
-    let rest = rest.trim_start().strip_prefix("create")?;
-    if rest.is_empty() {
-        return None;
-    }
-    let rest = rest.strip_prefix(char::is_whitespace)?;
-    // Skip the lens name (first word).
-    let rest = rest.trim_start();
-    let summary_start = rest.find(char::is_whitespace)?;
-    let summary = rest[summary_start..].trim();
-    if summary.is_empty() {
-        return None;
-    }
-    // Strip surrounding quotes if present.
-    let summary = if (summary.starts_with('"') && summary.ends_with('"'))
-        || (summary.starts_with('\'') && summary.ends_with('\''))
-    {
-        &summary[1..summary.len() - 1]
-    } else {
-        summary
-    };
-    if summary.is_empty() {
-        None
-    } else {
-        Some(summary.to_string())
-    }
-}
-
 /// Format an ExecOutput as a user message for fork context turns.
 fn format_fork_output(output: &exec_worker::ExecOutput) -> String {
     let stdout = output
@@ -5055,9 +4860,8 @@ fn extract_output_text(json: &serde_json::Value) -> String {
 
 /// Create a level-0 memory chunk by running a fork agent loop with the full
 /// memory | breath | moment structure. The model runs real commands through
-/// a real shell, and when it calls `memory create`, the summary text is
-/// captured. Returns `Ok(Some(summary))` if a chunk was created, `Ok(None)`
-/// if the model shut down without creating.
+/// a real shell. The `memory create` faculty writes chunks directly to the
+/// pile; the caller detects results via delta queries.
 fn fork_summarize_leaf(
     ws: &mut Workspace<Pile>,
     fork: &ForkContext,
@@ -5067,24 +4871,29 @@ fn fork_summarize_leaf(
     event_command: &str,
     event_output: &str,
     reason_events: &[ReasonProjectionEvent],
+    event_finished_at: Value<NsTAIInterval>,
     event_time_key: i128,
     fork_env: &exec_worker::ExecCommandEnv,
     exec_cwd: Option<&str>,
-) -> Result<Option<String>> {
+) -> Result<()> {
     let system_prompt_chars = fork.system_prompt.chars().count();
+    let event_range = format_time_range(event_finished_at, event_finished_at);
 
     // Build moment content so we can calculate its size and subtract from budget.
     let mut moment_messages = Vec::new();
     for event in reason_events {
         if should_project_reason_event(event) {
             moment_messages.push(ChatMessage::assistant(synthetic_reason_command(&event.text)));
-            moment_messages.push(ChatMessage::user(synthetic_reason_output(event)));
+            moment_messages.push(ChatMessage::user(synthetic_reason_output_brief(event)));
         }
     }
     moment_messages.push(ChatMessage::assistant(event_command.to_string()));
     moment_messages.push(ChatMessage::user(event_output.to_string()));
-    // Injected command: the model "decides" to summarize.
-    moment_messages.push(ChatMessage::assistant(format!("memory summarise {}", lens.name)));
+    // Injected command: the model "decides" to summarize, with time range.
+    moment_messages.push(ChatMessage::assistant(format!(
+        "memory summarise {} {}",
+        lens.name, event_range
+    )));
 
     let moment_chars: usize = moment_messages
         .iter()
@@ -5092,8 +4901,9 @@ fn fork_summarize_leaf(
         .fold(0, usize::saturating_add);
     // Lens instructions will be appended by run_fork_loop, but count them for budget.
     let instructions_chars = lens.instructions.chars().count();
-    // Breath messages (fixed cost).
-    let breath_chars = "breath 100".len() + "context filled to 100%. present moment begins.".len();
+    // Breath messages (fixed cost, includes timestamp).
+    let breath_chars = "breath 100".len()
+        + "2026-03-03T14:32:05 TAI — context filled to 100%. present moment begins.".len();
 
     let body_budget = fork.fork_body_budget_chars(system_prompt_chars);
     let cover_budget = body_budget
@@ -5110,7 +4920,7 @@ fn fork_summarize_leaf(
         None,
     )?;
 
-    // Insert breath boundary (mirrors the `breath` faculty).
+    // Insert breath boundary with event timestamp.
     if !messages.is_empty() {
         let total_used = used_chars + moment_chars + instructions_chars + breath_chars;
         let fill_pct = if body_budget > 0 {
@@ -5118,7 +4928,11 @@ fn fork_summarize_leaf(
         } else {
             0
         };
-        let breath_output = format!("context filled to {fill_pct}%. present moment begins.");
+        let (event_epoch, _): (hifitime::Epoch, hifitime::Epoch) = event_finished_at.from_value();
+        let breath_output = format!(
+            "{} — context filled to {fill_pct}%. present moment begins.",
+            format_tai_timestamp(event_epoch),
+        );
         messages.insert(breath_idx, ChatMessage::user(breath_output));
         messages.insert(breath_idx, ChatMessage::assistant(format!("breath {fill_pct}")));
     }
@@ -5131,7 +4945,8 @@ fn fork_summarize_leaf(
 
 /// Merge level-N memory chunks by running a fork agent loop with the full
 /// memory | breath | moment structure, where the moment contains the children
-/// being merged. Returns `Ok(Some(summary))` if a merged chunk was created.
+/// being merged. The `memory create` faculty writes chunks directly to the
+/// pile; the caller detects results via delta queries.
 fn fork_summarize_merge(
     ws: &mut Workspace<Pile>,
     fork: &ForkContext,
@@ -5141,7 +4956,7 @@ fn fork_summarize_merge(
     primary_lens_id: Id,
     fork_env: &exec_worker::ExecCommandEnv,
     exec_cwd: Option<&str>,
-) -> Result<Option<String>> {
+) -> Result<()> {
     let system_prompt_chars = fork.system_prompt.chars().count();
 
     // Build moment content: children rendered as memory turns.
@@ -5152,15 +4967,30 @@ fn fork_summarize_merge(
         moment_messages.push(ChatMessage::assistant(turn.command));
         moment_messages.push(ChatMessage::user(turn.output));
     }
-    // Injected command.
-    moment_messages.push(ChatMessage::assistant(format!("memory summarise {}", lens.name)));
+    // Injected command: includes union time range of children.
+    let union_start = children
+        .iter()
+        .map(|c| c.start_at)
+        .min_by_key(|v| interval_key(*v))
+        .unwrap_or_else(|| children[0].start_at);
+    let union_end = children
+        .iter()
+        .map(|c| c.end_at)
+        .max_by_key(|v| interval_key(*v))
+        .unwrap_or_else(|| children[0].end_at);
+    let union_range = format_time_range(union_start, union_end);
+    moment_messages.push(ChatMessage::assistant(format!(
+        "memory summarise {} {}",
+        lens.name, union_range
+    )));
 
     let moment_chars: usize = moment_messages
         .iter()
         .map(|m| m.content_chars())
         .fold(0, usize::saturating_add);
     let instructions_chars = lens.compaction_instructions.chars().count();
-    let breath_chars = "breath 100".len() + "context filled to 100%. present moment begins.".len();
+    let breath_chars = "breath 100".len()
+        + "2026-03-03T14:32:05 TAI — context filled to 100%. present moment begins.".len();
 
     let body_budget = fork.fork_body_budget_chars(system_prompt_chars);
     let cover_budget = body_budget
@@ -5179,7 +5009,7 @@ fn fork_summarize_merge(
         Some(&child_ids),
     )?;
 
-    // Insert breath boundary (mirrors the `breath` faculty).
+    // Insert breath boundary with current timestamp.
     if !messages.is_empty() {
         let total_used = used_chars + moment_chars + instructions_chars + breath_chars;
         let fill_pct = if body_budget > 0 {
@@ -5187,7 +5017,11 @@ fn fork_summarize_merge(
         } else {
             0
         };
-        let breath_output = format!("context filled to {fill_pct}%. present moment begins.");
+        let now = now_epoch();
+        let breath_output = format!(
+            "{} — context filled to {fill_pct}%. present moment begins.",
+            format_tai_timestamp(now),
+        );
         messages.insert(breath_idx, ChatMessage::user(breath_output));
         messages.insert(breath_idx, ChatMessage::assistant(format!("breath {fill_pct}")));
     }
@@ -5200,7 +5034,6 @@ fn fork_summarize_merge(
 
 #[derive(Debug, Clone)]
 struct ReasonProjectionEvent {
-    id: Id,
     text: String,
     command_text: Option<String>,
     source: ReasonProjectionSource,
@@ -5270,18 +5103,16 @@ fn load_exec_turn_projection(
             .transpose()
             .context("load reason event command text")?;
         reason_events.push(ReasonProjectionEvent {
-            id: event.id,
             text,
             command_text,
             source: ReasonProjectionSource::Logged,
         });
     }
 
-    if let Some((result_id, reasoning_text)) =
+    if let Some((_result_id, reasoning_text)) =
         load_reasoning_for_exec_result(ws, core_index, exec_result)?
     {
         reason_events.push(ReasonProjectionEvent {
-            id: result_id,
             text: reasoning_text,
             command_text: None,
             source: ReasonProjectionSource::Model,
@@ -5330,12 +5161,12 @@ fn synthetic_reason_command(reason_text: &str) -> String {
     format!("reason \"{escaped}\"")
 }
 
-fn synthetic_reason_output(event: &ReasonProjectionEvent) -> String {
+fn synthetic_reason_output_brief(event: &ReasonProjectionEvent) -> String {
     let source = match event.source {
         ReasonProjectionSource::Logged => "logged",
         ReasonProjectionSource::Model => "model",
     };
-    format!("reason_id: {:x}\nsource: {source}", event.id)
+    format!("source: {source}")
 }
 
 fn append_section(text: &mut String, label: &str, body: &str) {

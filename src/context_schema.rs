@@ -2,7 +2,7 @@ use triblespace::core::metadata;
 use triblespace::macros::id_hex;
 use triblespace::prelude::blobschemas::LongString;
 use triblespace::prelude::valueschemas::{
-    Blake3, GenId, Handle, NsTAIInterval, ShortString, U256BE,
+    Blake3, GenId, Handle, NsTAIInterval, U256BE,
 };
 use triblespace::prelude::*;
 
@@ -21,11 +21,6 @@ pub mod playground_context {
         "9B83D68AECD6888AA9CE95E754494768" as pub child: GenId;
         "316834CC6B0EA6F073BF5362D67AC530" as pub about_exec_result: GenId;
         "A4E2B712CA28AB1EED76C34DE72AFA39" as pub about_archive_message: GenId;
-        "0369F021B2CF6CC26BA5DBF3179A5AF2" as pub archive_author: GenId;
-        "34681ECA3FAEC24970801BC24CD318A9" as pub archive_person: GenId;
-        "2BEDFA649267106369790C09B02C6958" as pub archive_thread_root: GenId;
-        "40487DA1794795FDDBFD128E0B746EE6" as pub archive_conversation: Handle<Blake3, LongString>;
-        "49669D61D012A65A69999A214E8FFDA2" as pub archive_source_format: ShortString;
         "2407DD8440508B474B073A5ECF098500" as pub lens_id: GenId;
     }
 
@@ -119,7 +114,6 @@ where
     metadata += <GenId as metadata::ConstDescribe>::describe(blobs)?;
     metadata += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
     metadata += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <ShortString as metadata::ConstDescribe>::describe(blobs)?;
     metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
 
     metadata += describe_attribute(blobs, &playground_context::kind)?;
@@ -133,11 +127,6 @@ where
     metadata += describe_attribute(blobs, &playground_context::child)?;
     metadata += describe_attribute(blobs, &playground_context::about_exec_result)?;
     metadata += describe_attribute(blobs, &playground_context::about_archive_message)?;
-    metadata += describe_attribute(blobs, &playground_context::archive_author)?;
-    metadata += describe_attribute(blobs, &playground_context::archive_person)?;
-    metadata += describe_attribute(blobs, &playground_context::archive_thread_root)?;
-    metadata += describe_attribute(blobs, &playground_context::archive_conversation)?;
-    metadata += describe_attribute(blobs, &playground_context::archive_source_format)?;
     metadata += describe_attribute(blobs, &playground_context::lens_id)?;
 
     Ok(metadata)
