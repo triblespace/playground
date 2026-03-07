@@ -467,7 +467,7 @@ fn load_entry(
         .ok_or_else(|| anyhow!("workspace entry missing path: {entry_id:x}"))?;
 
     let mode = load_u256_attr(catalog, entry_id, playground_workspace::mode)
-        .and_then(u256be_to_u64)
+        .and_then(|v| v.try_from_value::<u64>().ok())
         .and_then(|value| u32::try_from(value).ok());
 
     let bytes_handle =
@@ -561,14 +561,6 @@ where
     .map(|(value,)| value)
 }
 
-fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {
-    let raw = value.raw;
-    if raw[..24].iter().any(|byte| *byte != 0) {
-        return None;
-    }
-    let bytes: [u8; 8] = raw[24..32].try_into().ok()?;
-    Some(u64::from_be_bytes(bytes))
-}
 
 #[cfg(unix)]
 fn mode_from_metadata(metadata: &fs::Metadata) -> Option<u32> {

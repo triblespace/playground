@@ -383,7 +383,7 @@ fn load_profile_calibration(args: &NotebookArgs) -> Result<Option<ProfileCalibra
         let profile_id = load_id_attr(
             &catalog,
             config_id,
-            playground_config::active_llm_profile_id,
+            playground_config::active_model_profile_id,
         );
         let mut llm = load_llm_settings(&mut ws, &catalog, config_id)?;
         if let Some(profile_id) = profile_id
@@ -501,8 +501,8 @@ fn latest_llm_profile_entry(catalog: &TribleSet, profile_id: Id) -> Option<Id> {
         (entry_id: Id, updated_at: Value<NsTAIInterval>),
         pattern!(catalog, [{
             ?entry_id @
-            playground_config::kind: playground_config::kind_llm_profile,
-            playground_config::llm_profile_id: profile_id,
+            playground_config::kind: playground_config::kind_model_profile,
+            playground_config::model_profile_id: profile_id,
             playground_config::updated_at: ?updated_at,
         }])
     ) {
@@ -520,37 +520,37 @@ fn load_llm_settings(
     entity_id: Id,
 ) -> Result<LlmSettings> {
     let mut llm = LlmSettings::default();
-    if let Some(model) = load_string_attr(ws, catalog, entity_id, playground_config::llm_model)? {
+    if let Some(model) = load_string_attr(ws, catalog, entity_id, playground_config::model_name)? {
         llm.model = model;
     }
     if let Some(base_url) =
-        load_string_attr(ws, catalog, entity_id, playground_config::llm_base_url)?
+        load_string_attr(ws, catalog, entity_id, playground_config::model_base_url)?
     {
         llm.base_url = base_url;
     }
     if let Some(tokens) = load_u64_attr(
         catalog,
         entity_id,
-        playground_config::llm_context_window_tokens,
+        playground_config::model_context_window_tokens,
     ) {
         llm.context_window_tokens = tokens;
     }
     if let Some(tokens) =
-        load_u64_attr(catalog, entity_id, playground_config::llm_max_output_tokens)
+        load_u64_attr(catalog, entity_id, playground_config::model_max_output_tokens)
     {
         llm.max_output_tokens = tokens;
     }
     if let Some(tokens) = load_u64_attr(
         catalog,
         entity_id,
-        playground_config::llm_prompt_safety_margin_tokens,
+        playground_config::model_context_safety_margin_tokens,
     ) {
         llm.prompt_safety_margin_tokens = tokens;
     }
     if let Some(tokens) = load_u64_attr(
         catalog,
         entity_id,
-        playground_config::llm_prompt_chars_per_token,
+        playground_config::model_chars_per_token,
     ) {
         llm.prompt_chars_per_token = tokens.max(1);
     }
@@ -585,7 +585,6 @@ fn load_context_leaf_samples(
         pattern!(&catalog, [{
             _?chunk_id @
             playground_context::kind: playground_context::kind_chunk,
-            playground_context::level: 0u64,
             playground_context::summary: ?summary,
         }])
     ) {

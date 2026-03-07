@@ -168,7 +168,7 @@ impl Config {
             Ok(())
         })();
 
-        if let Err(err) = close_repo(repo).context("close config pile") {
+        if let Err(err) = crate::repo_util::close_repo(repo).context("close config pile") {
             if result.is_ok() {
                 return Err(err);
             }
@@ -230,7 +230,7 @@ fn load_from_pile(pile_path: &Path) -> Result<Config> {
         Ok(config)
     })();
 
-    if let Err(err) = close_repo(repo).context("close config pile") {
+    if let Err(err) = crate::repo_util::close_repo(repo).context("close config pile") {
         if result.is_ok() {
             return Err(err);
         }
@@ -338,10 +338,6 @@ fn ensure_registered_branches_exist(repo: &mut Repository<Pile>, config: &Config
         })?;
     }
     Ok(())
-}
-
-fn close_repo(repo: Repository<Pile>) -> Result<()> {
-    repo.into_storage().close().context("close pile")
 }
 
 fn load_latest_config(
@@ -480,12 +476,12 @@ fn load_latest_config(
         config.exec.sandbox_profile = Some(id);
     }
     if let Some(poll_ms) =
-        load_u256_attr(catalog, config_id, playground_config::poll_ms).and_then(u256be_to_u64)
+        load_u256_attr(catalog, config_id, playground_config::poll_ms).and_then(|v| v.try_from_value::<u64>().ok())
     {
         config.poll_ms = poll_ms;
     }
     if let Some(stream) =
-        load_u256_attr(catalog, config_id, playground_config::model_stream).and_then(u256be_to_u64)
+        load_u256_attr(catalog, config_id, playground_config::model_stream).and_then(|v| v.try_from_value::<u64>().ok())
     {
         config.model.stream = stream != 0;
     }
@@ -494,13 +490,13 @@ fn load_latest_config(
         config_id,
         playground_config::model_context_window_tokens,
     )
-    .and_then(u256be_to_u64)
+    .and_then(|v| v.try_from_value::<u64>().ok())
     {
         config.model.context_window_tokens = tokens;
     }
     if let Some(tokens) =
         load_u256_attr(catalog, config_id, playground_config::model_max_output_tokens)
-            .and_then(u256be_to_u64)
+            .and_then(|v| v.try_from_value::<u64>().ok())
     {
         config.model.max_output_tokens = tokens;
     }
@@ -509,7 +505,7 @@ fn load_latest_config(
         config_id,
         playground_config::model_context_safety_margin_tokens,
     )
-    .and_then(u256be_to_u64)
+    .and_then(|v| v.try_from_value::<u64>().ok())
     {
         config.model.context_safety_margin_tokens = tokens;
     }
@@ -518,7 +514,7 @@ fn load_latest_config(
         config_id,
         playground_config::model_chars_per_token,
     )
-    .and_then(u256be_to_u64)
+    .and_then(|v| v.try_from_value::<u64>().ok())
     {
         config.model.chars_per_token = chars;
     }
@@ -590,7 +586,7 @@ fn load_latest_model_profile(
         model.api_key = Some(key);
     }
     if let Some(stream) =
-        load_u256_attr(catalog, entry_id, playground_config::model_stream).and_then(u256be_to_u64)
+        load_u256_attr(catalog, entry_id, playground_config::model_stream).and_then(|v| v.try_from_value::<u64>().ok())
     {
         model.stream = stream != 0;
     }
@@ -599,13 +595,13 @@ fn load_latest_model_profile(
         entry_id,
         playground_config::model_context_window_tokens,
     )
-    .and_then(u256be_to_u64)
+    .and_then(|v| v.try_from_value::<u64>().ok())
     {
         model.context_window_tokens = tokens;
     }
     if let Some(tokens) =
         load_u256_attr(catalog, entry_id, playground_config::model_max_output_tokens)
-            .and_then(u256be_to_u64)
+            .and_then(|v| v.try_from_value::<u64>().ok())
     {
         model.max_output_tokens = tokens;
     }
@@ -614,7 +610,7 @@ fn load_latest_model_profile(
         entry_id,
         playground_config::model_context_safety_margin_tokens,
     )
-    .and_then(u256be_to_u64)
+    .and_then(|v| v.try_from_value::<u64>().ok())
     {
         model.context_safety_margin_tokens = tokens;
     }
@@ -623,7 +619,7 @@ fn load_latest_model_profile(
         entry_id,
         playground_config::model_chars_per_token,
     )
-    .and_then(u256be_to_u64)
+    .and_then(|v| v.try_from_value::<u64>().ok())
     {
         model.chars_per_token = chars;
     }
@@ -637,7 +633,7 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     let config_id = ufoid();
     let profile_id = config
         .model_profile_id
-        .ok_or_else(|| anyhow!("config missing active LLM profile id"))?;
+        .ok_or_else(|| anyhow!("config missing active model profile id"))?;
 
     let system_prompt = ws.put(config.system_prompt.clone());
     let branch = ws.put(config.branch.clone());
@@ -794,14 +790,6 @@ fn load_u256_attr(
     .find_map(|(entity, value)| (entity == config_id).then_some(value))
 }
 
-fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {
-    let raw = value.raw;
-    if raw[..24].iter().any(|byte| *byte != 0) {
-        return None;
-    }
-    let bytes: [u8; 8] = raw[24..32].try_into().ok()?;
-    Some(u64::from_be_bytes(bytes))
-}
 
 fn default_system_prompt() -> String {
     DEFAULT_SYSTEM_PROMPT.to_string()

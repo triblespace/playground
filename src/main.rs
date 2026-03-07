@@ -303,7 +303,6 @@ fn run_model_worker(config: Config, args: WorkerArgs) -> Result<()> {
     model_worker::run_model_loop(config, worker_id, poll_ms, None)
 }
 
-// Compaction pipeline removed.
 fn handle_config(pile: Option<&Path>, command: ConfigCommand) -> Result<()> {
     let mut config = Config::load(pile).context("load config")?;
     match command {
@@ -1765,14 +1764,14 @@ fn model_result_rank(
     finished_at: Option<Value<NsTAIInterval>>,
 ) -> (u64, i128) {
     (
-        attempt.and_then(u256be_to_u64).unwrap_or_default(),
+        attempt.and_then(|v| v.try_from_value::<u64>().ok()).unwrap_or_default(),
         finished_at.map(interval_key).unwrap_or(i128::MIN),
     )
 }
 
 fn command_result_rank(result: &CommandResultInfo) -> (u64, i128) {
     (
-        result.attempt.and_then(u256be_to_u64).unwrap_or_default(),
+        result.attempt.and_then(|v| v.try_from_value::<u64>().ok()).unwrap_or_default(),
         result.finished_at.map(interval_key).unwrap_or(i128::MIN),
     )
 }
@@ -1913,7 +1912,7 @@ fn context_for_exec_result_with_history(
     exec_result_id: Id,
     config: &Config,
 ) -> Result<String> {
-    let mut messages = build_context_messages_with_compaction(
+    let mut messages = build_context_messages(
         ws,
         core_index,
         catalog,
@@ -1925,7 +1924,7 @@ fn context_for_exec_result_with_history(
     Ok(context_json)
 }
 
-fn build_context_messages_with_compaction(
+fn build_context_messages(
     ws: &mut Workspace<Pile>,
     core_index: &CoreIndex,
     catalog: &TribleSet,
@@ -2495,7 +2494,7 @@ fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Resu
         .stderr
         .map(|handle| ws.get(handle).context("read stderr bytes"))
         .transpose()?;
-    let exit_code = result.exit_code.and_then(u256be_to_u64);
+    let exit_code = result.exit_code.and_then(|v| v.try_from_value::<u64>().ok());
     let error = result
         .error
         .map(|handle| load_text(ws, handle))
@@ -2645,11 +2644,3 @@ fn format_moment_output(result: &ExecResult) -> String {
     text
 }
 
-fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {
-    let raw = value.raw;
-    if raw[..24].iter().any(|byte| *byte != 0) {
-        return None;
-    }
-    let bytes: [u8; 8] = raw[24..32].try_into().ok()?;
-    Some(u64::from_be_bytes(bytes))
-}

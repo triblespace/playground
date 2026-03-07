@@ -33,172 +33,82 @@ pub mod playground_exec {
         "E9C77284C7DDCF522A8AC4622FE3FB11" as pub error: Handle<Blake3, LongString>;
     }
 
-    /// Root id for describing the playground_exec protocol.
     #[allow(non_upper_case_globals)]
     pub const playground_exec_metadata: Id = id_hex!("94563964DFC622200FAE6E5383D0B4FC");
 
-    /// Tag for command request entities.
     #[allow(non_upper_case_globals)]
     pub const kind_command_request: Id = id_hex!("3D2512DAE86B14B9049930F3146A3188");
-    /// Tag for in-progress entities.
     #[allow(non_upper_case_globals)]
     pub const kind_in_progress: Id = id_hex!("2D81A8D840822CF082DE5DE569B53730");
-    /// Tag for command result entities.
     #[allow(non_upper_case_globals)]
     pub const kind_command_result: Id = id_hex!("DF7165210F066E84D93E9A430BB0D4BD");
-    /// Tag for timeout extension control events.
     #[allow(non_upper_case_globals)]
     pub const kind_timeout_extension: Id = id_hex!("75BC66A1C39131B9A0975613AC9B59FD");
 
-    /// Tag for playground_exec protocol metadata.
     #[allow(non_upper_case_globals)]
     pub const tag_protocol: Id = id_hex!("7DD49A7AA43C616ABB43217609391D1D");
-    /// Tag for kind constants in the playground_exec protocol.
     #[allow(non_upper_case_globals)]
     pub const tag_kind: Id = id_hex!("61E122D2379B8F4A577C3B8B65431799");
-    /// Tag for attribute constants in the playground_exec protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_attribute: Id = id_hex!("F328F16FB07BA80BBAF06974A739C038");
-    /// Tag for tag constants in the playground_exec protocol.
     #[allow(non_upper_case_globals)]
     pub const tag_tag: Id = id_hex!("13425C99A6CBAF48E5B7A1FB8BE72F04");
 }
 
-pub fn describe<B>(blobs: &mut B) -> std::result::Result<TribleSet, B::PutError>
-where
-    B: BlobStore<Blake3>,
-{
-    let mut tribles = TribleSet::new();
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::playground_exec_metadata) @
-        metadata::name: blobs.put("playground_exec_metadata".to_string())?,
-        metadata::description: blobs.put(
-            "Root id for describing the playground_exec protocol.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_protocol,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::tag_protocol) @
-        metadata::name: blobs.put("tag_protocol".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for playground_exec protocol metadata.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::tag_kind) @
-        metadata::name: blobs.put("tag_kind".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for playground_exec protocol kind constants.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::tag_attribute) @
-        metadata::name: blobs.put("tag_attribute".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for playground_exec protocol attributes.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::tag_tag) @
-        metadata::name: blobs.put("tag_tag".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for playground_exec protocol tag constants.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::kind_command_request) @
-        metadata::name: blobs.put("kind_command_request".to_string())?,
-        metadata::description: blobs.put(
-            "Command request entity kind.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_kind,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::kind_in_progress) @
-        metadata::name: blobs.put("kind_in_progress".to_string())?,
-        metadata::description: blobs.put(
-            "Command in-progress entity kind.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_kind,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::kind_command_result) @
-        metadata::name: blobs.put("kind_command_result".to_string())?,
-        metadata::description: blobs.put(
-            "Command result entity kind.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_kind,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_exec::kind_timeout_extension) @
-        metadata::name: blobs.put("kind_timeout_extension".to_string())?,
-        metadata::description: blobs.put(
-            "Control event that extends the deadline for an in-flight command.".to_string(),
-        )?,
-        metadata::tag: playground_exec::tag_kind,
-    };
-
-    Ok(tribles)
-}
-
 pub fn build_playground_exec_metadata<B>(
     blobs: &mut B,
-) -> std::result::Result<TribleSet, B::PutError>
+) -> std::result::Result<Fragment, B::PutError>
 where
     B: BlobStore<Blake3>,
 {
-    let mut metadata = describe(blobs)?;
+    let attrs = playground_exec::describe(blobs)?;
 
-    metadata += <GenId as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <Handle<Blake3, UnknownBlob> as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <UnknownBlob as metadata::ConstDescribe>::describe(blobs)?;
-
-    metadata += describe_attribute(blobs, &playground_exec::kind)?;
-    metadata += describe_attribute(blobs, &playground_exec::command_text)?;
-    metadata += describe_attribute(blobs, &playground_exec::cwd)?;
-    metadata += describe_attribute(blobs, &playground_exec::stdin)?;
-    metadata += describe_attribute(blobs, &playground_exec::stdin_text)?;
-    metadata += describe_attribute(blobs, &playground_exec::timeout_ms)?;
-    metadata += describe_attribute(blobs, &playground_exec::sandbox_profile)?;
-    metadata += describe_attribute(blobs, &playground_exec::requested_at)?;
-    metadata += describe_attribute(blobs, &playground_exec::about_request)?;
-    metadata += describe_attribute(blobs, &playground_exec::about_message)?;
-    metadata += describe_attribute(blobs, &playground_exec::about_thought)?;
-    metadata += describe_attribute(blobs, &playground_exec::worker)?;
-    metadata += describe_attribute(blobs, &playground_exec::started_at)?;
-    metadata += describe_attribute(blobs, &playground_exec::attempt)?;
-    metadata += describe_attribute(blobs, &playground_exec::finished_at)?;
-    metadata += describe_attribute(blobs, &playground_exec::exit_code)?;
-    metadata += describe_attribute(blobs, &playground_exec::stdout)?;
-    metadata += describe_attribute(blobs, &playground_exec::stderr)?;
-    metadata += describe_attribute(blobs, &playground_exec::stdout_text)?;
-    metadata += describe_attribute(blobs, &playground_exec::stderr_text)?;
-    metadata += describe_attribute(blobs, &playground_exec::duration_ms)?;
-    metadata += describe_attribute(blobs, &playground_exec::error)?;
-
-    Ok(metadata)
-}
-
-fn describe_attribute<B, S>(
-    blobs: &mut B,
-    attribute: &Attribute<S>,
-) -> std::result::Result<TribleSet, B::PutError>
-where
-    B: BlobStore<Blake3>,
-    S: ValueSchema,
-{
-    let mut tribles = TribleSet::new();
-    tribles += metadata::Describe::describe(attribute, blobs)?;
-    let attribute_id = attribute.id();
-    tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::tag: playground_exec::tag_attribute,
+    let mut protocol = entity! { ExclusiveId::force_ref(&playground_exec::playground_exec_metadata) @
+        metadata::name: blobs.put("playground_exec".to_string())?,
+        metadata::description: blobs.put("Playground exec protocol.".to_string())?,
+        metadata::tag: playground_exec::tag_protocol,
+        metadata::attribute*: attrs.exports(),
     };
-    Ok(tribles)
+    protocol += attrs.into_facts();
+
+    protocol += <GenId as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <Handle<Blake3, UnknownBlob> as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <UnknownBlob as metadata::ConstDescribe>::describe(blobs)?;
+
+    protocol += entity! { ExclusiveId::force_ref(&playground_exec::tag_protocol) @
+        metadata::name: blobs.put("tag_protocol".to_string())?,
+        metadata::tag: playground_exec::tag_tag,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&playground_exec::tag_kind) @
+        metadata::name: blobs.put("tag_kind".to_string())?,
+        metadata::tag: playground_exec::tag_tag,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&playground_exec::tag_tag) @
+        metadata::name: blobs.put("tag_tag".to_string())?,
+        metadata::tag: playground_exec::tag_tag,
+    };
+
+    protocol += entity! { ExclusiveId::force_ref(&playground_exec::kind_command_request) @
+        metadata::name: blobs.put("kind_command_request".to_string())?,
+        metadata::description: blobs.put("Command request entity kind.".to_string())?,
+        metadata::tag: playground_exec::tag_kind,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&playground_exec::kind_in_progress) @
+        metadata::name: blobs.put("kind_in_progress".to_string())?,
+        metadata::description: blobs.put("Command in-progress entity kind.".to_string())?,
+        metadata::tag: playground_exec::tag_kind,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&playground_exec::kind_command_result) @
+        metadata::name: blobs.put("kind_command_result".to_string())?,
+        metadata::description: blobs.put("Command result entity kind.".to_string())?,
+        metadata::tag: playground_exec::tag_kind,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&playground_exec::kind_timeout_extension) @
+        metadata::name: blobs.put("kind_timeout_extension".to_string())?,
+        metadata::description: blobs.put("Control event that extends the deadline for an in-flight command.".to_string())?,
+        metadata::tag: playground_exec::tag_kind,
+    };
+
+    Ok(protocol)
 }

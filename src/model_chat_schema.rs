@@ -49,133 +49,61 @@ pub mod model_chat {
     /// Tag for kind constants in the model_chat protocol.
     #[allow(non_upper_case_globals)]
     pub const tag_kind: Id = id_hex!("3E8E162D4BD697DE01083D0E529F49C1");
-    /// Tag for attribute constants in the model_chat protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_attribute: Id = id_hex!("6A2166D684C571DC18769CAC44260A4D");
     /// Tag for tag constants in the model_chat protocol.
     #[allow(non_upper_case_globals)]
     pub const tag_tag: Id = id_hex!("737CB4E3D88A2942C2725F978D620135");
 }
 
-pub fn describe<B>(blobs: &mut B) -> std::result::Result<TribleSet, B::PutError>
-where
-    B: BlobStore<Blake3>,
-{
-    let mut tribles = TribleSet::new();
-
-    tribles += entity! { ExclusiveId::force_ref(&model_chat::model_chat_metadata) @
-        metadata::name: blobs.put("model_chat_metadata".to_string())?,
-        metadata::description: blobs.put(
-            "Root id for describing the model_chat protocol.".to_string(),
-        )?,
-        metadata::tag: model_chat::tag_protocol,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&model_chat::tag_protocol) @
-        metadata::name: blobs.put("tag_protocol".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for model_chat protocol metadata.".to_string(),
-        )?,
-        metadata::tag: model_chat::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&model_chat::tag_kind) @
-        metadata::name: blobs.put("tag_kind".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for model_chat protocol kind constants.".to_string(),
-        )?,
-        metadata::tag: model_chat::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&model_chat::tag_attribute) @
-        metadata::name: blobs.put("tag_attribute".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for model_chat protocol attributes.".to_string(),
-        )?,
-        metadata::tag: model_chat::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&model_chat::tag_tag) @
-        metadata::name: blobs.put("tag_tag".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for model_chat protocol tag constants.".to_string(),
-        )?,
-        metadata::tag: model_chat::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&model_chat::kind_request) @
-        metadata::name: blobs.put("kind_request".to_string())?,
-        metadata::description: blobs.put(
-            "Model request entity kind.".to_string(),
-        )?,
-        metadata::tag: model_chat::tag_kind,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&model_chat::kind_in_progress) @
-        metadata::name: blobs.put("kind_in_progress".to_string())?,
-        metadata::description: blobs.put(
-            "Model in-progress entity kind.".to_string(),
-        )?,
-        metadata::tag: model_chat::tag_kind,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&model_chat::kind_result) @
-        metadata::name: blobs.put("kind_result".to_string())?,
-        metadata::description: blobs.put(
-            "Model result entity kind.".to_string(),
-        )?,
-        metadata::tag: model_chat::tag_kind,
-    };
-
-    Ok(tribles)
-}
-
-pub fn build_model_chat_metadata<B>(blobs: &mut B) -> std::result::Result<TribleSet, B::PutError>
-where
-    B: BlobStore<Blake3>,
-{
-    let mut metadata = describe(blobs)?;
-
-    metadata += <GenId as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <ShortString as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
-
-    metadata += describe_attribute(blobs, &model_chat::kind)?;
-    metadata += describe_attribute(blobs, &model_chat::about_request)?;
-    metadata += describe_attribute(blobs, &model_chat::about_thought)?;
-    metadata += describe_attribute(blobs, &model_chat::model)?;
-    metadata += describe_attribute(blobs, &model_chat::context)?;
-    metadata += describe_attribute(blobs, &model_chat::requested_at)?;
-    metadata += describe_attribute(blobs, &model_chat::request_raw)?;
-    metadata += describe_attribute(blobs, &model_chat::worker)?;
-    metadata += describe_attribute(blobs, &model_chat::started_at)?;
-    metadata += describe_attribute(blobs, &model_chat::attempt)?;
-    metadata += describe_attribute(blobs, &model_chat::finished_at)?;
-    metadata += describe_attribute(blobs, &model_chat::output_text)?;
-    metadata += describe_attribute(blobs, &model_chat::response_id)?;
-    metadata += describe_attribute(blobs, &model_chat::response_raw)?;
-    metadata += describe_attribute(blobs, &model_chat::reasoning_text)?;
-    metadata += describe_attribute(blobs, &model_chat::response_json_root)?;
-    metadata += describe_attribute(blobs, &model_chat::error)?;
-
-    Ok(metadata)
-}
-
-fn describe_attribute<B, S>(
+pub fn build_model_chat_metadata<B>(
     blobs: &mut B,
-    attribute: &Attribute<S>,
-) -> std::result::Result<TribleSet, B::PutError>
+) -> std::result::Result<Fragment, B::PutError>
 where
     B: BlobStore<Blake3>,
-    S: ValueSchema,
 {
-    let mut tribles = TribleSet::new();
-    tribles += metadata::Describe::describe(attribute, blobs)?;
-    let attribute_id = attribute.id();
-    tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::tag: model_chat::tag_attribute,
+    let attrs = model_chat::describe(blobs)?;
+
+    let mut protocol = entity! { ExclusiveId::force_ref(&model_chat::model_chat_metadata) @
+        metadata::name: blobs.put("model_chat".to_string())?,
+        metadata::description: blobs.put("Model chat protocol.".to_string())?,
+        metadata::tag: model_chat::tag_protocol,
+        metadata::attribute*: attrs.exports(),
     };
-    Ok(tribles)
+    protocol += attrs.into_facts();
+
+    protocol += <GenId as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <ShortString as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
+
+    protocol += entity! { ExclusiveId::force_ref(&model_chat::tag_protocol) @
+        metadata::name: blobs.put("tag_protocol".to_string())?,
+        metadata::tag: model_chat::tag_tag,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&model_chat::tag_kind) @
+        metadata::name: blobs.put("tag_kind".to_string())?,
+        metadata::tag: model_chat::tag_tag,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&model_chat::tag_tag) @
+        metadata::name: blobs.put("tag_tag".to_string())?,
+        metadata::tag: model_chat::tag_tag,
+    };
+
+    protocol += entity! { ExclusiveId::force_ref(&model_chat::kind_request) @
+        metadata::name: blobs.put("kind_request".to_string())?,
+        metadata::description: blobs.put("Model request entity kind.".to_string())?,
+        metadata::tag: model_chat::tag_kind,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&model_chat::kind_in_progress) @
+        metadata::name: blobs.put("kind_in_progress".to_string())?,
+        metadata::description: blobs.put("Model in-progress entity kind.".to_string())?,
+        metadata::tag: model_chat::tag_kind,
+    };
+    protocol += entity! { ExclusiveId::force_ref(&model_chat::kind_result) @
+        metadata::name: blobs.put("kind_result".to_string())?,
+        metadata::description: blobs.put("Model result entity kind.".to_string())?,
+        metadata::tag: model_chat::tag_kind,
+    };
+
+    Ok(protocol)
 }

@@ -1955,7 +1955,7 @@ fn load_optional_u64_attr(data: &TribleSet, entity_id: Id, attr: Attribute<U256B
     .into_iter()
     .next()
     .map(|(value,)| value)
-    .and_then(u256be_to_u64)
+    .and_then(|v| v.try_from_value::<u64>().ok())
 }
 
 fn load_optional_interval_attr(
@@ -4412,7 +4412,7 @@ fn load_attempts(data: &TribleSet) -> HashMap<Id, u64> {
         (event_id: Id, attempt: Value<U256BE>),
         pattern!(data, [{ ?event_id @ playground_exec::attempt: ?attempt }])
     ) {
-        if let Some(value) = u256be_to_u64(attempt) {
+        if let Some(value) = attempt.try_from_value::<u64>().ok() {
             attempts.insert(event_id, value);
         }
     }
@@ -4458,7 +4458,7 @@ fn load_exit_codes(data: &TribleSet) -> HashMap<Id, u64> {
         (event_id: Id, exit_code: Value<U256BE>),
         pattern!(data, [{ ?event_id @ playground_exec::exit_code: ?exit_code }])
     ) {
-        if let Some(code) = u256be_to_u64(exit_code) {
+        if let Some(code) = exit_code.try_from_value::<u64>().ok() {
             codes.insert(event_id, code);
         }
     }
@@ -6401,17 +6401,8 @@ fn epoch_key(epoch: Epoch) -> i128 {
 }
 
 fn interval_key(interval: Value<NsTAIInterval>) -> i128 {
-    let (lower, _): (Epoch, Epoch) = interval.from_value();
-    epoch_key(lower)
-}
-
-fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {
-    let raw = value.raw;
-    if raw[..24].iter().any(|byte| *byte != 0) {
-        return None;
-    }
-    let bytes: [u8; 8] = raw[24..32].try_into().ok()?;
-    Some(u64::from_be_bytes(bytes))
+    let (lower_ns, _): (i128, i128) = interval.from_value();
+    lower_ns
 }
 
 fn id_prefix(id: Id) -> String {

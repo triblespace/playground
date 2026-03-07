@@ -11,19 +11,15 @@ pub(crate) fn epoch_interval(epoch: Epoch) -> Value<NsTAIInterval> {
 }
 
 pub(crate) fn interval_key(interval: Value<NsTAIInterval>) -> i128 {
-    let (lower, _): (Epoch, Epoch) = interval.from_value();
-    epoch_key(lower)
+    let (lower_ns, _): (i128, i128) = interval.from_value();
+    lower_ns
 }
 
 /// Width of a time range in nanoseconds (end - start). Zero for point intervals.
 pub(crate) fn interval_width(start: Value<NsTAIInterval>, end: Value<NsTAIInterval>) -> i128 {
-    let (_, upper): (Epoch, Epoch) = end.from_value();
-    let (lower, _): (Epoch, Epoch) = start.from_value();
-    epoch_key(upper).saturating_sub(epoch_key(lower)).max(0)
-}
-
-fn epoch_key(epoch: Epoch) -> i128 {
-    epoch.to_tai_duration().total_nanoseconds()
+    let (_, upper_ns): (i128, i128) = end.from_value();
+    let (lower_ns, _): (i128, i128) = start.from_value();
+    upper_ns.saturating_sub(lower_ns).max(0)
 }
 
 /// Format the lower bound of an interval as a TAI timestamp.

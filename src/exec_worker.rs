@@ -146,7 +146,7 @@ pub(crate) fn run_exec_loop(
 
             let initial_timeout_ms = request
                 .timeout_ms
-                .and_then(u256be_to_u64)
+                .and_then(|v| v.try_from_value::<u64>().ok())
                 .unwrap_or(DEFAULT_EXEC_TIMEOUT_MS);
             let initial_timeout = Duration::from_millis(initial_timeout_ms);
             let started = Instant::now();
@@ -638,7 +638,7 @@ fn collect_timeout_extension_ms(
             playground_exec::timeout_ms: ?timeout_ms,
         }])
     ) {
-        let Some(timeout_ms) = u256be_to_u64(timeout_ms) else {
+        let Some(timeout_ms) = timeout_ms.try_from_value::<u64>().ok() else {
             continue;
         };
         if timeout_ms == 0 {
@@ -649,14 +649,6 @@ fn collect_timeout_extension_ms(
     extension_ms
 }
 
-fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {
-    let raw = value.raw;
-    if raw[..24].iter().any(|byte| *byte != 0) {
-        return None;
-    }
-    let bytes: [u8; 8] = raw[24..32].try_into().ok()?;
-    Some(u64::from_be_bytes(bytes))
-}
 
 fn load_stdin(ws: &mut Workspace<Pile>, request: &CommandRequest) -> Result<Option<Bytes>> {
     if let Some(stdin) = request.stdin {

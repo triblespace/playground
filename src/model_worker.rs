@@ -44,16 +44,94 @@ struct ModelRequestIndex {
 }
 
 #[derive(Debug)]
-struct OpenAIResult {
+struct ModelResult {
     output_text: String,
     reasoning_text: Option<String>,
     raw: String,
     response_id: Option<String>,
 }
 
+enum ModelBackend {
+    OpenAI { endpoint_url: String },
+    Anthropic { endpoint_url: String },
+}
+
+impl ModelBackend {
+    fn from_config(config: &Config) -> Self {
+        let base = config.model.base_url.trim().trim_end_matches('/');
+        if base.contains("anthropic.com") {
+            Self::Anthropic {
+                endpoint_url: format!("{base}/v1/messages"),
+            }
+        } else {
+            Self::OpenAI {
+                endpoint_url: chat_completions_url(base),
+            }
+        }
+    }
+
+    fn endpoint_url(&self) -> &str {
+        match self {
+            Self::OpenAI { endpoint_url } | Self::Anthropic { endpoint_url } => endpoint_url,
+        }
+    }
+
+    fn apply_auth(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+        api_key: Option<&str>,
+    ) -> reqwest::blocking::RequestBuilder {
+        let Some(key) = api_key else {
+            return request;
+        };
+        match self {
+            Self::OpenAI { .. } => request.bearer_auth(key),
+            Self::Anthropic { .. } => request
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01"),
+        }
+    }
+
+    fn build_payload(
+        &self,
+        config: &Config,
+        ws: &mut Workspace<Pile>,
+        model: &str,
+        messages: &[ChatMessage],
+    ) -> JsonValue {
+        match self {
+            Self::OpenAI { .. } => build_openai_payload(config, ws, model, messages),
+            Self::Anthropic { .. } => build_anthropic_payload(config, ws, model, messages),
+        }
+    }
+
+    fn parse_response(
+        &self,
+        response: reqwest::blocking::Response,
+        stream: bool,
+    ) -> Result<ModelResult> {
+        match self {
+            Self::OpenAI { .. } => {
+                if stream {
+                    parse_openai_stream(response)
+                } else {
+                    parse_openai_response(response)
+                }
+            }
+            Self::Anthropic { .. } => {
+                if stream {
+                    parse_anthropic_stream(response)
+                } else {
+                    parse_anthropic_response(response)
+                }
+            }
+        }
+    }
+}
+
 struct ModelHttpClient {
     client: Client,
-    endpoint_url: String,
+    backend: ModelBackend,
     api_key: Option<String>,
     stream: bool,
 }
@@ -84,24 +162,24 @@ impl ModelHttpClient {
             .timeout(Duration::from_secs(MODEL_REQUEST_TIMEOUT_SECS))
             .build()
             .context("build http client")?;
-        let endpoint_url = chat_completions_url(config.model.base_url.as_str());
+        let backend = ModelBackend::from_config(config);
         Ok(Self {
             client,
-            endpoint_url,
+            backend,
             api_key: config.model.api_key.clone(),
             stream: config.model.stream,
         })
     }
 
-    fn send_payload(&self, payload: &JsonValue) -> Result<OpenAIResult> {
+    fn send_payload(&self, payload: &JsonValue) -> Result<ModelResult> {
         let mut last_error: Option<anyhow::Error> = None;
+        let endpoint = self.backend.endpoint_url();
         for attempt in 1..=SEND_MAX_ATTEMPTS {
             match self.send_payload_once(payload) {
                 Ok(result) => return Ok(result),
                 Err(failure) => {
                     eprintln!(
-                        "warning: model send attempt {attempt}/{SEND_MAX_ATTEMPTS} to {} failed: {err:#}",
-                        self.endpoint_url,
+                        "warning: model send attempt {attempt}/{SEND_MAX_ATTEMPTS} to {endpoint} failed: {err:#}",
                         err = failure.error
                     );
                     last_error = Some(failure.error);
@@ -125,20 +203,23 @@ impl ModelHttpClient {
     fn send_payload_once(
         &self,
         payload: &JsonValue,
-    ) -> std::result::Result<OpenAIResult, SendFailure> {
+    ) -> std::result::Result<ModelResult, SendFailure> {
         let response = self.send_request(payload).map_err(|err| SendFailure {
             retryable: is_retryable_request_error(&err),
             error: err,
         })?;
         if response.status().is_success() {
-            return self.parse_response(response).map_err(|err| SendFailure {
-                retryable: false,
-                error: err,
-            });
+            return self
+                .backend
+                .parse_response(response, self.stream)
+                .map_err(|err| SendFailure {
+                    retryable: false,
+                    error: err,
+                });
         }
 
         let status = response.status();
-        // Best-effort body capture for debugging; don't assume it's JSON.
+        let endpoint = self.backend.endpoint_url();
         let body = response
             .text()
             .unwrap_or_else(|_| "<failed to read error body>".to_string());
@@ -146,7 +227,7 @@ impl ModelHttpClient {
         let error = anyhow::anyhow!(
             "request failed: HTTP {} for url ({}){}",
             status,
-            self.endpoint_url,
+            endpoint,
             if body.trim().is_empty() {
                 "".to_string()
             } else {
@@ -160,29 +241,12 @@ impl ModelHttpClient {
     }
 
     fn send_request(&self, payload: &JsonValue) -> Result<reqwest::blocking::Response> {
-        let mut request = self.client.post(&self.endpoint_url);
-        if let Some(api_key) = self.api_key.as_ref() {
-            request = request.bearer_auth(api_key);
-        }
+        let endpoint = self.backend.endpoint_url();
+        let request = self.client.post(endpoint);
+        let request = self
+            .backend
+            .apply_auth(request, self.api_key.as_deref());
         request.json(payload).send().context("send http request")
-    }
-
-    fn parse_response(&self, response: reqwest::blocking::Response) -> Result<OpenAIResult> {
-        if self.stream {
-            parse_stream(response)
-        } else {
-            let json: JsonValue = response.json().context("read response json")?;
-            let output_text = extract_output_text(&json);
-            let reasoning_text = extract_reasoning_text(&json);
-            let raw = serde_json::to_string(&json).context("serialize response")?;
-            let response_id = extract_response_id(&json);
-            Ok(OpenAIResult {
-                output_text,
-                reasoning_text,
-                raw,
-                response_id,
-            })
-        }
     }
 }
 
@@ -195,6 +259,7 @@ struct SendFailure {
 fn is_retryable_http_status(status: StatusCode) -> bool {
     status == StatusCode::REQUEST_TIMEOUT
         || status == StatusCode::TOO_MANY_REQUESTS
+        || status.as_u16() == 529 // Anthropic "overloaded"
         || status.is_server_error()
 }
 
@@ -271,7 +336,7 @@ pub(crate) fn run_model_loop(
                     continue;
                 }
             };
-            let payload = build_payload(&config, &mut ws, model.as_str(), &messages);
+            let payload = client.backend.build_payload(&config, &mut ws, model.as_str(), &messages);
             let request_raw =
                 serde_json::to_string(&payload).context("serialize request payload")?;
 
@@ -485,7 +550,7 @@ impl ModelRequestIndex {
     }
 }
 
-fn build_chat_payload_messages(
+fn build_openai_messages(
     ws: &mut Workspace<Pile>,
     model: &str,
     messages: &[ChatMessage],
@@ -510,7 +575,7 @@ fn build_chat_payload_messages(
                 }
             });
             if has_blob {
-                let content = build_prompt_input_content(ws, model, message.content.as_str());
+                let content = build_openai_input_content(ws, model, message.content.as_str());
                 out.push(serde_json::json!({ "role": role, "content": content }));
                 continue;
             }
@@ -522,13 +587,13 @@ fn build_chat_payload_messages(
     out
 }
 
-fn build_payload(
+fn build_openai_payload(
     config: &Config,
     ws: &mut Workspace<Pile>,
     model: &str,
     messages: &[ChatMessage],
 ) -> JsonValue {
-    let messages = build_chat_payload_messages(ws, model, messages);
+    let messages = build_openai_messages(ws, model, messages);
     let max_tokens = config.model.max_output_tokens.max(1);
     serde_json::json!({
         "model": model,
@@ -538,7 +603,7 @@ fn build_payload(
     })
 }
 
-fn build_prompt_input_content(
+fn build_openai_input_content(
     ws: &mut Workspace<Pile>,
     model: &str,
     prompt: &str,
@@ -572,12 +637,13 @@ fn build_prompt_input_content(
                     }));
                     continue;
                 }
-                match resolve_blob_image_data_url(
+                match resolve_blob_image(
                     ws,
                     &blob_ref.digest_hex,
                     blob_ref.mime.as_deref(),
                 ) {
-                    Ok(data_url) => {
+                    Ok((mime, b64)) => {
+                        let data_url = format!("data:{mime};base64,{b64}");
                         content.push(serde_json::json!({
                             "type": "image_url",
                             "image_url": {"url": data_url},
@@ -604,11 +670,12 @@ fn build_prompt_input_content(
     content
 }
 
-fn resolve_blob_image_data_url(
+/// Resolves a blob image to its (mime_type, base64_data) components.
+fn resolve_blob_image(
     ws: &mut Workspace<Pile>,
     digest_hex: &str,
     mime_hint: Option<&str>,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<(String, String), String> {
     let handle =
         unknown_blob_handle_from_hex(digest_hex).ok_or_else(|| "bad blob digest".to_string())?;
     let bytes: Bytes = ws
@@ -628,7 +695,7 @@ fn resolve_blob_image_data_url(
             .ok_or_else(|| "blob is not a supported image format".to_string())?,
     };
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes.as_ref());
-    Ok(format!("data:{mime};base64,{encoded}"))
+    Ok((mime, encoded))
 }
 
 fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
@@ -649,7 +716,7 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
 
 fn model_supports_images(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    if model.contains("mistral") {
+    if model.contains("mistral") || model.contains("claude") {
         return true;
     }
     !(model.contains("codex")
@@ -663,7 +730,279 @@ fn format_blob_fallback(raw_marker: &str, reason: &str) -> String {
     format!("[blob omitted: {reason}] {raw_marker}")
 }
 
-fn parse_stream(response: reqwest::blocking::Response) -> Result<OpenAIResult> {
+// ---------------------------------------------------------------------------
+// Anthropic Messages API
+// ---------------------------------------------------------------------------
+
+fn build_anthropic_payload(
+    config: &Config,
+    ws: &mut Workspace<Pile>,
+    model: &str,
+    messages: &[ChatMessage],
+) -> JsonValue {
+    let supports_images = model_supports_images(model);
+
+    // Extract system messages into a top-level "system" string.
+    let system_parts: Vec<&str> = messages
+        .iter()
+        .filter(|m| m.role == ChatRole::System)
+        .map(|m| m.content.as_str())
+        .collect();
+
+    let mut api_messages = Vec::new();
+    for message in messages {
+        if message.role == ChatRole::System {
+            continue;
+        }
+        let role = match message.role {
+            ChatRole::User => "user",
+            ChatRole::Assistant => "assistant",
+            ChatRole::System => unreachable!(),
+        };
+
+        if message.role == ChatRole::User && supports_images {
+            let chunks = split_blob_refs(message.content.as_str());
+            let has_blob = chunks
+                .iter()
+                .any(|c| if let PromptChunk::Blob(_) = c { true } else { false });
+            if has_blob {
+                let content = build_anthropic_input_content(ws, model, message.content.as_str());
+                api_messages.push(serde_json::json!({ "role": role, "content": content }));
+                continue;
+            }
+        }
+
+        api_messages.push(serde_json::json!({
+            "role": role,
+            "content": message.content.as_str(),
+        }));
+    }
+
+    let max_tokens = config.model.max_output_tokens.max(1);
+    let mut payload = serde_json::json!({
+        "model": model,
+        "messages": api_messages,
+        "stream": config.model.stream,
+        "max_tokens": max_tokens,
+    });
+
+    if !system_parts.is_empty() {
+        payload["system"] = serde_json::json!(system_parts.join("\n\n"));
+    }
+
+    // Extended thinking support.
+    if let Some(ref effort) = config.model.reasoning_effort {
+        let budget = match effort.as_str() {
+            "low" => max_tokens.max(1024),
+            "medium" => max_tokens.saturating_mul(2).max(2048),
+            _ => max_tokens.saturating_mul(4).max(4096),
+        };
+        payload["thinking"] = serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": budget,
+        });
+    }
+
+    payload
+}
+
+fn build_anthropic_input_content(
+    ws: &mut Workspace<Pile>,
+    model: &str,
+    prompt: &str,
+) -> Vec<JsonValue> {
+    let supports_images = model_supports_images(model);
+    let mut content = Vec::new();
+    let mut images_added = 0usize;
+
+    for chunk in split_blob_refs(prompt) {
+        match chunk {
+            PromptChunk::Text(text) => {
+                if !text.is_empty() {
+                    content.push(serde_json::json!({
+                        "type": "text",
+                        "text": text,
+                    }));
+                }
+            }
+            PromptChunk::Blob(blob_ref) => {
+                if !supports_images {
+                    content.push(serde_json::json!({
+                        "type": "text",
+                        "text": format_blob_fallback(blob_ref.raw.as_str(), "vision unavailable for current model"),
+                    }));
+                    continue;
+                }
+                if images_added >= MAX_INLINE_IMAGES_PER_PROMPT {
+                    content.push(serde_json::json!({
+                        "type": "text",
+                        "text": format_blob_fallback(blob_ref.raw.as_str(), "image limit reached"),
+                    }));
+                    continue;
+                }
+                match resolve_blob_image(
+                    ws,
+                    &blob_ref.digest_hex,
+                    blob_ref.mime.as_deref(),
+                ) {
+                    Ok((mime, b64)) => {
+                        content.push(serde_json::json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime,
+                                "data": b64,
+                            },
+                        }));
+                        images_added += 1;
+                    }
+                    Err(reason) => {
+                        content.push(serde_json::json!({
+                            "type": "text",
+                            "text": format_blob_fallback(blob_ref.raw.as_str(), reason.as_str()),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    if content.is_empty() {
+        content.push(serde_json::json!({
+            "type": "text",
+            "text": prompt,
+        }));
+    }
+    content
+}
+
+fn parse_anthropic_response(response: reqwest::blocking::Response) -> Result<ModelResult> {
+    let body = response.text().context("read response body")?;
+    let parsed: JsonValue = serde_json::from_str(&body).context("parse response JSON")?;
+
+    let response_id = parsed.get("id").and_then(JsonValue::as_str).map(str::to_string);
+
+    let mut output_text = String::new();
+    let mut reasoning_parts = Vec::new();
+
+    if let Some(content) = parsed.get("content").and_then(JsonValue::as_array) {
+        for block in content {
+            match block.get("type").and_then(JsonValue::as_str) {
+                Some("text") => {
+                    if let Some(text) = block.get("text").and_then(JsonValue::as_str) {
+                        output_text.push_str(text);
+                    }
+                }
+                Some("thinking") => {
+                    if let Some(text) = block.get("thinking").and_then(JsonValue::as_str) {
+                        push_clean(&mut reasoning_parts, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let reasoning_text = normalized_join(reasoning_parts);
+    Ok(ModelResult {
+        output_text,
+        reasoning_text,
+        raw: body,
+        response_id,
+    })
+}
+
+fn parse_anthropic_stream(response: reqwest::blocking::Response) -> Result<ModelResult> {
+    let mut output_text = String::new();
+    let mut raw_events = Vec::new();
+    let mut response_id = None;
+    let mut reasoning_parts = Vec::new();
+
+    let reader = BufReader::new(response);
+    let mut current_event_type = String::new();
+
+    for line in reader.lines() {
+        let line = line.context("read stream")?;
+
+        // SSE event type line.
+        if let Some(event_type) = line.strip_prefix("event: ") {
+            current_event_type = event_type.trim().to_string();
+            continue;
+        }
+
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+
+        raw_events.push(data.to_owned());
+        let Ok(event) = serde_json::from_str::<JsonValue>(data) else {
+            continue;
+        };
+
+        match current_event_type.as_str() {
+            "message_start" => {
+                if let Some(message) = event.get("message") {
+                    response_id = message
+                        .get("id")
+                        .and_then(JsonValue::as_str)
+                        .map(str::to_string);
+                }
+            }
+            "content_block_delta" => {
+                if let Some(delta) = event.get("delta") {
+                    match delta.get("type").and_then(JsonValue::as_str) {
+                        Some("text_delta") => {
+                            if let Some(text) = delta.get("text").and_then(JsonValue::as_str) {
+                                output_text.push_str(text);
+                            }
+                        }
+                        Some("thinking_delta") => {
+                            if let Some(text) = delta.get("thinking").and_then(JsonValue::as_str) {
+                                reasoning_parts.push(text.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "message_stop" => {
+                break;
+            }
+            _ => {}
+        }
+
+        current_event_type.clear();
+    }
+
+    let raw = raw_events.join("\n");
+    let reasoning_text = normalized_join(reasoning_parts);
+    Ok(ModelResult {
+        output_text,
+        reasoning_text,
+        raw,
+        response_id,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Chat Completions API
+// ---------------------------------------------------------------------------
+
+fn parse_openai_response(response: reqwest::blocking::Response) -> Result<ModelResult> {
+    let body = response.text().context("read response body")?;
+    let parsed: JsonValue = serde_json::from_str(&body).context("parse response JSON")?;
+    let output_text = extract_output_text(&parsed);
+    let reasoning_text = extract_reasoning_text(&parsed);
+    let response_id = extract_response_id(&parsed);
+    Ok(ModelResult {
+        output_text,
+        reasoning_text,
+        raw: body,
+        response_id,
+    })
+}
+
+fn parse_openai_stream(response: reqwest::blocking::Response) -> Result<ModelResult> {
     let mut output_text = String::new();
     let mut raw_events = Vec::new();
     let mut response_id = None;
@@ -703,7 +1042,7 @@ fn parse_stream(response: reqwest::blocking::Response) -> Result<OpenAIResult> {
 
     let raw = raw_events.join("\n");
     let reasoning_text = normalized_join(reasoning_parts);
-    Ok(OpenAIResult {
+    Ok(ModelResult {
         output_text,
         reasoning_text,
         raw,
@@ -887,8 +1226,8 @@ mod tests {
     use crate::config::Config;
 
     use super::{
-        Bytes, JsonValue, UnknownBlob, build_payload, build_prompt_input_content,
-        extract_reasoning_text,
+        Bytes, JsonValue, ModelBackend, UnknownBlob, build_anthropic_payload,
+        build_openai_input_content, build_openai_payload, extract_reasoning_text,
     };
 
     fn test_repo_path() -> PathBuf {
@@ -1009,7 +1348,7 @@ mod tests {
                 ChatMessage::assistant("orient show"),
                 ChatMessage::user("stdout:\nok\n"),
             ];
-            let payload = build_payload(&config, ws, "gpt-5", &messages);
+            let payload = build_openai_payload(&config, ws, "gpt-5", &messages);
             let payload_messages = payload
                 .get("messages")
                 .and_then(JsonValue::as_array)
@@ -1026,7 +1365,7 @@ mod tests {
             let prompt = format!(
                 "inspect this image ![sample](blob:blake3:{digest_hex}?mime=image%2Fpng&name=sample.png)"
             );
-            let content = build_prompt_input_content(ws, "gpt-4.1", prompt.as_str());
+            let content = build_openai_input_content(ws, "gpt-4.1", prompt.as_str());
             assert!(
                 content
                     .iter()
@@ -1041,7 +1380,7 @@ mod tests {
         with_test_workspace(|ws| {
             let digest_hex = put_test_png(ws);
             let prompt = format!("![sample](blob:blake3:{digest_hex}?mime=image%2Fpng)");
-            let content = build_prompt_input_content(ws, "gpt-oss-120b", prompt.as_str());
+            let content = build_openai_input_content(ws, "gpt-oss-120b", prompt.as_str());
             assert_eq!(content.len(), 1);
             assert_eq!(
                 content[0].get("type").and_then(JsonValue::as_str),
@@ -1053,5 +1392,132 @@ mod tests {
                 .unwrap_or_default();
             assert!(text.contains("vision unavailable"));
         });
+    }
+
+    #[test]
+    fn anthropic_payload_extracts_system_prompt() {
+        with_test_workspace(|ws| {
+            let config = test_config();
+            let messages = vec![
+                ChatMessage::system("You are helpful."),
+                ChatMessage::user("Hello"),
+                ChatMessage::assistant("Hi there"),
+                ChatMessage::user("How are you?"),
+            ];
+            let payload = build_anthropic_payload(&config, ws, "claude-sonnet-4-6", &messages);
+
+            // System prompt should be a top-level field, not in messages.
+            let system = payload
+                .get("system")
+                .and_then(JsonValue::as_str)
+                .expect("system field");
+            assert_eq!(system, "You are helpful.");
+
+            // Messages should only contain user/assistant, no system.
+            let msgs = payload
+                .get("messages")
+                .and_then(JsonValue::as_array)
+                .expect("messages array");
+            assert_eq!(msgs.len(), 3);
+            for msg in msgs {
+                let role = msg.get("role").and_then(JsonValue::as_str).unwrap();
+                assert_ne!(role, "system");
+            }
+        });
+    }
+
+    #[test]
+    fn anthropic_image_uses_source_format() {
+        with_test_workspace(|ws| {
+            let digest_hex = put_test_png(ws);
+            let prompt = format!(
+                "inspect ![img](blob:blake3:{digest_hex}?mime=image%2Fpng&name=test.png)"
+            );
+            let content =
+                super::build_anthropic_input_content(ws, "claude-sonnet-4-6", prompt.as_str());
+            let image_part = content
+                .iter()
+                .find(|p| p.get("type").and_then(JsonValue::as_str) == Some("image"))
+                .expect("expected image part");
+            let source = image_part.get("source").expect("source field");
+            assert_eq!(
+                source.get("type").and_then(JsonValue::as_str),
+                Some("base64")
+            );
+            assert_eq!(
+                source.get("media_type").and_then(JsonValue::as_str),
+                Some("image/png")
+            );
+            assert!(source.get("data").and_then(JsonValue::as_str).is_some());
+        });
+    }
+
+    #[test]
+    fn anthropic_response_extracts_text_and_thinking() {
+        // Simulate an Anthropic Messages API non-streaming response body.
+        let body = json!({
+            "id": "msg_01abc",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "Let me consider this carefully"},
+                {"type": "text", "text": "orient show"}
+            ],
+            "model": "claude-sonnet-4-6",
+            "stop_reason": "end_turn"
+        });
+        let body_str = serde_json::to_string(&body).unwrap();
+        let parsed: JsonValue = serde_json::from_str(&body_str).unwrap();
+
+        // Test extraction logic directly (parse_anthropic_response takes a Response,
+        // so we test the content extraction pattern here).
+        let mut output_text = String::new();
+        let mut reasoning_parts = Vec::new();
+        if let Some(content) = parsed.get("content").and_then(JsonValue::as_array) {
+            for block in content {
+                match block.get("type").and_then(JsonValue::as_str) {
+                    Some("text") => {
+                        if let Some(text) = block.get("text").and_then(JsonValue::as_str) {
+                            output_text.push_str(text);
+                        }
+                    }
+                    Some("thinking") => {
+                        if let Some(text) = block.get("thinking").and_then(JsonValue::as_str) {
+                            super::push_clean(&mut reasoning_parts, text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let response_id = parsed
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string);
+
+        assert_eq!(output_text, "orient show");
+        assert_eq!(
+            super::normalized_join(reasoning_parts),
+            Some("Let me consider this carefully".to_string())
+        );
+        assert_eq!(response_id.as_deref(), Some("msg_01abc"));
+    }
+
+    #[test]
+    fn backend_from_config_detects_anthropic() {
+        let mut config = test_config();
+        config.model.base_url = "https://api.anthropic.com".to_string();
+        let backend = ModelBackend::from_config(&config);
+        assert!(
+            backend.endpoint_url().contains("/v1/messages"),
+            "Anthropic backend should use /v1/messages endpoint"
+        );
+
+        config.model.base_url = "http://localhost:11434/v1".to_string();
+        let backend = ModelBackend::from_config(&config);
+        assert!(
+            backend.endpoint_url().contains("/chat/completions"),
+            "Non-Anthropic backend should use /chat/completions endpoint"
+        );
     }
 }

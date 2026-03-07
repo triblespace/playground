@@ -36,110 +36,49 @@ pub mod playground_context {
     /// Tag for kind constants in the playground_context protocol.
     #[allow(non_upper_case_globals)]
     pub const tag_kind: Id = id_hex!("FB4C9FFBE1CB6FB92E41915E35B95EF4");
-    /// Tag for attribute constants in the playground_context protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_attribute: Id = id_hex!("1BE7411A75F1244AEF7713EBEF866E78");
     /// Tag for tag constants in the playground_context protocol.
     #[allow(non_upper_case_globals)]
     pub const tag_tag: Id = id_hex!("3BA5BD0CEAB802DDE13FBA7B983B4C1A");
 }
 
-pub fn describe<B>(blobs: &mut B) -> std::result::Result<TribleSet, B::PutError>
+pub fn build_playground_context_metadata<B>(
+    blobs: &mut B,
+) -> std::result::Result<Fragment, B::PutError>
 where
     B: BlobStore<Blake3>,
 {
-    let mut tribles = TribleSet::new();
+    let attrs = playground_context::describe(blobs)?;
 
-    tribles += entity! { ExclusiveId::force_ref(&playground_context::playground_context_metadata) @
-        metadata::name: blobs.put("playground_context_metadata".to_string())?,
-        metadata::description: blobs.put(
-            "Root id for describing the playground_context protocol.".to_string(),
-        )?,
+    let mut protocol = entity! { ExclusiveId::force_ref(&playground_context::playground_context_metadata) @
+        metadata::name: blobs.put("playground_context".to_string())?,
+        metadata::description: blobs.put("Playground context protocol.".to_string())?,
         metadata::tag: playground_context::tag_protocol,
+        metadata::attribute*: attrs.exports(),
     };
+    protocol += attrs.into_facts();
 
-    tribles += entity! { ExclusiveId::force_ref(&playground_context::tag_protocol) @
+    protocol += <GenId as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
+    protocol += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
+
+    protocol += entity! { ExclusiveId::force_ref(&playground_context::tag_protocol) @
         metadata::name: blobs.put("tag_protocol".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for playground_context protocol metadata.".to_string(),
-        )?,
         metadata::tag: playground_context::tag_tag,
     };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_context::tag_kind) @
+    protocol += entity! { ExclusiveId::force_ref(&playground_context::tag_kind) @
         metadata::name: blobs.put("tag_kind".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for playground_context protocol kind constants.".to_string(),
-        )?,
         metadata::tag: playground_context::tag_tag,
     };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_context::tag_attribute) @
-        metadata::name: blobs.put("tag_attribute".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for playground_context protocol attributes.".to_string(),
-        )?,
-        metadata::tag: playground_context::tag_tag,
-    };
-
-    tribles += entity! { ExclusiveId::force_ref(&playground_context::tag_tag) @
+    protocol += entity! { ExclusiveId::force_ref(&playground_context::tag_tag) @
         metadata::name: blobs.put("tag_tag".to_string())?,
-        metadata::description: blobs.put(
-            "Tag for playground_context protocol tag constants.".to_string(),
-        )?,
         metadata::tag: playground_context::tag_tag,
     };
 
-    tribles += entity! { ExclusiveId::force_ref(&playground_context::kind_chunk) @
+    protocol += entity! { ExclusiveId::force_ref(&playground_context::kind_chunk) @
         metadata::name: blobs.put("kind_chunk".to_string())?,
-        metadata::description: blobs.put(
-            "Context chunk entity kind.".to_string(),
-        )?,
+        metadata::description: blobs.put("Context chunk entity kind.".to_string())?,
         metadata::tag: playground_context::tag_kind,
     };
 
-    Ok(tribles)
-}
-
-pub fn build_playground_context_metadata<B>(
-    blobs: &mut B,
-) -> std::result::Result<TribleSet, B::PutError>
-where
-    B: BlobStore<Blake3>,
-{
-    let mut metadata = describe(blobs)?;
-
-    metadata += <GenId as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
-    metadata += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
-
-    metadata += describe_attribute(blobs, &playground_context::kind)?;
-    metadata += describe_attribute(blobs, &playground_context::summary)?;
-    metadata += describe_attribute(blobs, &playground_context::created_at)?;
-    metadata += describe_attribute(blobs, &playground_context::start_at)?;
-    metadata += describe_attribute(blobs, &playground_context::end_at)?;
-    metadata += describe_attribute(blobs, &playground_context::left)?;
-    metadata += describe_attribute(blobs, &playground_context::right)?;
-    metadata += describe_attribute(blobs, &playground_context::child)?;
-    metadata += describe_attribute(blobs, &playground_context::about_exec_result)?;
-    metadata += describe_attribute(blobs, &playground_context::about_archive_message)?;
-
-    Ok(metadata)
-}
-
-fn describe_attribute<B, S>(
-    blobs: &mut B,
-    attribute: &Attribute<S>,
-) -> std::result::Result<TribleSet, B::PutError>
-where
-    B: BlobStore<Blake3>,
-    S: ValueSchema,
-{
-    let mut tribles = TribleSet::new();
-    tribles += metadata::Describe::describe(attribute, blobs)?;
-    let attribute_id = attribute.id();
-    tribles += entity! { ExclusiveId::force_ref(&attribute_id) @
-        metadata::tag: playground_context::tag_attribute,
-    };
-    Ok(tribles)
+    Ok(protocol)
 }
