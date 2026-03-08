@@ -10,7 +10,6 @@ pub mod model_chat {
     use super::*;
 
     attributes! {
-        "5F10520477A04E5FB322C85CC78C6762" as pub kind: GenId;
         "5A14A02113CE43A59881D0717726F465" as pub about_request: GenId;
         "DA8E31E47919337B3E00724EBE32D14E" as pub about_thought: GenId;
         "C1FFE9D4FEC549C09C96639665561DFE" as pub model: ShortString;
@@ -43,15 +42,6 @@ pub mod model_chat {
     #[allow(non_upper_case_globals)]
     pub const kind_result: Id = id_hex!("DE498E4697F9F01219C75E7BC183DB91");
 
-    /// Tag for model_chat protocol metadata.
-    #[allow(non_upper_case_globals)]
-    pub const tag_protocol: Id = id_hex!("4E2AFB139125A2294B4D464C150D48FC");
-    /// Tag for kind constants in the model_chat protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_kind: Id = id_hex!("3E8E162D4BD697DE01083D0E529F49C1");
-    /// Tag for tag constants in the model_chat protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_tag: Id = id_hex!("737CB4E3D88A2942C2725F978D620135");
 }
 
 pub fn build_model_chat_metadata<B>(
@@ -63,46 +53,26 @@ where
     let attrs = model_chat::describe(blobs)?;
 
     let mut protocol = entity! { ExclusiveId::force_ref(&model_chat::model_chat_metadata) @
-        metadata::name: blobs.put("model_chat".to_string())?,
-        metadata::description: blobs.put("Model chat protocol.".to_string())?,
-        metadata::tag: model_chat::tag_protocol,
-        metadata::attribute*: attrs.exports(),
-    };
-    protocol += attrs.into_facts();
-
-    protocol += <GenId as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <ShortString as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
-
-    protocol += entity! { ExclusiveId::force_ref(&model_chat::tag_protocol) @
-        metadata::name: blobs.put("tag_protocol".to_string())?,
-        metadata::tag: model_chat::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&model_chat::tag_kind) @
-        metadata::name: blobs.put("tag_kind".to_string())?,
-        metadata::tag: model_chat::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&model_chat::tag_tag) @
-        metadata::name: blobs.put("tag_tag".to_string())?,
-        metadata::tag: model_chat::tag_tag,
+        metadata::name: blobs.put("model_chat")?,
+        metadata::description: blobs.put("Model chat protocol.")?,
+        metadata::tag: metadata::KIND_PROTOCOL,
+        metadata::attribute*: attrs,
     };
 
     protocol += entity! { ExclusiveId::force_ref(&model_chat::kind_request) @
-        metadata::name: blobs.put("kind_request".to_string())?,
-        metadata::description: blobs.put("Model request entity kind.".to_string())?,
-        metadata::tag: model_chat::tag_kind,
+        metadata::name: blobs.put("kind_request")?,
+        metadata::description: blobs.put("Model request entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&model_chat::kind_in_progress) @
-        metadata::name: blobs.put("kind_in_progress".to_string())?,
-        metadata::description: blobs.put("Model in-progress entity kind.".to_string())?,
-        metadata::tag: model_chat::tag_kind,
+        metadata::name: blobs.put("kind_in_progress")?,
+        metadata::description: blobs.put("Model in-progress entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&model_chat::kind_result) @
-        metadata::name: blobs.put("kind_result".to_string())?,
-        metadata::description: blobs.put("Model result entity kind.".to_string())?,
-        metadata::tag: model_chat::tag_kind,
+        metadata::name: blobs.put("kind_result")?,
+        metadata::description: blobs.put("Model result entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
 
     Ok(protocol)

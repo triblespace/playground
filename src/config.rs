@@ -351,7 +351,7 @@ fn load_latest_config(
         (config_id: Id, updated_at: Value<NsTAIInterval>),
         pattern!(catalog, [{
             ?config_id @
-            playground_config::kind: playground_config::kind_config,
+            metadata::tag: playground_config::kind_config,
             playground_config::updated_at: ?updated_at,
         }])
     ) {
@@ -539,7 +539,7 @@ fn load_latest_model_profile(
         (entry_id: Id, updated_at: Value<NsTAIInterval>),
         pattern!(catalog, [{
             ?entry_id @
-            playground_config::kind: playground_config::kind_model_profile,
+            metadata::tag: playground_config::kind_model_profile,
             playground_config::updated_at: ?updated_at,
             playground_config::model_profile_id: profile_id,
         }])
@@ -643,7 +643,7 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
 
     let mut change = TribleSet::new();
     change += entity! { &config_id @
-        playground_config::kind: playground_config::kind_config,
+        metadata::tag: playground_config::kind_config,
         playground_config::updated_at: now,
         playground_config::system_prompt: system_prompt,
         playground_config::branch: branch,
@@ -713,7 +713,7 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
     let model_chars_per_token: Value<U256BE> = config.model.chars_per_token.to_value();
 
     change += entity! { &profile_entry_id @
-        playground_config::kind: playground_config::kind_model_profile,
+        metadata::tag: playground_config::kind_model_profile,
         playground_config::updated_at: now,
         playground_config::model_profile_id: profile_id,
         metadata::name: profile_name,

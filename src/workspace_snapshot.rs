@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use triblespace::core::blob::Blob;
+use triblespace::core::metadata;
 use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::{Repository, Workspace};
 use triblespace::prelude::blobschemas::{FileBytes, LongString};
@@ -415,7 +416,7 @@ fn latest_snapshot(catalog: &TribleSet) -> Result<Option<Id>> {
         (snapshot_id: Id, created_at: Value<NsTAIInterval>),
         pattern!(&catalog, [{
             ?snapshot_id @
-            playground_workspace::kind: playground_workspace::kind_snapshot,
+            metadata::tag: playground_workspace::kind_snapshot,
             playground_workspace::created_at: ?created_at,
         }])
     ) {
@@ -455,7 +456,7 @@ fn load_entry(
         (kind: Id),
         pattern!(catalog, [{
             entry_id @
-            playground_workspace::kind: ?kind,
+            metadata::tag: ?kind,
         }])
     )
     .into_iter()

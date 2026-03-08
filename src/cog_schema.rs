@@ -8,7 +8,6 @@ pub mod playground_cog {
     use super::*;
 
     attributes! {
-        "07F063ECF1DC9FB3C1984BDB10B98BFA" as pub kind: GenId;
         "FA6090FB00EEE2F5EF1E51F1F68EA5B8" as pub context: Handle<Blake3, LongString>;
         "99F834C6A6A050DECBE42D639288B559" as pub created_at: NsTAIInterval;
         "D986EF113EFA588E6247420A06DA87BA" as pub about_exec_result: GenId;
@@ -26,15 +25,6 @@ pub mod playground_cog {
     #[allow(non_upper_case_globals)]
     pub const kind_moment_boundary: Id = id_hex!("C1E52577C5F7C9066B10FBC7EA844B17");
 
-    /// Tag for playground_cog protocol metadata.
-    #[allow(non_upper_case_globals)]
-    pub const tag_protocol: Id = id_hex!("3B4417FCEBB29775EA2C2C9CB569505C");
-    /// Tag for kind constants in the playground_cog protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_kind: Id = id_hex!("725BAB37F8F32537DD3374E5F0E6AA35");
-    /// Tag for tag constants in the playground_cog protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_tag: Id = id_hex!("D05FA0E7791634CA02F9F9DE125ECCBF");
 }
 
 pub fn build_playground_cog_metadata<B>(
@@ -46,39 +36,21 @@ where
     let attrs = playground_cog::describe(blobs)?;
 
     let mut protocol = entity! { ExclusiveId::force_ref(&playground_cog::playground_cog_metadata) @
-        metadata::name: blobs.put("playground_cog".to_string())?,
-        metadata::description: blobs.put("Playground cog protocol.".to_string())?,
-        metadata::tag: playground_cog::tag_protocol,
-        metadata::attribute*: attrs.exports(),
-    };
-    protocol += attrs.into_facts();
-
-    protocol += <GenId as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
-
-    protocol += entity! { ExclusiveId::force_ref(&playground_cog::tag_protocol) @
-        metadata::name: blobs.put("tag_protocol".to_string())?,
-        metadata::tag: playground_cog::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&playground_cog::tag_kind) @
-        metadata::name: blobs.put("tag_kind".to_string())?,
-        metadata::tag: playground_cog::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&playground_cog::tag_tag) @
-        metadata::name: blobs.put("tag_tag".to_string())?,
-        metadata::tag: playground_cog::tag_tag,
+        metadata::name: blobs.put("playground_cog")?,
+        metadata::description: blobs.put("Playground cog protocol.")?,
+        metadata::tag: metadata::KIND_PROTOCOL,
+        metadata::attribute*: attrs,
     };
 
     protocol += entity! { ExclusiveId::force_ref(&playground_cog::kind_thought) @
-        metadata::name: blobs.put("kind_thought".to_string())?,
-        metadata::description: blobs.put("Thought entity kind.".to_string())?,
-        metadata::tag: playground_cog::tag_kind,
+        metadata::name: blobs.put("kind_thought")?,
+        metadata::description: blobs.put("Thought entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&playground_cog::kind_moment_boundary) @
-        metadata::name: blobs.put("kind_moment_boundary".to_string())?,
-        metadata::description: blobs.put("Moment-boundary marker entity kind.".to_string())?,
-        metadata::tag: playground_cog::tag_kind,
+        metadata::name: blobs.put("kind_moment_boundary")?,
+        metadata::description: blobs.put("Moment-boundary marker entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
 
     Ok(protocol)

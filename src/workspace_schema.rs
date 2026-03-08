@@ -8,7 +8,6 @@ pub mod playground_workspace {
     use super::*;
 
     attributes! {
-        "E39FB34126FE01A32F1D4B3DAD0F1874" as pub kind: GenId;
         "A95E92FB35943C570BE45FF811B0BD07" as pub created_at: NsTAIInterval;
         "5D36AA8480B30F62394911A003F20DDF" as pub parent_snapshot: GenId;
         "B667B02CEB4493232632473ECB782287" as pub root_path: Handle<Blake3, LongString>;
@@ -38,15 +37,6 @@ pub mod playground_workspace {
     #[allow(non_upper_case_globals)]
     pub const kind_symlink: Id = id_hex!("486FCFF53CAD57EAD3DCFB7D903B245B");
 
-    /// Tag for playground_workspace protocol metadata.
-    #[allow(non_upper_case_globals)]
-    pub const tag_protocol: Id = id_hex!("17692551EAC2594296E6ED4C55E9A033");
-    /// Tag for kind constants in the playground_workspace protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_kind: Id = id_hex!("0B36383E3DD32197C333D75DB57C2DA9");
-    /// Tag for tag constants in the playground_workspace protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_tag: Id = id_hex!("B734BF2E666FB00D538DC6AABE41C20C");
 }
 
 pub fn build_playground_workspace_metadata<B>(
@@ -58,54 +48,31 @@ where
     let attrs = playground_workspace::describe(blobs)?;
 
     let mut protocol = entity! { ExclusiveId::force_ref(&playground_workspace::playground_workspace_metadata) @
-        metadata::name: blobs.put("playground_workspace".to_string())?,
-        metadata::description: blobs.put("Playground workspace protocol.".to_string())?,
-        metadata::tag: playground_workspace::tag_protocol,
-        metadata::attribute*: attrs.exports(),
-    };
-    protocol += attrs.into_facts();
-
-    protocol += <GenId as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <Handle<Blake3, SimpleArchive> as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <Handle<Blake3, FileBytes> as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <SimpleArchive as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <FileBytes as metadata::ConstDescribe>::describe(blobs)?;
-
-    protocol += entity! { ExclusiveId::force_ref(&playground_workspace::tag_protocol) @
-        metadata::name: blobs.put("tag_protocol".to_string())?,
-        metadata::tag: playground_workspace::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&playground_workspace::tag_kind) @
-        metadata::name: blobs.put("tag_kind".to_string())?,
-        metadata::tag: playground_workspace::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&playground_workspace::tag_tag) @
-        metadata::name: blobs.put("tag_tag".to_string())?,
-        metadata::tag: playground_workspace::tag_tag,
+        metadata::name: blobs.put("playground_workspace")?,
+        metadata::description: blobs.put("Playground workspace protocol.")?,
+        metadata::tag: metadata::KIND_PROTOCOL,
+        metadata::attribute*: attrs,
     };
 
     protocol += entity! { ExclusiveId::force_ref(&playground_workspace::kind_snapshot) @
-        metadata::name: blobs.put("kind_snapshot".to_string())?,
-        metadata::description: blobs.put("Workspace snapshot entity kind.".to_string())?,
-        metadata::tag: playground_workspace::tag_kind,
+        metadata::name: blobs.put("kind_snapshot")?,
+        metadata::description: blobs.put("Workspace snapshot entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&playground_workspace::kind_file) @
-        metadata::name: blobs.put("kind_file".to_string())?,
-        metadata::description: blobs.put("Workspace file entry entity kind.".to_string())?,
-        metadata::tag: playground_workspace::tag_kind,
+        metadata::name: blobs.put("kind_file")?,
+        metadata::description: blobs.put("Workspace file entry entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&playground_workspace::kind_dir) @
-        metadata::name: blobs.put("kind_dir".to_string())?,
-        metadata::description: blobs.put("Workspace directory entry entity kind.".to_string())?,
-        metadata::tag: playground_workspace::tag_kind,
+        metadata::name: blobs.put("kind_dir")?,
+        metadata::description: blobs.put("Workspace directory entry entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&playground_workspace::kind_symlink) @
-        metadata::name: blobs.put("kind_symlink".to_string())?,
-        metadata::description: blobs.put("Workspace symlink entry entity kind.".to_string())?,
-        metadata::tag: playground_workspace::tag_kind,
+        metadata::name: blobs.put("kind_symlink")?,
+        metadata::description: blobs.put("Workspace symlink entry entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
 
     Ok(protocol)

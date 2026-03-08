@@ -1778,7 +1778,7 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         (config_id: Id, updated_at: Value<NsTAIInterval>),
         pattern!(data, [{
             ?config_id @
-            playground_config::kind: playground_config::kind_config,
+            metadata::tag: playground_config::kind_config,
             playground_config::updated_at: ?updated_at,
         }])
     ) {
@@ -1925,7 +1925,7 @@ fn latest_model_profile_entry_id(data: &TribleSet, profile_id: Id) -> Option<Id>
         (entry_id: Id, updated_at: Value<NsTAIInterval>),
         pattern!(data, [{
             ?entry_id @
-            playground_config::kind: playground_config::kind_model_profile,
+            metadata::tag: playground_config::kind_model_profile,
             playground_config::updated_at: ?updated_at,
             playground_config::model_profile_id: profile_id,
         }])
@@ -2009,7 +2009,7 @@ fn collect_changed_exec_request_ids(data: &TribleSet, delta: &TribleSet) -> Hash
         (request_id: Id),
         pattern_changes!(data, delta, [{
             ?request_id @
-            playground_exec::kind: playground_exec::kind_command_request,
+            metadata::tag: playground_exec::kind_command_request,
         }])
     ) {
         ids.insert(request_id);
@@ -2034,7 +2034,7 @@ fn collect_exec_row(data: &TribleSet, ws: &mut Workspace<Pile>, request_id: Id) 
         (command: Value<Handle<Blake3, LongString>>),
         pattern!(data, [{
             request_id @
-            playground_exec::kind: playground_exec::kind_command_request,
+            metadata::tag: playground_exec::kind_command_request,
             playground_exec::command_text: ?command,
         }])
     )
@@ -2049,7 +2049,7 @@ fn collect_exec_row(data: &TribleSet, ws: &mut Workspace<Pile>, request_id: Id) 
         (event_id: Id),
         pattern!(data, [{
             ?event_id @
-            playground_exec::kind: playground_exec::kind_in_progress,
+            metadata::tag: playground_exec::kind_in_progress,
             playground_exec::about_request: request_id,
         }])
     ) {
@@ -2074,7 +2074,7 @@ fn collect_exec_row(data: &TribleSet, ws: &mut Workspace<Pile>, request_id: Id) 
         (event_id: Id),
         pattern!(data, [{
             ?event_id @
-            playground_exec::kind: playground_exec::kind_command_result,
+            metadata::tag: playground_exec::kind_command_result,
             playground_exec::about_request: request_id,
         }])
     ) {
@@ -2147,7 +2147,7 @@ fn collect_exec_rows(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<ExecRow>
         (request_id: Id, command: Value<Handle<Blake3, LongString>>),
         pattern!(data, [{
             ?request_id @
-            playground_exec::kind: playground_exec::kind_command_request,
+            metadata::tag: playground_exec::kind_command_request,
             playground_exec::command_text: ?command,
         }])
     ) {
@@ -2236,7 +2236,7 @@ fn collect_turn_memory_rows(
         (request_id: Id, thought_id: Id),
         pattern!(data, [{
             ?request_id @
-            playground_exec::kind: playground_exec::kind_command_request,
+            metadata::tag: playground_exec::kind_command_request,
             playground_exec::about_thought: ?thought_id,
         }])
     ) {
@@ -2248,7 +2248,7 @@ fn collect_turn_memory_rows(
         (thought_id: Id, context_handle: Value<Handle<Blake3, LongString>>),
         pattern!(data, [{
             ?thought_id @
-            playground_cog::kind: playground_cog::kind_thought,
+            metadata::tag: playground_cog::kind_thought,
             playground_cog::context: ?context_handle,
         }])
     ) {
@@ -2694,7 +2694,7 @@ fn collect_teams_messages(
         ),
         pattern!(data, [{
             ?message_id @
-            archive::kind: archive::kind_message,
+            metadata::tag: archive::kind_message,
             teams::chat: ?chat_id,
             archive::author: ?author_id,
             archive::content: ?content_handle,
@@ -2751,7 +2751,7 @@ fn collect_workspace_snapshots(
         (snapshot_id: Id, created_at: Value<NsTAIInterval>),
         pattern!(data, [{
             ?snapshot_id @
-            playground_workspace::kind: playground_workspace::kind_snapshot,
+            metadata::tag: playground_workspace::kind_snapshot,
             playground_workspace::created_at: ?created_at,
         }])
     ) {
@@ -2818,7 +2818,7 @@ fn collect_workspace_entries(
     let mut kinds: HashMap<Id, Id> = HashMap::new();
     for (entry_id, kind) in find!(
         (entry_id: Id, kind: Id),
-        pattern!(data, [{ ?entry_id @ playground_workspace::kind: ?kind }])
+        pattern!(data, [{ ?entry_id @ metadata::tag: ?kind }])
     ) {
         kinds.insert(entry_id, kind);
     }
@@ -2955,7 +2955,7 @@ fn collect_changed_result_ids(data: &TribleSet, delta: &TribleSet) -> HashSet<Id
     let mut ids = HashSet::new();
     for (result_id,) in find!(
         (result_id: Id),
-        pattern_changes!(data, delta, [{ ?result_id @ model_chat::kind: model_chat::kind_result }])
+        pattern_changes!(data, delta, [{ ?result_id @ metadata::tag: model_chat::kind_result }])
     ) {
         ids.insert(result_id);
     }
@@ -2989,7 +2989,7 @@ fn collect_reasoning_summary_row(
         (finished_at: Value<NsTAIInterval>),
         pattern!(data, [{
             result_id @
-            model_chat::kind: model_chat::kind_result,
+            metadata::tag: model_chat::kind_result,
             model_chat::finished_at: ?finished_at,
         }])
     )
@@ -3001,7 +3001,7 @@ fn collect_reasoning_summary_row(
         (reasoning_handle: Value<Handle<Blake3, LongString>>),
         pattern!(data, [{
             result_id @
-            model_chat::kind: model_chat::kind_result,
+            metadata::tag: model_chat::kind_result,
             model_chat::reasoning_text: ?reasoning_handle,
         }])
     )
@@ -3013,7 +3013,7 @@ fn collect_reasoning_summary_row(
         (raw_handle: Value<Handle<Blake3, LongString>>),
         pattern!(data, [{
             result_id @
-            model_chat::kind: model_chat::kind_result,
+            metadata::tag: model_chat::kind_result,
             model_chat::response_raw: ?raw_handle,
         }])
     )
@@ -3055,7 +3055,7 @@ fn collect_reasoning_summaries(
         ),
         pattern!(data, [{
             ?result_id @
-            model_chat::kind: model_chat::kind_result,
+            metadata::tag: model_chat::kind_result,
             model_chat::reasoning_text: ?reasoning_handle,
         }])
     ) {
@@ -3070,7 +3070,7 @@ fn collect_reasoning_summaries(
         ),
         pattern!(data, [{
             ?result_id @
-            model_chat::kind: model_chat::kind_result,
+            metadata::tag: model_chat::kind_result,
             model_chat::response_raw: ?raw_handle,
         }])
     ) {
@@ -3081,7 +3081,7 @@ fn collect_reasoning_summaries(
         (result_id: Id, finished_at: Value<NsTAIInterval>),
         pattern!(data, [{
             ?result_id @
-            model_chat::kind: model_chat::kind_result,
+            metadata::tag: model_chat::kind_result,
             model_chat::finished_at: ?finished_at,
         }])
     ) {
@@ -3341,7 +3341,7 @@ fn collect_context_chunks(data: &TribleSet) -> Vec<ContextChunkRow> {
         ),
         pattern!(data, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::summary: ?summary,
             playground_context::start_at: ?start_at,
             playground_context::end_at: ?end_at,
@@ -3364,7 +3364,7 @@ fn collect_context_chunks(data: &TribleSet) -> Vec<ContextChunkRow> {
         (chunk_id: Id, child_id: Id),
         pattern!(data, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::child: ?child_id,
         }])
     ) {
@@ -3378,7 +3378,7 @@ fn collect_context_chunks(data: &TribleSet) -> Vec<ContextChunkRow> {
         (chunk_id: Id, child_id: Id),
         pattern!(data, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::left: ?child_id,
         }])
     ) {
@@ -3391,7 +3391,7 @@ fn collect_context_chunks(data: &TribleSet) -> Vec<ContextChunkRow> {
         (chunk_id: Id, child_id: Id),
         pattern!(data, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::right: ?child_id,
         }])
     ) {
@@ -3404,7 +3404,7 @@ fn collect_context_chunks(data: &TribleSet) -> Vec<ContextChunkRow> {
         (chunk_id: Id, exec_result_id: Id),
         pattern!(data, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::about_exec_result: ?exec_result_id,
         }])
     ) {
@@ -4506,7 +4506,7 @@ fn latest_progress(
         (event_id: Id, request_id: Id),
         pattern!(data, [{
             ?event_id @
-            playground_exec::kind: playground_exec::kind_in_progress,
+            metadata::tag: playground_exec::kind_in_progress,
             playground_exec::about_request: ?request_id,
         }])
     ) {
@@ -4548,7 +4548,7 @@ fn latest_results(
         (event_id: Id, request_id: Id),
         pattern!(data, [{
             ?event_id @
-            playground_exec::kind: playground_exec::kind_command_result,
+            metadata::tag: playground_exec::kind_command_result,
             playground_exec::about_request: ?request_id,
         }])
     ) {

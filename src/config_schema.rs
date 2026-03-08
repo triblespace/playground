@@ -8,7 +8,6 @@ pub mod playground_config {
     use super::*;
 
     attributes! {
-        "79F990573A9DCC91EF08A5F8CBA7AA25" as pub kind: GenId;
         "DDF83FEC915816ACAE7F3FEBB57E5137" as pub updated_at: NsTAIInterval;
         "950B556A74F71AC7CB008AB23FBB6544" as pub system_prompt: Handle<Blake3, LongString>;
         "35E36AE7B60AD946661BD63B3CD64672" as pub branch: Handle<Blake3, LongString>;
@@ -55,15 +54,6 @@ pub mod playground_config {
     #[allow(non_upper_case_globals)]
     pub const kind_model_profile: Id = id_hex!("B08E356C4B08F44AB7EC177D47129447");
 
-    /// Tag for playground_config protocol metadata.
-    #[allow(non_upper_case_globals)]
-    pub const tag_protocol: Id = id_hex!("B66C73996CEC00801602A6EF02E31204");
-    /// Tag for kind constants in the playground_config protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_kind: Id = id_hex!("A38225D7CE9A623A6B2CA8041E61500C");
-    /// Tag for tag constants in the playground_config protocol.
-    #[allow(non_upper_case_globals)]
-    pub const tag_tag: Id = id_hex!("BB763F3C469D355E6895A4EEA481E554");
 }
 
 pub fn build_playground_config_metadata<B>(
@@ -75,40 +65,21 @@ where
     let attrs = playground_config::describe(blobs)?;
 
     let mut protocol = entity! { ExclusiveId::force_ref(&playground_config::playground_config_metadata) @
-        metadata::name: blobs.put("playground_config".to_string())?,
-        metadata::description: blobs.put("Playground config protocol.".to_string())?,
-        metadata::tag: playground_config::tag_protocol,
-        metadata::attribute*: attrs.exports(),
-    };
-    protocol += attrs.into_facts();
-
-    protocol += <GenId as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
-
-    protocol += entity! { ExclusiveId::force_ref(&playground_config::tag_protocol) @
-        metadata::name: blobs.put("tag_protocol".to_string())?,
-        metadata::tag: playground_config::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&playground_config::tag_kind) @
-        metadata::name: blobs.put("tag_kind".to_string())?,
-        metadata::tag: playground_config::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&playground_config::tag_tag) @
-        metadata::name: blobs.put("tag_tag".to_string())?,
-        metadata::tag: playground_config::tag_tag,
+        metadata::name: blobs.put("playground_config")?,
+        metadata::description: blobs.put("Playground config protocol.")?,
+        metadata::tag: metadata::KIND_PROTOCOL,
+        metadata::attribute*: attrs,
     };
 
     protocol += entity! { ExclusiveId::force_ref(&playground_config::kind_config) @
-        metadata::name: blobs.put("kind_config".to_string())?,
-        metadata::description: blobs.put("Configuration entry entity kind.".to_string())?,
-        metadata::tag: playground_config::tag_kind,
+        metadata::name: blobs.put("kind_config")?,
+        metadata::description: blobs.put("Configuration entry entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&playground_config::kind_model_profile) @
-        metadata::name: blobs.put("kind_model_profile".to_string())?,
-        metadata::description: blobs.put("Model profile entry entity kind.".to_string())?,
-        metadata::tag: playground_config::tag_kind,
+        metadata::name: blobs.put("kind_model_profile")?,
+        metadata::description: blobs.put("Model profile entry entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
 
     Ok(protocol)

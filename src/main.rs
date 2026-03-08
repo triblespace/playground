@@ -12,6 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
+use triblespace::core::metadata;
 use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::{Repository, Workspace};
 use triblespace::prelude::blobschemas::LongString;
@@ -1038,7 +1039,7 @@ fn create_thought_and_request(
     let thought_id = ufoid();
     let mut change = TribleSet::new();
     change += entity! { &thought_id @
-        playground_cog::kind: playground_cog::kind_thought,
+        metadata::tag: playground_cog::kind_thought,
         playground_cog::context: context_handle,
         playground_cog::created_at: now,
     };
@@ -1048,7 +1049,7 @@ fn create_thought_and_request(
 
     let request_id = ufoid();
     change += entity! { &request_id @
-        model_chat::kind: model_chat::kind_request,
+        metadata::tag: model_chat::kind_request,
         model_chat::about_thought: *thought_id,
         model_chat::context: context_handle,
         model_chat::requested_at: now,
@@ -1083,7 +1084,7 @@ fn create_request_for_thought_from_index(
     let request_id = ufoid();
     let mut change = TribleSet::new();
     change += entity! { &request_id @
-        model_chat::kind: model_chat::kind_request,
+        metadata::tag: model_chat::kind_request,
         model_chat::about_thought: thought_id,
         model_chat::context: context_handle,
         model_chat::requested_at: now,
@@ -1184,7 +1185,7 @@ impl CoreIndex {
         for (request_id,) in find!(
             (request_id: Id),
             pattern_changes!(updated, delta, [{
-                ?request_id @ model_chat::kind: model_chat::kind_request
+                ?request_id @ metadata::tag: model_chat::kind_request
             }])
         ) {
             self.model_requests
@@ -1223,7 +1224,7 @@ impl CoreIndex {
         for (thought_id,) in find!(
             (thought_id: Id),
             pattern_changes!(updated, delta, [{
-                ?thought_id @ playground_cog::kind: playground_cog::kind_thought
+                ?thought_id @ metadata::tag: playground_cog::kind_thought
             }])
         ) {
             self.thoughts.entry(thought_id).or_insert(CoreThought {
@@ -1236,7 +1237,7 @@ impl CoreIndex {
         for (boundary_id,) in find!(
             (boundary_id: Id),
             pattern_changes!(updated, delta, [{
-                ?boundary_id @ playground_cog::kind: playground_cog::kind_moment_boundary
+                ?boundary_id @ metadata::tag: playground_cog::kind_moment_boundary
             }])
         ) {
             self.moment_boundaries
@@ -1299,7 +1300,7 @@ impl CoreIndex {
             (result_id: Id, about_request: Id),
             pattern_changes!(updated, delta, [{
                 ?result_id @
-                model_chat::kind: model_chat::kind_result,
+                metadata::tag: model_chat::kind_result,
                 model_chat::about_request: ?about_request,
             }])
         ) {
@@ -1374,7 +1375,7 @@ impl CoreIndex {
         for (request_id,) in find!(
             (request_id: Id),
             pattern_changes!(updated, delta, [{
-                ?request_id @ playground_exec::kind: playground_exec::kind_command_request
+                ?request_id @ metadata::tag: playground_exec::kind_command_request
             }])
         ) {
             self.command_requests
@@ -1426,7 +1427,7 @@ impl CoreIndex {
             (result_id: Id, about_request: Id),
             pattern_changes!(updated, delta, [{
                 ?result_id @
-                playground_exec::kind: playground_exec::kind_command_result,
+                metadata::tag: playground_exec::kind_command_result,
                 playground_exec::about_request: ?about_request,
             }])
         ) {
@@ -1802,7 +1803,7 @@ fn ensure_command_request(
     let command_handle = ws.put(command.to_owned());
     let mut change = TribleSet::new();
     change += entity! { &request_id @
-        playground_exec::kind: playground_exec::kind_command_request,
+        metadata::tag: playground_exec::kind_command_request,
         playground_exec::command_text: command_handle,
         playground_exec::requested_at: now,
     };
@@ -1856,7 +1857,7 @@ fn delta_has_model_result(updated: &TribleSet, delta: &TribleSet, request_id: Id
         (about_request: Id),
         pattern_changes!(updated, delta, [{
             _?event @
-            model_chat::kind: model_chat::kind_result,
+            metadata::tag: model_chat::kind_result,
             model_chat::about_request: ?about_request,
         }])
     )
@@ -1869,7 +1870,7 @@ fn delta_has_command_result(updated: &TribleSet, delta: &TribleSet, request_id: 
         (about_request: Id),
         pattern_changes!(updated, delta, [{
             _?event @
-            playground_exec::kind: playground_exec::kind_command_result,
+            metadata::tag: playground_exec::kind_command_result,
             playground_exec::about_request: ?about_request,
         }])
     )
@@ -2332,7 +2333,7 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
         ),
         pattern!(catalog, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::summary: ?summary,
             playground_context::start_at: ?start_at,
             playground_context::end_at: ?end_at,
@@ -2356,7 +2357,7 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
         (chunk_id: Id, child_id: Id),
         pattern!(catalog, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::child: ?child_id,
         }])
     ) {
@@ -2370,7 +2371,7 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
         (chunk_id: Id, child_id: Id),
         pattern!(catalog, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::left: ?child_id,
         }])
     ) {
@@ -2383,7 +2384,7 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
         (chunk_id: Id, child_id: Id),
         pattern!(catalog, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::right: ?child_id,
         }])
     ) {
@@ -2411,7 +2412,7 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
         (chunk_id: Id, exec_result_id: Id),
         pattern!(catalog, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::about_exec_result: ?exec_result_id,
         }])
     ) {
@@ -2424,7 +2425,7 @@ fn load_context_chunks(catalog: &TribleSet) -> ContextChunkIndex {
         (chunk_id: Id, archive_message_id: Id),
         pattern!(catalog, [{
             ?chunk_id @
-            playground_context::kind: playground_context::kind_chunk,
+            metadata::tag: playground_context::kind_chunk,
             playground_context::about_archive_message: ?archive_message_id,
         }])
     ) {

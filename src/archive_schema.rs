@@ -7,7 +7,6 @@ pub mod playground_archive {
     use super::*;
 
     attributes! {
-        "5F10520477A04E5FB322C85CC78C6762" as pub kind: GenId;
         "0D9195A7B1B20DE312A08ECE39168079" as pub reply_to: GenId;
         "838CC157FFDD37C6AC7CC5A472E43ADB" as pub author: GenId;
         "E63EE961ABDB1D1BEC0789FDAFFB9501" as pub author_name: Handle<Blake3, LongString>;

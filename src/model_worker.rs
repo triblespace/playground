@@ -12,6 +12,7 @@ use reqwest::blocking::Client;
 use serde_json::Value as JsonValue;
 use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
+use triblespace::core::metadata;
 use triblespace::core::import::json::JsonObjectImporter;
 use triblespace::core::repo::Workspace;
 use triblespace::prelude::blobschemas::LongString;
@@ -324,7 +325,7 @@ pub(crate) fn run_model_loop(
                     let handle = ws.put(format!("parse chat context: {err}"));
                     let mut change = TribleSet::new();
                     change += entity! { &result_id @
-                        model_chat::kind: model_chat::kind_result,
+                        metadata::tag: model_chat::kind_result,
                         model_chat::about_request: request.id,
                         model_chat::finished_at: finished_at,
                         model_chat::attempt: attempt,
@@ -349,7 +350,7 @@ pub(crate) fn run_model_loop(
                 model_chat::request_raw: request_raw_handle,
             };
             change += entity! { &in_progress_id @
-                model_chat::kind: model_chat::kind_in_progress,
+                metadata::tag: model_chat::kind_in_progress,
                 model_chat::about_request: request.id,
                 model_chat::started_at: started_at,
                 model_chat::worker: worker_id,
@@ -364,7 +365,7 @@ pub(crate) fn run_model_loop(
             let result_id = ufoid();
             let mut change = TribleSet::new();
             change += entity! { &result_id @
-                model_chat::kind: model_chat::kind_result,
+                metadata::tag: model_chat::kind_result,
                 model_chat::about_request: request.id,
                 model_chat::finished_at: finished_at,
                 model_chat::attempt: attempt,
@@ -470,7 +471,7 @@ impl ModelRequestIndex {
             (request_id: Id, context: Value<Handle<Blake3, LongString>>),
             pattern_changes!(updated, delta, [{
                 ?request_id @
-                model_chat::kind: model_chat::kind_request,
+                metadata::tag: model_chat::kind_request,
                 model_chat::context: ?context,
             }])
         ) {
@@ -514,7 +515,7 @@ impl ModelRequestIndex {
             ),
             pattern_changes!(updated, delta, [{
                 _?event @
-                model_chat::kind: model_chat::kind_in_progress,
+                metadata::tag: model_chat::kind_in_progress,
                 model_chat::about_request: ?request_id,
                 model_chat::worker: ?in_progress_worker_id,
             }])
@@ -528,7 +529,7 @@ impl ModelRequestIndex {
             (request_id: Id),
             pattern_changes!(updated, delta, [{
                 _?event @
-                model_chat::kind: model_chat::kind_result,
+                metadata::tag: model_chat::kind_result,
                 model_chat::about_request: ?request_id,
             }])
         ) {

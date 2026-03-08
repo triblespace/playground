@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use triblespace::core::blob::Bytes;
 use triblespace::core::blob::schemas::UnknownBlob;
+use triblespace::core::metadata;
 use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::{Repository, Workspace};
 use triblespace::prelude::blobschemas::LongString;
@@ -135,7 +136,7 @@ pub(crate) fn run_exec_loop(
             let in_progress_id = ufoid();
             let mut change = TribleSet::new();
             change += entity! { &in_progress_id @
-                playground_exec::kind: playground_exec::kind_in_progress,
+                metadata::tag: playground_exec::kind_in_progress,
                 playground_exec::about_request: request.id,
                 playground_exec::worker: worker_id,
                 playground_exec::started_at: started_at,
@@ -194,7 +195,7 @@ pub(crate) fn run_exec_loop(
             let result_id = ufoid();
             let mut change = TribleSet::new();
             change += entity! { &result_id @
-                playground_exec::kind: playground_exec::kind_command_result,
+                metadata::tag: playground_exec::kind_command_result,
                 playground_exec::about_request: request.id,
                 playground_exec::finished_at: finished_at,
                 playground_exec::attempt: attempt,
@@ -505,7 +506,7 @@ impl CommandRequestIndex {
             (request_id: Id, command: Value<Handle<Blake3, LongString>>),
             pattern_changes!(updated, delta, [{
                 ?request_id @
-                playground_exec::kind: playground_exec::kind_command_request,
+                metadata::tag: playground_exec::kind_command_request,
                 playground_exec::command_text: ?command,
             }])
         ) {
@@ -585,7 +586,7 @@ impl CommandRequestIndex {
             ),
             pattern_changes!(updated, delta, [{
                 _?event @
-                playground_exec::kind: playground_exec::kind_in_progress,
+                metadata::tag: playground_exec::kind_in_progress,
                 playground_exec::about_request: ?request_id,
                 playground_exec::worker: ?in_progress_worker_id,
             }])
@@ -599,7 +600,7 @@ impl CommandRequestIndex {
             (request_id: Id),
             pattern_changes!(updated, delta, [{
                 _?event @
-                playground_exec::kind: playground_exec::kind_command_result,
+                metadata::tag: playground_exec::kind_command_result,
                 playground_exec::about_request: ?request_id,
             }])
         ) {
@@ -632,7 +633,7 @@ fn collect_timeout_extension_ms(
         (_event_id: Id, timeout_ms: Value<U256BE>),
         pattern_changes!(updated, delta, [{
             ?_event_id @
-            playground_exec::kind: playground_exec::kind_timeout_extension,
+            metadata::tag: playground_exec::kind_timeout_extension,
             playground_exec::about_request: request_id,
             playground_exec::worker: worker_id,
             playground_exec::timeout_ms: ?timeout_ms,

@@ -9,7 +9,6 @@ pub mod playground_exec {
     use super::*;
 
     attributes! {
-        "AA2F34973589295FA70B538D92CD30F8" as pub kind: GenId;
         "79DD6A1A02E598033EDCE5C667E8E3E6" as pub command_text: Handle<Blake3, LongString>;
         "4A7EA49FD72113D2DC497B407994B4F9" as pub cwd: Handle<Blake3, LongString>;
         "17F4EA6F885F359C4CA967EE8478FA13" as pub stdin: Handle<Blake3, UnknownBlob>;
@@ -45,12 +44,6 @@ pub mod playground_exec {
     #[allow(non_upper_case_globals)]
     pub const kind_timeout_extension: Id = id_hex!("75BC66A1C39131B9A0975613AC9B59FD");
 
-    #[allow(non_upper_case_globals)]
-    pub const tag_protocol: Id = id_hex!("7DD49A7AA43C616ABB43217609391D1D");
-    #[allow(non_upper_case_globals)]
-    pub const tag_kind: Id = id_hex!("61E122D2379B8F4A577C3B8B65431799");
-    #[allow(non_upper_case_globals)]
-    pub const tag_tag: Id = id_hex!("13425C99A6CBAF48E5B7A1FB8BE72F04");
 }
 
 pub fn build_playground_exec_metadata<B>(
@@ -62,52 +55,31 @@ where
     let attrs = playground_exec::describe(blobs)?;
 
     let mut protocol = entity! { ExclusiveId::force_ref(&playground_exec::playground_exec_metadata) @
-        metadata::name: blobs.put("playground_exec".to_string())?,
-        metadata::description: blobs.put("Playground exec protocol.".to_string())?,
-        metadata::tag: playground_exec::tag_protocol,
-        metadata::attribute*: attrs.exports(),
-    };
-    protocol += attrs.into_facts();
-
-    protocol += <GenId as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <NsTAIInterval as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <U256BE as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <Handle<Blake3, LongString> as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <Handle<Blake3, UnknownBlob> as metadata::ConstDescribe>::describe(blobs)?;
-    protocol += <UnknownBlob as metadata::ConstDescribe>::describe(blobs)?;
-
-    protocol += entity! { ExclusiveId::force_ref(&playground_exec::tag_protocol) @
-        metadata::name: blobs.put("tag_protocol".to_string())?,
-        metadata::tag: playground_exec::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&playground_exec::tag_kind) @
-        metadata::name: blobs.put("tag_kind".to_string())?,
-        metadata::tag: playground_exec::tag_tag,
-    };
-    protocol += entity! { ExclusiveId::force_ref(&playground_exec::tag_tag) @
-        metadata::name: blobs.put("tag_tag".to_string())?,
-        metadata::tag: playground_exec::tag_tag,
+        metadata::name: blobs.put("playground_exec")?,
+        metadata::description: blobs.put("Playground exec protocol.")?,
+        metadata::tag: metadata::KIND_PROTOCOL,
+        metadata::attribute*: attrs,
     };
 
     protocol += entity! { ExclusiveId::force_ref(&playground_exec::kind_command_request) @
-        metadata::name: blobs.put("kind_command_request".to_string())?,
-        metadata::description: blobs.put("Command request entity kind.".to_string())?,
-        metadata::tag: playground_exec::tag_kind,
+        metadata::name: blobs.put("kind_command_request")?,
+        metadata::description: blobs.put("Command request entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&playground_exec::kind_in_progress) @
-        metadata::name: blobs.put("kind_in_progress".to_string())?,
-        metadata::description: blobs.put("Command in-progress entity kind.".to_string())?,
-        metadata::tag: playground_exec::tag_kind,
+        metadata::name: blobs.put("kind_in_progress")?,
+        metadata::description: blobs.put("Command in-progress entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&playground_exec::kind_command_result) @
-        metadata::name: blobs.put("kind_command_result".to_string())?,
-        metadata::description: blobs.put("Command result entity kind.".to_string())?,
-        metadata::tag: playground_exec::tag_kind,
+        metadata::name: blobs.put("kind_command_result")?,
+        metadata::description: blobs.put("Command result entity kind.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
     protocol += entity! { ExclusiveId::force_ref(&playground_exec::kind_timeout_extension) @
-        metadata::name: blobs.put("kind_timeout_extension".to_string())?,
-        metadata::description: blobs.put("Control event that extends the deadline for an in-flight command.".to_string())?,
-        metadata::tag: playground_exec::tag_kind,
+        metadata::name: blobs.put("kind_timeout_extension")?,
+        metadata::description: blobs.put("Control event that extends the deadline for an in-flight command.")?,
+        metadata::tag: metadata::KIND_TAG,
     };
 
     Ok(protocol)
