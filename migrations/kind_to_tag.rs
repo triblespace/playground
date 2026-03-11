@@ -5,7 +5,7 @@
 //! clap = { version = "4.5.4", features = ["derive"] }
 //! ed25519-dalek = "2.1.1"
 //! rand_core = "0.6.4"
-//! triblespace = "0.16.0"
+//! triblespace = "0.18.0"
 //! ```
 
 use anyhow::{Result, anyhow};
@@ -15,8 +15,9 @@ use rand_core::OsRng;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use triblespace::core::repo::pile::Pile;
 use triblespace::core::repo::Repository;
-use triblespace::core::trible::{A_START, A_END};
+use triblespace::core::trible::{A_START, A_END, TribleSet};
 use triblespace::macros::id_hex;
 use triblespace::prelude::*;
 
@@ -56,12 +57,12 @@ struct Cli {
     dry_run: bool,
 }
 
-fn open_repo(path: &Path) -> Result<Repository<Pile<valueschemas::Blake3>>> {
+fn open_repo(path: &Path) -> Result<Repository<Pile>> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
             .map_err(|e| anyhow!("create pile dir {}: {e}", parent.display()))?;
     }
-    let mut pile = Pile::<valueschemas::Blake3>::open(path)
+    let mut pile = Pile::open(path)
         .map_err(|e| anyhow!("open pile {}: {e:?}", path.display()))?;
     if let Err(err) = pile.restore() {
         let _ = pile.close();
@@ -69,12 +70,13 @@ fn open_repo(path: &Path) -> Result<Repository<Pile<valueschemas::Blake3>>> {
     }
 
     let signing_key = SigningKey::generate(&mut OsRng);
-    Ok(Repository::new(pile, signing_key))
+    Repository::new(pile, signing_key, TribleSet::new())
+        .map_err(|err| anyhow!("create repository: {err:?}"))
 }
 
 fn with_repo<T>(
     pile: &Path,
-    f: impl FnOnce(&mut Repository<Pile<valueschemas::Blake3>>) -> Result<T>,
+    f: impl FnOnce(&mut Repository<Pile>) -> Result<T>,
 ) -> Result<T> {
     let mut repo = open_repo(pile)?;
     let result = f(&mut repo);
@@ -99,7 +101,7 @@ fn rewrite_trible(trible: &Trible) -> Option<Trible> {
 }
 
 fn migrate_branch(
-    repo: &mut Repository<Pile<valueschemas::Blake3>>,
+    repo: &mut Repository<Pile>,
     branch_id: Id,
     branch_name: &str,
     dry_run: bool,
@@ -130,7 +132,7 @@ fn migrate_branch(
         return Ok(count);
     }
 
-    ws.commit(delta, None, Some("migrate kind attributes to metadata::tag"));
+    ws.commit(delta, "migrate kind attributes to metadata::tag");
     repo.push(&mut ws)
         .map_err(|e| anyhow!("push branch {branch_name}: {e:?}"))?;
     println!("  {branch_name} ({branch_id:x}): rewrote {count} trible(s)");
