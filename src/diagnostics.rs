@@ -3096,6 +3096,23 @@ fn collect_reasoning_summaries(
         raw_by_result.insert(result_id, raw_handle);
     }
 
+    let mut input_tok: HashMap<Id, u64> = HashMap::new();
+    let mut output_tok: HashMap<Id, u64> = HashMap::new();
+    let mut cache_create_tok: HashMap<Id, u64> = HashMap::new();
+    let mut cache_read_tok: HashMap<Id, u64> = HashMap::new();
+    for (id, v) in find!((id: Id, v: Value<U256BE>), pattern!(data, [{ ?id @ model_chat::input_tokens: ?v }])) {
+        if let Some(n) = u256be_to_u64(v) { input_tok.insert(id, n); }
+    }
+    for (id, v) in find!((id: Id, v: Value<U256BE>), pattern!(data, [{ ?id @ model_chat::output_tokens: ?v }])) {
+        if let Some(n) = u256be_to_u64(v) { output_tok.insert(id, n); }
+    }
+    for (id, v) in find!((id: Id, v: Value<U256BE>), pattern!(data, [{ ?id @ model_chat::cache_creation_input_tokens: ?v }])) {
+        if let Some(n) = u256be_to_u64(v) { cache_create_tok.insert(id, n); }
+    }
+    for (id, v) in find!((id: Id, v: Value<U256BE>), pattern!(data, [{ ?id @ model_chat::cache_read_input_tokens: ?v }])) {
+        if let Some(n) = u256be_to_u64(v) { cache_read_tok.insert(id, n); }
+    }
+
     for (result_id, finished_at) in find!(
         (result_id: Id, finished_at: Value<NsTAIInterval>),
         pattern!(data, [{
@@ -3128,6 +3145,10 @@ fn collect_reasoning_summaries(
             result_id,
             created_at: Some(interval_key(finished_at)),
             summary,
+            input_tokens: input_tok.get(&result_id).copied(),
+            output_tokens: output_tok.get(&result_id).copied(),
+            cache_creation_input_tokens: cache_create_tok.get(&result_id).copied(),
+            cache_read_input_tokens: cache_read_tok.get(&result_id).copied(),
         });
     }
     rows.sort_by_key(|row| row.created_at.unwrap_or(i128::MIN));
