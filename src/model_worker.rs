@@ -691,6 +691,14 @@ fn resolve_blob_image(
     let bytes: Bytes = ws
         .get(handle)
         .map_err(|_| "blob not found in pile".to_string())?;
+    const MIN_IMAGE_BYTES: usize = 200;
+    if bytes.len() < MIN_IMAGE_BYTES {
+        return Err(format!(
+            "image too small ({} bytes < {} bytes)",
+            bytes.len(),
+            MIN_IMAGE_BYTES
+        ));
+    }
     if bytes.len() > MAX_INLINE_IMAGE_BYTES {
         return Err(format!(
             "image too large ({} bytes > {} bytes)",
@@ -1392,15 +1400,17 @@ mod tests {
     }
 
     fn put_test_png(ws: &mut Workspace<Pile<Blake3>>) -> String {
-        // 1x1 PNG (black).
-        let png_bytes: [u8; 68] = [
+        // 1x1 PNG (black), padded above MIN_IMAGE_BYTES with a comment chunk.
+        let mut png = vec![
             0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
             b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
             0x00, 0xB5, 0x1C, 0x0C, 0x02, 0x00, 0x00, 0x00, 0x0B, b'I', b'D', b'A', b'T', 0x78,
             0xDA, 0x63, 0xFC, 0xFF, 0x1F, 0x00, 0x03, 0x03, 0x02, 0x00, 0xED, 0x29, 0xEB, 0x14,
-            0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
         ];
-        let blob: Blob<UnknownBlob> = Blob::new(Bytes::from(png_bytes.to_vec()));
+        // Pad with zeros to exceed MIN_IMAGE_BYTES, then close with IEND.
+        png.resize(210, 0x00);
+        png.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82]);
+        let blob: Blob<UnknownBlob> = Blob::new(Bytes::from(png));
         let handle: Value<Handle<Blake3, UnknownBlob>> = ws.put(blob);
         handle
             .raw
