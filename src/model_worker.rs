@@ -682,7 +682,7 @@ fn resolve_blob_image(
             MAX_INLINE_IMAGE_BYTES
         ));
     }
-    let mime = match mime_hint.filter(|mime| mime.starts_with("image/")) {
+    let mime = match mime_hint.filter(|mime| is_supported_image_mime(mime)) {
         Some(mime) => mime.to_owned(),
         None => sniff_image_mime(bytes.as_ref())
             .map(str::to_owned)
@@ -690,6 +690,13 @@ fn resolve_blob_image(
     };
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes.as_ref());
     Ok((mime, encoded))
+}
+
+fn is_supported_image_mime(mime: &str) -> bool {
+    match mime {
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp" => true,
+        _ => false,
+    }
 }
 
 fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
@@ -772,6 +779,34 @@ fn build_anthropic_payload(
         }));
     }
 
+    // Add cache_control breakpoints to every user message except the last.
+    // The last user message contains a changing context-pressure suffix, so it
+    // must NOT be cached.  Everything before it — memory cover, static breath,
+    // and stable moment turns — benefits from prefix caching.
+    // NOTE: this must happen BEFORE building the payload, because json!()
+    // deep-copies api_messages via to_value().
+    {
+        let last_user_idx = api_messages.iter().rposition(|m| {
+            m.get("role").and_then(|r| r.as_str()) == Some("user")
+        });
+
+        for (i, msg) in api_messages.iter_mut().enumerate() {
+            if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+                continue;
+            }
+            if Some(i) == last_user_idx {
+                continue;
+            }
+            if let Some(text) = msg.get("content").and_then(|c| c.as_str()).map(String::from) {
+                msg["content"] = serde_json::json!([{
+                    "type": "text",
+                    "text": text,
+                    "cache_control": { "type": "ephemeral" },
+                }]);
+            }
+        }
+    }
+
     let max_tokens = config.model.max_output_tokens.max(1);
     let mut payload = serde_json::json!({
         "model": model,
@@ -787,30 +822,6 @@ fn build_anthropic_payload(
             "text": system_parts.join("\n\n"),
             "cache_control": { "type": "ephemeral" },
         }]);
-    }
-
-    // Add cache_control breakpoints to every user message except the last.
-    // The last user message contains a changing context-pressure suffix, so it
-    // must NOT be cached.  Everything before it — memory cover, static breath,
-    // and stable moment turns — benefits from prefix caching.
-    let last_user_idx = api_messages.iter().rposition(|m| {
-        m.get("role").and_then(|r| r.as_str()) == Some("user")
-    });
-
-    for (i, msg) in api_messages.iter_mut().enumerate() {
-        if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
-            continue;
-        }
-        if Some(i) == last_user_idx {
-            continue;
-        }
-        if let Some(text) = msg.get("content").and_then(|c| c.as_str()).map(String::from) {
-            msg["content"] = serde_json::json!([{
-                "type": "text",
-                "text": text,
-                "cache_control": { "type": "ephemeral" },
-            }]);
-        }
     }
 
     // Extended thinking support.
@@ -1434,12 +1445,17 @@ mod tests {
             ];
             let payload = build_anthropic_payload(&config, ws, "claude-sonnet-4-6", &messages);
 
-            // System prompt should be a top-level field, not in messages.
+            // System prompt should be a top-level content array with cache_control.
             let system = payload
                 .get("system")
-                .and_then(JsonValue::as_str)
-                .expect("system field");
-            assert_eq!(system, "You are helpful.");
+                .and_then(JsonValue::as_array)
+                .expect("system field should be array");
+            assert_eq!(system.len(), 1);
+            assert_eq!(
+                system[0].get("text").and_then(JsonValue::as_str),
+                Some("You are helpful.")
+            );
+            assert!(system[0].get("cache_control").is_some());
 
             // Messages should only contain user/assistant, no system.
             let msgs = payload
