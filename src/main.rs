@@ -34,7 +34,7 @@ mod schema;
 mod time_util;
 mod workspace_snapshot;
 
-use chat_prompt::ChatMessage;
+use chat_prompt::{ChatMessage, ChatRole};
 use config::Config;
 use repo_util::{
     close_repo, current_branch_head, init_repo, load_text, pull_workspace, push_workspace,
@@ -831,6 +831,20 @@ fn ensure_model_request(
         let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
         core_index.apply_delta(&cached_catalog, &delta);
 
+        // Wait for pending commands before advancing model requests.
+        // On restart, orphaned commands (claimed by a dead worker) will be
+        // picked up by the new exec worker. Proceeding before they finish
+        // would re-send the model request and create duplicate execs.
+        if core_index.has_pending_command_request() {
+            sleep(Duration::from_millis(config.poll_ms));
+            continue;
+        }
+
+        if let Some(exec_result) = core_index.latest_unprocessed_exec_result() {
+            drop(ws);
+            return create_thought_and_request(repo, branch_id, Some(exec_result.id), config);
+        }
+
         if let Some(request) = core_index.latest_pending_model_request() {
             return Ok(request);
         }
@@ -845,33 +859,12 @@ fn ensure_model_request(
             });
         }
 
-        if let Some(exec_result) = core_index.latest_unprocessed_exec_result() {
-            drop(ws);
-            return create_thought_and_request(repo, branch_id, Some(exec_result.id), config);
-        }
-
-        if !core_index.has_pending_command_request() {
-            drop(ws);
-            let command = orient_bootstrap_command(config);
-            ensure_command_request(
-                repo,
-                branch_id,
-                &command,
-                None,
-                config.exec.default_cwd.as_ref().and_then(|p| p.to_str()),
-                config.exec.sandbox_profile,
-            )?;
-            sleep(Duration::from_millis(config.poll_ms));
-            continue;
-        }
-
-        sleep(Duration::from_millis(config.poll_ms));
+        // Nothing pending — create a thought with no exec result.
+        // The breath is injected into the context, giving the model
+        // enough to decide its first action.
+        drop(ws);
+        return create_thought_and_request(repo, branch_id, None, config);
     }
-}
-
-fn orient_bootstrap_command(config: &Config) -> String {
-    let _ = config;
-    "orient show".to_string()
 }
 
 fn create_thought_and_request(
@@ -914,8 +907,24 @@ fn create_thought_and_request(
             config,
         )?
     } else {
-        serde_json::to_string(&[ChatMessage::system(config.system_prompt.clone())])
-            .context("serialize context messages")?
+        // Cold start: no exec result yet. Build a minimal context with
+        // memory cover + breath so the model can orient itself.
+        let index = load_context_chunks(&memory_catalog);
+        let body_budget_chars = context_body_budget_chars(config);
+        let (mut messages, used_chars, breath_idx, _cover_end_key) =
+            build_memory_cover_messages(&mut ws, &index, body_budget_chars, None)?;
+        let fill_pct = if body_budget_chars > 0 {
+            (used_chars * 100) / body_budget_chars
+        } else {
+            0
+        };
+        messages.insert(breath_idx, ChatMessage::user(
+            "present moment begins.".to_string(),
+        ));
+        messages.insert(breath_idx, ChatMessage::assistant("breath".to_string()));
+        // No exec result to attach pressure to in cold start; append as trailing message.
+        messages.push(ChatMessage::user(format!("context filled to {fill_pct}%.")));
+        serde_json::to_string(&messages).context("serialize cold-start context")?
     };
     let context_handle = ws.put(context_json);
     let thought_id = ufoid();
@@ -1885,19 +1894,15 @@ fn build_context_messages(
         (a, b) => a.or(b),
     };
 
-    // Insert breath boundary between memory and moment segments.
-    // Mirrors what happens when the model calls the `breath` faculty.
+    // Insert static breath boundary between memory and moment segments.
+    // The breath content is fixed so it remains cacheable together with the
+    // moment turns that follow. Context pressure is appended to the last
+    // exec result output instead so only the tail changes.
     {
-        let fill_pct = if body_budget_chars > 0 {
-            (used_chars * 100) / body_budget_chars
-        } else {
-            0
-        };
-        let breath_output = format!(
-            "context filled to {fill_pct}%. present moment begins.",
-        );
-        messages.insert(breath_idx, ChatMessage::user(breath_output));
-        messages.insert(breath_idx, ChatMessage::assistant(format!("breath {fill_pct}")));
+        messages.insert(breath_idx, ChatMessage::user(
+            "present moment begins.".to_string(),
+        ));
+        messages.insert(breath_idx, ChatMessage::assistant("breath".to_string()));
     }
 
     // Project post-boundary exec results as raw shell interaction turns.
@@ -1962,6 +1967,23 @@ fn build_context_messages(
     {
         messages.push(ChatMessage::user(guard));
     }
+
+    // Append context pressure to the last user message so the model knows how
+    // full the window is, without breaking the static breath cache boundary.
+    {
+        let total_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+        let fill_pct = if body_budget_chars > 0 {
+            (total_chars * 100) / body_budget_chars
+        } else {
+            0
+        };
+        if let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == ChatRole::User) {
+            last_user
+                .content
+                .push_str(&format!("\ncontext filled to {fill_pct}%."));
+        }
+    }
+
     Ok(messages)
 }
 

@@ -736,7 +736,7 @@ fn build_anthropic_payload(
 ) -> JsonValue {
     let supports_images = model_supports_images(model);
 
-    // Extract system messages into a top-level "system" string.
+    // Extract system messages into a top-level "system" content array with cache_control.
     let system_parts: Vec<&str> = messages
         .iter()
         .filter(|m| m.role == ChatRole::System)
@@ -781,7 +781,36 @@ fn build_anthropic_payload(
     });
 
     if !system_parts.is_empty() {
-        payload["system"] = serde_json::json!(system_parts.join("\n\n"));
+        // System prompt is extremely stable — cache it.
+        payload["system"] = serde_json::json!([{
+            "type": "text",
+            "text": system_parts.join("\n\n"),
+            "cache_control": { "type": "ephemeral" },
+        }]);
+    }
+
+    // Add cache_control breakpoints to every user message except the last.
+    // The last user message contains a changing context-pressure suffix, so it
+    // must NOT be cached.  Everything before it — memory cover, static breath,
+    // and stable moment turns — benefits from prefix caching.
+    let last_user_idx = api_messages.iter().rposition(|m| {
+        m.get("role").and_then(|r| r.as_str()) == Some("user")
+    });
+
+    for (i, msg) in api_messages.iter_mut().enumerate() {
+        if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        if Some(i) == last_user_idx {
+            continue;
+        }
+        if let Some(text) = msg.get("content").and_then(|c| c.as_str()).map(String::from) {
+            msg["content"] = serde_json::json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": { "type": "ephemeral" },
+            }]);
+        }
     }
 
     // Extended thinking support.

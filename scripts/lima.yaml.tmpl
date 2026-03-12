@@ -11,7 +11,7 @@ vmType: "vz"
 mountType: "virtiofs"
 
 cpus: 4
-memory: "8GiB"
+memory: "64GiB"
 disk: "60GiB"
 
 mounts:
@@ -43,7 +43,7 @@ provision:
       User=__VM_USER__
       Group=__VM_USER__
       WorkingDirectory=__VM_ROOT__
-      ExecStart=/bin/bash -lc 'source $HOME/.cargo/env >/dev/null 2>&1 || true; CARGO_TARGET_DIR=__VM_ROOT__/target cargo run --manifest-path /opt/playground/Cargo.toml --no-default-features -- exec --pile /self.pile'
+      ExecStart=/bin/bash -lc 'source $HOME/.cargo/env >/dev/null 2>&1 || true; CARGO_TARGET_DIR=__VM_ROOT__/target cargo run --release --manifest-path /opt/playground/Cargo.toml --no-default-features -- exec --pile /self.pile'
       Restart=always
       RestartSec=2
 
@@ -51,8 +51,6 @@ provision:
       WantedBy=multi-user.target
       SERVICE
       systemctl daemon-reload
-      systemctl enable playground-exec.service
-      systemctl restart playground-exec.service
       echo "[playground] system provision done"
   - mode: user
     script: |
@@ -69,3 +67,6 @@ provision:
         cargo install --locked rust-script
       fi
       echo "[playground] user provision done"
+      echo "[playground] starting exec service"
+      sudo systemctl enable playground-exec.service
+      sudo systemctl restart playground-exec.service
