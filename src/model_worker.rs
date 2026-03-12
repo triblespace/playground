@@ -50,6 +50,10 @@ struct ModelResult {
     reasoning_text: Option<String>,
     raw: String,
     response_id: Option<String>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
 }
 
 enum ModelBackend {
@@ -393,6 +397,18 @@ pub(crate) fn run_model_loop(
                         change += entity! { &result_id @
                             model_chat::response_id: response_id_handle,
                         };
+                    }
+                    if let Some(n) = result.input_tokens {
+                        change += entity! { &result_id @ model_chat::input_tokens: n };
+                    }
+                    if let Some(n) = result.output_tokens {
+                        change += entity! { &result_id @ model_chat::output_tokens: n };
+                    }
+                    if let Some(n) = result.cache_creation_input_tokens {
+                        change += entity! { &result_id @ model_chat::cache_creation_input_tokens: n };
+                    }
+                    if let Some(n) = result.cache_read_input_tokens {
+                        change += entity! { &result_id @ model_chat::cache_read_input_tokens: n };
                     }
 
                     let mut import_blobs = MemoryBlobStore::<Blake3>::new();
@@ -978,11 +994,17 @@ fn parse_anthropic_response(response: reqwest::blocking::Response) -> Result<Mod
     }
 
     let reasoning_text = normalized_join(reasoning_parts);
+    let (input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens) =
+        extract_anthropic_usage(&parsed);
     Ok(ModelResult {
         output_text,
         reasoning_text,
         raw: body,
         response_id,
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
     })
 }
 
@@ -991,6 +1013,10 @@ fn parse_anthropic_stream(response: reqwest::blocking::Response) -> Result<Model
     let mut raw_events = Vec::new();
     let mut response_id = None;
     let mut reasoning_parts = Vec::new();
+    let mut input_tokens = None;
+    let mut output_tokens = None;
+    let mut cache_creation_input_tokens = None;
+    let mut cache_read_input_tokens = None;
 
     let reader = BufReader::new(response);
     let mut current_event_type = String::new();
@@ -1020,6 +1046,11 @@ fn parse_anthropic_stream(response: reqwest::blocking::Response) -> Result<Model
                         .get("id")
                         .and_then(JsonValue::as_str)
                         .map(str::to_string);
+                    let (it, ot, ccit, crit) = extract_anthropic_usage(message);
+                    input_tokens = input_tokens.or(it);
+                    output_tokens = output_tokens.or(ot);
+                    cache_creation_input_tokens = cache_creation_input_tokens.or(ccit);
+                    cache_read_input_tokens = cache_read_input_tokens.or(crit);
                 }
             }
             "content_block_delta" => {
@@ -1039,6 +1070,11 @@ fn parse_anthropic_stream(response: reqwest::blocking::Response) -> Result<Model
                     }
                 }
             }
+            "message_delta" => {
+                // Final usage stats arrive here in streaming mode.
+                let (_, ot, _, _) = extract_anthropic_usage(&event);
+                output_tokens = output_tokens.or(ot);
+            }
             "message_stop" => {
                 break;
             }
@@ -1055,6 +1091,10 @@ fn parse_anthropic_stream(response: reqwest::blocking::Response) -> Result<Model
         reasoning_text,
         raw,
         response_id,
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
     })
 }
 
@@ -1068,11 +1108,16 @@ fn parse_openai_response(response: reqwest::blocking::Response) -> Result<ModelR
     let output_text = extract_output_text(&parsed);
     let reasoning_text = extract_reasoning_text(&parsed);
     let response_id = extract_response_id(&parsed);
+    let (input_tokens, output_tokens) = extract_openai_usage(&parsed);
     Ok(ModelResult {
         output_text,
         reasoning_text,
         raw: body,
         response_id,
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
     })
 }
 
@@ -1081,6 +1126,8 @@ fn parse_openai_stream(response: reqwest::blocking::Response) -> Result<ModelRes
     let mut raw_events = Vec::new();
     let mut response_id = None;
     let mut reasoning_parts = Vec::new();
+    let mut input_tokens = None;
+    let mut output_tokens = None;
 
     let reader = BufReader::new(response);
     for line in reader.lines() {
@@ -1102,6 +1149,11 @@ fn parse_openai_stream(response: reqwest::blocking::Response) -> Result<ModelRes
             response_id = extract_response_id(&event);
         }
 
+        // Usage may arrive in any chunk (typically the last).
+        let (it, ot) = extract_openai_usage(&event);
+        input_tokens = input_tokens.or(it);
+        output_tokens = output_tokens.or(ot);
+
         if let Some(choices) = event.get("choices").and_then(JsonValue::as_array) {
             for choice in choices {
                 if let Some(delta) = choice.get("delta") {
@@ -1121,6 +1173,10 @@ fn parse_openai_stream(response: reqwest::blocking::Response) -> Result<ModelRes
         reasoning_text,
         raw,
         response_id,
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
     })
 }
 
@@ -1129,6 +1185,26 @@ fn extract_response_id(response: &JsonValue) -> Option<String> {
         .get("id")
         .and_then(JsonValue::as_str)
         .map(str::to_string)
+}
+
+/// Extract usage statistics from an Anthropic API response.
+fn extract_anthropic_usage(parsed: &JsonValue) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
+    let usage = parsed.get("usage");
+    (
+        usage.and_then(|u| u.get("input_tokens")).and_then(JsonValue::as_u64),
+        usage.and_then(|u| u.get("output_tokens")).and_then(JsonValue::as_u64),
+        usage.and_then(|u| u.get("cache_creation_input_tokens")).and_then(JsonValue::as_u64),
+        usage.and_then(|u| u.get("cache_read_input_tokens")).and_then(JsonValue::as_u64),
+    )
+}
+
+/// Extract usage statistics from an OpenAI-compatible API response.
+fn extract_openai_usage(parsed: &JsonValue) -> (Option<u64>, Option<u64>) {
+    let usage = parsed.get("usage");
+    (
+        usage.and_then(|u| u.get("prompt_tokens")).and_then(JsonValue::as_u64),
+        usage.and_then(|u| u.get("completion_tokens")).and_then(JsonValue::as_u64),
+    )
 }
 
 fn extract_output_text(response: &JsonValue) -> String {

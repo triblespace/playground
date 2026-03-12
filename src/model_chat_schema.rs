@@ -26,6 +26,10 @@ pub mod model_chat {
         "567E35DACDB00C799E75AEED0B6EFDF7" as pub reasoning_text: Handle<Blake3, LongString>;
         "BD1635514288254E9CB0448CC07C8B65" as pub response_json_root: GenId;
         "9E9B829C473E416E9150D4B94A6A2DC4" as pub error: Handle<Blake3, LongString>;
+        "115637F43C28E6ABE3A1B0C4095CAC03" as pub input_tokens: U256BE;
+        "F17EB3EABC10A0210403B807BEB25D08" as pub output_tokens: U256BE;
+        "B680DCFAB2E8D1413E450C89AB156197" as pub cache_creation_input_tokens: U256BE;
+        "0A9C7D70295A65413375842916821032" as pub cache_read_input_tokens: U256BE;
     }
 
     /// Root id for describing the model_chat protocol.

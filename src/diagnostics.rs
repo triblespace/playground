@@ -351,6 +351,10 @@ struct ReasoningSummaryRow {
     result_id: Id,
     created_at: Option<i128>,
     summary: String,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,6 +434,10 @@ enum TimelineEvent {
     },
     Cognition {
         summary: String,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        cache_creation_input_tokens: Option<u64>,
+        cache_read_input_tokens: Option<u64>,
     },
     Reason {
         text: String,
@@ -2958,6 +2966,12 @@ fn collect_changed_result_ids(data: &TribleSet, delta: &TribleSet) -> HashSet<Id
     ) {
         ids.insert(result_id);
     }
+    for (result_id,) in find!(
+        (result_id: Id),
+        pattern_changes!(data, delta, [{ ?result_id @ model_chat::input_tokens: _?v }])
+    ) {
+        ids.insert(result_id);
+    }
     ids
 }
 
@@ -3016,10 +3030,34 @@ fn collect_reasoning_summary_row(
         return None;
     }
 
+    let input_tokens = find!(
+        (v: Value<U256BE>),
+        pattern!(data, [{ result_id @ model_chat::input_tokens: ?v }])
+    ).into_iter().next().and_then(|(v,)| u256be_to_u64(v));
+
+    let output_tokens = find!(
+        (v: Value<U256BE>),
+        pattern!(data, [{ result_id @ model_chat::output_tokens: ?v }])
+    ).into_iter().next().and_then(|(v,)| u256be_to_u64(v));
+
+    let cache_creation_input_tokens = find!(
+        (v: Value<U256BE>),
+        pattern!(data, [{ result_id @ model_chat::cache_creation_input_tokens: ?v }])
+    ).into_iter().next().and_then(|(v,)| u256be_to_u64(v));
+
+    let cache_read_input_tokens = find!(
+        (v: Value<U256BE>),
+        pattern!(data, [{ result_id @ model_chat::cache_read_input_tokens: ?v }])
+    ).into_iter().next().and_then(|(v,)| u256be_to_u64(v));
+
     Some(ReasoningSummaryRow {
         result_id,
         created_at: Some(finished_at),
         summary,
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
     })
 }
 
@@ -3531,6 +3569,10 @@ fn build_activity_timeline(
             source: TimelineSource::Cognition,
             event: TimelineEvent::Cognition {
                 summary: row.summary.clone(),
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cache_creation_input_tokens: row.cache_creation_input_tokens,
+                cache_read_input_tokens: row.cache_read_input_tokens,
             },
         });
     }
@@ -5345,11 +5387,29 @@ fn render_timeline_row(ui: &mut egui::Ui, now_key: i128, row: &TimelineRow) {
                     });
             }
         }
-        TimelineEvent::Cognition { summary } => {
+        TimelineEvent::Cognition {
+            summary,
+            input_tokens,
+            output_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        } => {
             ui.add(
                 egui::Label::new(egui::RichText::new(summary).monospace())
                     .wrap_mode(egui::TextWrapMode::Wrap),
             );
+            if input_tokens.is_some() || output_tokens.is_some() {
+                let f = |v: &Option<u64>| -> String {
+                    v.map_or("-".into(), |n| n.to_string())
+                };
+                ui.small(format!(
+                    "in={} out={} cache_r={} cache_w={}",
+                    f(input_tokens),
+                    f(output_tokens),
+                    f(cache_read_input_tokens),
+                    f(cache_creation_input_tokens),
+                ));
+            }
         }
         TimelineEvent::Reason {
             text,
@@ -6294,6 +6354,15 @@ fn epoch_key(epoch: Epoch) -> i128 {
 fn interval_key(interval: Value<NsTAIInterval>) -> i128 {
     let (lower_ns, _): (i128, i128) = interval.from_value();
     lower_ns
+}
+
+fn u256be_to_u64(value: Value<U256BE>) -> Option<u64> {
+    let raw = value.raw;
+    if raw[..24].iter().any(|byte| *byte != 0) {
+        return None;
+    }
+    let bytes: [u8; 8] = raw[24..32].try_into().ok()?;
+    Some(u64::from_be_bytes(bytes))
 }
 
 fn id_prefix(id: Id) -> String {
