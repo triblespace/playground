@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, sleep};
@@ -273,9 +273,7 @@ fn run_with_exec(mut config: Config, args: RunArgs) -> Result<()> {
     stop.store(true, Ordering::Relaxed);
 
     // Stop the Lima VM so it doesn't keep writing to the pile after exit.
-    if let Err(e) = limactl_output(&["stop", &instance]) {
-        eprintln!("warning: failed to stop Lima VM '{instance}': {e:#}");
-    }
+    stop_lima_instance(&instance);
 
     let model_result = model_handle
         .join()
@@ -430,31 +428,25 @@ fn prepare_lima_service(config: &Config, args: &LimaExecArgs) -> Result<()> {
 }
 
 fn ensure_lima_instance(instance: &str, config_path: &Path) -> Result<()> {
-    limactl_output(&["list"])?; // validates limactl exists
-    let names = limactl_output(&["list", "--format", "{{.Name}}"])?;
-    let exists = names.lines().any(|line| line.trim() == instance);
+    // Best-effort cleanup of any previous instance.
+    let _ = Command::new("limactl")
+        .args(["delete", "--force", instance])
+        .status();
 
-    if exists {
-        limactl_output(&["delete", "--force", instance])?;
+    let status = Command::new("limactl")
+        .args(["start", "--name", instance, &config_path.to_string_lossy()])
+        .status()
+        .context("run limactl start")?;
+    if !status.success() {
+        return Err(anyhow!("limactl start failed for instance '{instance}'"));
     }
-
-    let config_arg = config_path.to_string_lossy();
-    limactl_output(&["start", "--name", instance, config_arg.as_ref()])?;
     Ok(())
 }
 
-fn limactl_output(args: &[&str]) -> Result<String> {
-    let output = Command::new("limactl")
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("run limactl")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("limactl {:?} failed: {}", args, stderr.trim()));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+fn stop_lima_instance(instance: &str) {
+    let _ = Command::new("limactl")
+        .args(["stop", instance])
+        .status();
 }
 
 fn render_lima_template(
