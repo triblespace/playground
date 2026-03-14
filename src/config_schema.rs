@@ -23,7 +23,6 @@ pub mod playground_config {
         "328B29CE81665EE719C5A6E91695D4D4" as pub tavily_api_key: Handle<Blake3, LongString>;
         "AB0DF9F03F28A27A6DB95B693CC0EC53" as pub exa_api_key: Handle<Blake3, LongString>;
         "BA4E05799CA2ACDCF3F9350FC8742F2F" as pub model_reasoning_effort: Handle<Blake3, LongString>;
-        "73876213CFB8CF73CF0139E20B9770A1" as pub model_reasoning_summary: Handle<Blake3, LongString>;
         "5F04F7A0EB4EBBE6161022B336F83513" as pub model_stream: U256BE;
         "F9CEA1A2E81D738BB125B4D144B7A746" as pub model_context_window_tokens: U256BE;
         "4200F6746B36F2784DEBA1555595D6AC" as pub model_max_output_tokens: U256BE;

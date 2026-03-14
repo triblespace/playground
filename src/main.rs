@@ -613,14 +613,6 @@ fn print_config(config: &Config, show_secrets: bool) {
             .map(|value| format!("\"{}\"", value))
             .unwrap_or_else(|| "null".to_string())
     );
-    println!(
-        "reasoning_summary = {}",
-        config
-            .model
-            .reasoning_summary
-            .map(|summary| format!("\"{}\"", summary.as_str()))
-            .unwrap_or_else(|| "null".to_string())
-    );
     println!("stream = {}", config.model.stream);
     println!(
         "context_window_tokens = {}",

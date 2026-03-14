@@ -539,7 +539,6 @@ struct AgentConfigRow {
     model_name: Option<String>,
     model_base_url: Option<String>,
     model_reasoning_effort: Option<String>,
-    model_reasoning_summary: Option<String>,
     model_stream: Option<bool>,
     model_context_window_tokens: Option<u64>,
     model_max_output_tokens: Option<u64>,
@@ -1839,12 +1838,6 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         model_entity_id,
         playground_config::model_reasoning_effort,
     );
-    let model_reasoning_summary = load_optional_string_attr(
-        data,
-        ws,
-        model_entity_id,
-        playground_config::model_reasoning_summary,
-    );
     let model_stream = load_optional_u64_attr(data, model_entity_id, playground_config::model_stream)
         .map(|value| value != 0);
     let model_context_window_tokens = load_optional_u64_attr(
@@ -1893,7 +1886,6 @@ fn collect_agent_config(data: &TribleSet, ws: &mut Workspace<Pile>) -> Option<Ag
         model_name,
         model_base_url,
         model_reasoning_effort,
-        model_reasoning_summary,
         model_stream,
         model_context_window_tokens,
         model_max_output_tokens,
@@ -4700,10 +4692,6 @@ fn render_agent_config(
 
             ui.label("model.reasoning_effort");
             ui.label(config.model_reasoning_effort.as_deref().unwrap_or("-"));
-            ui.end_row();
-
-            ui.label("model.reasoning_summary");
-            ui.label(config.model_reasoning_summary.as_deref().unwrap_or("-"));
             ui.end_row();
 
             ui.label("model.stream");

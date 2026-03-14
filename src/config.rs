@@ -18,7 +18,6 @@ use crate::time_util::{epoch_interval, interval_key, now_epoch};
 const DEFAULT_MODEL: &str = "gpt-oss:120b";
 const DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
 const DEFAULT_STREAM: bool = false;
-const DEFAULT_REASONING_SUMMARY: ModelReasoningSummary = ModelReasoningSummary::Detailed;
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 32 * 1024;
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 1024;
 const DEFAULT_PROMPT_SAFETY_MARGIN_TOKENS: u64 = 512;
@@ -53,41 +52,11 @@ pub struct ModelConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub reasoning_effort: Option<String>,
-    pub reasoning_summary: Option<ModelReasoningSummary>,
     pub stream: bool,
     pub context_window_tokens: u64,
     pub max_output_tokens: u64,
     pub context_safety_margin_tokens: u64,
     pub chars_per_token: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModelReasoningSummary {
-    Auto,
-    Concise,
-    Detailed,
-    None,
-}
-
-impl ModelReasoningSummary {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Concise => "concise",
-            Self::Detailed => "detailed",
-            Self::None => "none",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim() {
-            "auto" => Some(Self::Auto),
-            "concise" => Some(Self::Concise),
-            "detailed" => Some(Self::Detailed),
-            "none" => Some(Self::None),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -112,7 +81,6 @@ impl Default for ModelConfig {
             base_url: default_base_url(),
             api_key: None,
             reasoning_effort: None,
-            reasoning_summary: Some(default_reasoning_summary()),
             stream: default_stream(),
             context_window_tokens: default_context_window_tokens(),
             max_output_tokens: default_max_output_tokens(),
@@ -297,25 +265,6 @@ fn load_latest_config(
     )? {
         config.model.reasoning_effort = Some(effort);
     }
-    if let Some(summary) = load_string_attr(
-        ws,
-        catalog,
-        config_id,
-        playground_config::model_reasoning_summary,
-    )? {
-        if let Some(parsed) = ModelReasoningSummary::parse(summary.as_str()) {
-            config.model.reasoning_summary = Some(parsed);
-        } else {
-            eprintln!(
-                "warning: unsupported model reasoning summary '{summary}', using {}",
-                config
-                    .model
-                    .reasoning_summary
-                    .map(ModelReasoningSummary::as_str)
-                    .unwrap_or("null")
-            );
-        }
-    }
     if let Some(key) = load_string_attr(ws, catalog, config_id, playground_config::model_api_key)? {
         config.model.api_key = Some(key);
     }
@@ -430,17 +379,6 @@ fn load_latest_model_profile(
         playground_config::model_reasoning_effort,
     )? {
         model.reasoning_effort = Some(effort);
-    }
-    if let Some(summary) = load_string_attr(
-        ws,
-        catalog,
-        entry_id,
-        playground_config::model_reasoning_summary,
-    )? {
-        model.reasoning_summary = Some(
-            ModelReasoningSummary::parse(summary.as_str())
-                .ok_or_else(|| anyhow!("unsupported model reasoning summary '{summary}'"))?,
-        );
     }
     if let Some(key) = load_string_attr(ws, catalog, entry_id, playground_config::model_api_key)? {
         model.api_key = Some(key);
@@ -564,10 +502,6 @@ fn store_config(ws: &mut Workspace<Pile>, config: &Config) -> Result<()> {
         let handle = ws.put(effort.clone());
         change += entity! { &profile_entry_id @ playground_config::model_reasoning_effort: handle };
     }
-    if let Some(summary) = config.model.reasoning_summary {
-        let handle = ws.put(summary.as_str().to_string());
-        change += entity! { &profile_entry_id @ playground_config::model_reasoning_summary: handle };
-    }
 
     ws.commit(change, "playground config");
     Ok(())
@@ -635,10 +569,6 @@ fn default_base_url() -> String {
 
 fn default_stream() -> bool {
     DEFAULT_STREAM
-}
-
-fn default_reasoning_summary() -> ModelReasoningSummary {
-    DEFAULT_REASONING_SUMMARY
 }
 
 fn default_context_window_tokens() -> u64 {
