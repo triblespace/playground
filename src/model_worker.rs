@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,14 +34,6 @@ struct ModelRequest {
     id: Id,
     context: Value<Handle<Blake3, LongString>>,
     model: Option<Value<ShortString>>,
-    requested_at: Option<Value<NsTAIInterval>>,
-}
-
-#[derive(Default)]
-struct ModelRequestIndex {
-    requests: HashMap<Id, ModelRequest>,
-    in_progress_by_worker: HashSet<Id>,
-    done: HashSet<Id>,
 }
 
 #[derive(Debug)]
@@ -286,7 +278,6 @@ pub(crate) fn run_model_loop(
         ensure_worker_name(&mut repo, branch_id, worker_id, &label)?;
         let mut cached_head = None;
         let mut cached_catalog = TribleSet::new();
-        let mut request_index = ModelRequestIndex::default();
 
         let client = ModelHttpClient::new(&config)?;
 
@@ -302,9 +293,8 @@ pub(crate) fn run_model_loop(
             }
 
             let mut ws = pull_workspace(&mut repo, branch_id, "pull workspace")?;
-            let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
-            request_index.apply_delta(&cached_catalog, &delta, worker_id);
-            let Some(request) = request_index.next_pending() else {
+            refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
+            let Some(request) = next_pending_model_request(&cached_catalog, worker_id) else {
                 sleep(Duration::from_millis(poll_ms));
                 continue;
             };
@@ -470,94 +460,61 @@ fn stop_requested(stop: &Option<Arc<AtomicBool>>) -> bool {
         .unwrap_or(false)
 }
 
-impl ModelRequestIndex {
-    fn apply_delta(&mut self, updated: &TribleSet, delta: &TribleSet, worker_id: Id) {
-        if delta.is_empty() {
-            return;
-        }
+fn next_pending_model_request(catalog: &TribleSet, worker_id: Id) -> Option<ModelRequest> {
+    let done: HashSet<Id> = find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            _?event @
+            metadata::tag: model_chat::kind_result,
+            model_chat::about_request: ?request_id,
+        }])
+    )
+    .map(|(id,)| id)
+    .collect();
 
-        for (request_id, context) in find!(
-            (request_id: Id, context: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?request_id @
-                metadata::tag: model_chat::kind_request,
-                model_chat::context: ?context,
-            }])
-        ) {
-            self.requests.insert(
-                request_id,
-                ModelRequest {
-                    id: request_id,
-                    context,
-                    model: None,
-                    requested_at: None,
-                },
-            );
-        }
+    let in_progress: HashSet<Id> = find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            _?event @
+            metadata::tag: model_chat::kind_in_progress,
+            model_chat::about_request: ?request_id,
+            model_chat::worker: &worker_id,
+        }])
+    )
+    .map(|(id,)| id)
+    .collect();
 
-        for (request_id, model) in find!(
-            (request_id: Id, model: Value<ShortString>),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ model_chat::model: ?model
-            }])
-        ) {
-            if let Some(entry) = self.requests.get_mut(&request_id) {
-                entry.model = Some(model);
-            }
-        }
+    let mut candidates: Vec<_> = find!(
+        (request_id: Id, context: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{
+            ?request_id @
+            metadata::tag: model_chat::kind_request,
+            model_chat::context: ?context,
+        }])
+    )
+    .filter(|(id, _)| !done.contains(id) && !in_progress.contains(id))
+    .collect();
 
-        for (request_id, requested_at) in find!(
-            (request_id: Id, requested_at: Value<NsTAIInterval>),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ model_chat::requested_at: ?requested_at
-            }])
-        ) {
-            if let Some(entry) = self.requests.get_mut(&request_id) {
-                entry.requested_at = Some(requested_at);
-            }
-        }
+    candidates.sort_by_key(|(id, _)| {
+        find!(
+            (ts: Value<NsTAIInterval>),
+            pattern!(catalog, [{ *id @ model_chat::requested_at: ?ts }])
+        )
+        .next()
+        .map(|(ts,)| interval_key(ts))
+        .unwrap_or(i128::MIN)
+    });
 
-        for (request_id, in_progress_worker_id) in find!(
-            (
-                request_id: Id,
-                in_progress_worker_id: Id
-            ),
-            pattern_changes!(updated, delta, [{
-                _?event @
-                metadata::tag: model_chat::kind_in_progress,
-                model_chat::about_request: ?request_id,
-                model_chat::worker: ?in_progress_worker_id,
-            }])
-        ) {
-            if in_progress_worker_id == worker_id {
-                self.in_progress_by_worker.insert(request_id);
-            }
-        }
+    let (id, context) = candidates.into_iter().next()?;
 
-        for (request_id,) in find!(
-            (request_id: Id),
-            pattern_changes!(updated, delta, [{
-                _?event @
-                metadata::tag: model_chat::kind_result,
-                model_chat::about_request: ?request_id,
-            }])
-        ) {
-            self.done.insert(request_id);
-        }
-    }
+    let model = find!(
+        (m: Value<ShortString>),
+        pattern!(catalog, [{ id @ model_chat::model: ?m }])
+    )
+    .next()
+    .map(|(m,)| m);
 
-    fn next_pending(&self) -> Option<ModelRequest> {
-        let mut candidates: Vec<ModelRequest> = self
-            .requests
-            .values()
-            .filter(|req| {
-                !self.in_progress_by_worker.contains(&req.id) && !self.done.contains(&req.id)
-            })
-            .cloned()
-            .collect();
-        candidates.sort_by_key(|req| req.requested_at.map(interval_key).unwrap_or(i128::MIN));
-        candidates.into_iter().next()
-    }
+    Some(ModelRequest { id, context, model })
 }
 
 fn build_openai_messages(
