@@ -739,72 +739,9 @@ struct MemoryCoverState {
 }
 
 #[derive(Debug, Clone)]
-struct CoreModelRequest {
-    id: Id,
-    requested_at: Option<Value<NsTAIInterval>>,
-    thought_id: Option<Id>,
-}
-
-#[derive(Debug, Clone)]
-struct CoreThought {
-    id: Id,
-    created_at: Option<Value<NsTAIInterval>>,
-    context: Option<Value<Handle<Blake3, LongString>>>,
-}
-
-#[derive(Debug, Clone)]
-struct CoreMomentBoundary {
-    id: Id,
-    created_at: Option<Value<NsTAIInterval>>,
-    turn_id: Option<Id>,
-}
-
-#[derive(Debug, Clone)]
-struct CoreCommandRequest {
-    id: Id,
-    requested_at: Option<Value<NsTAIInterval>>,
-    about_thought: Option<Id>,
-    command: Option<Value<Handle<Blake3, LongString>>>,
-}
-
-#[derive(Debug, Clone)]
-struct ModelResultEntry {
-    id: Id,
-    about_request: Option<Id>,
-    finished_at: Option<Value<NsTAIInterval>>,
-    attempt: Option<Value<U256BE>>,
-    output_text: Option<Value<Handle<Blake3, LongString>>>,
-    reasoning_text: Option<Value<Handle<Blake3, LongString>>>,
-    error: Option<Value<Handle<Blake3, LongString>>>,
-}
-
-#[derive(Debug, Clone)]
-struct CoreReasonEvent {
-    id: Id,
-    about_turn: Option<Id>,
-    created_at: Option<Value<NsTAIInterval>>,
+struct ReasonEventInfo {
     text: Option<Value<Handle<Blake3, LongString>>>,
     command_text: Option<Value<Handle<Blake3, LongString>>>,
-    worker: Option<Id>,
-}
-
-#[derive(Default)]
-struct CoreIndex {
-    model_requests: HashMap<Id, CoreModelRequest>,
-    model_done_requests: HashSet<Id>,
-    request_for_thought: HashMap<Id, Id>,
-    thoughts: HashMap<Id, CoreThought>,
-    moment_boundaries: HashMap<Id, CoreMomentBoundary>,
-    thought_for_exec_result: HashMap<Id, Id>,
-    requested_thoughts: HashSet<Id>,
-    model_results: HashMap<Id, ModelResultEntry>,
-    command_requests: HashMap<Id, CoreCommandRequest>,
-    command_request_for_thought: HashMap<Id, Id>,
-    command_done_requests: HashSet<Id>,
-    command_results: HashMap<Id, CommandResultInfo>,
-    used_exec_results: HashSet<Id>,
-    reason_events: HashMap<Id, CoreReasonEvent>,
-    reason_event_ids_by_turn: HashMap<Id, HashSet<Id>>,
 }
 
 fn ensure_model_request(
@@ -815,7 +752,6 @@ fn ensure_model_request(
 ) -> Result<ModelRequestInfo> {
     let mut cached_head = None;
     let mut cached_catalog = TribleSet::new();
-    let mut core_index = CoreIndex::default();
     loop {
         let branch_head = current_branch_head(repo, branch_id)?;
         if branch_head == cached_head {
@@ -824,30 +760,29 @@ fn ensure_model_request(
         }
 
         let mut ws = pull_workspace(repo, branch_id, "pull workspace for model request")?;
-        let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
-        core_index.apply_delta(&cached_catalog, &delta);
+        let _delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
 
         // Wait for pending commands before advancing model requests.
         // On restart, orphaned commands (claimed by a dead worker) will be
         // picked up by the new exec worker. Proceeding before they finish
         // would re-send the model request and create duplicate execs.
-        if core_index.has_pending_command_request() {
+        if has_pending_command_request(&cached_catalog) {
             sleep(Duration::from_millis(config.poll_ms));
             continue;
         }
 
-        if let Some(exec_result) = core_index.latest_unprocessed_exec_result() {
+        if let Some(exec_result) = latest_unprocessed_exec_result(&cached_catalog) {
             drop(ws);
             return create_thought_and_request(repo, branch_id, Some(exec_result.id), config, prev_cover);
         }
 
-        if let Some(request) = core_index.latest_pending_model_request() {
+        if let Some(request) = latest_pending_model_request(&cached_catalog) {
             return Ok(request);
         }
 
-        if let Some(thought_id) = core_index.latest_unrequested_thought() {
+        if let Some(thought_id) = latest_unrequested_thought(&cached_catalog) {
             let request_id =
-                create_request_for_thought_from_index(&mut ws, &core_index, thought_id, config)?;
+                create_request_for_thought_from_catalog(&mut ws, &cached_catalog, thought_id, config)?;
             push_workspace(repo, &mut ws).context("push model request")?;
             return Ok(ModelRequestInfo {
                 id: request_id,
@@ -872,13 +807,11 @@ fn create_thought_and_request(
 ) -> Result<ModelRequestInfo> {
     let mut ws = pull_workspace(repo, branch_id, "pull workspace for thought")?;
     let catalog = ws.checkout(..).context("checkout workspace")?;
-    let mut core_index = CoreIndex::default();
-    core_index.apply_delta(&catalog, &catalog);
 
     if let Some(exec_result_id) = about_exec_result {
-        if let Some(thought_id) = core_index.thought_for_exec_result(exec_result_id) {
+        if let Some(thought_id) = thought_for_exec_result(&catalog, exec_result_id) {
             let request_id =
-                create_request_for_thought_from_index(&mut ws, &core_index, thought_id, config)?;
+                create_request_for_thought_from_catalog(&mut ws, &catalog, thought_id, config)?;
             push_workspace(repo, &mut ws).context("push model request")?;
             return Ok(ModelRequestInfo {
                 id: request_id,
@@ -898,7 +831,7 @@ fn create_thought_and_request(
     let context_json = if let Some(exec_result_id) = about_exec_result {
         context_for_exec_result_with_history(
             &mut ws,
-            &core_index,
+            &catalog,
             &memory_catalog,
             exec_result_id,
             config,
@@ -964,17 +897,17 @@ fn create_thought_and_request(
 }
 
 
-fn create_request_for_thought_from_index(
+fn create_request_for_thought_from_catalog(
     ws: &mut Workspace<Pile>,
-    core_index: &CoreIndex,
+    catalog: &TribleSet,
     thought_id: Id,
     config: &Config,
 ) -> Result<Id> {
-    if let Some(request_id) = core_index.request_for_thought(thought_id) {
+    if let Some(request_id) = request_for_thought(catalog, thought_id) {
         return Ok(request_id);
     }
 
-    let Some(context_handle) = core_index.thought_context_handle(thought_id) else {
+    let Some(context_handle) = thought_context_handle(catalog, thought_id) else {
         return Err(anyhow!("thought {thought_id:x} missing context"));
     };
 
@@ -1004,10 +937,8 @@ fn retry_model_request(
     if let Some(thought_id) = thought_id {
         let mut ws = pull_workspace(repo, branch_id, "pull workspace for model retry")?;
         let catalog = ws.checkout(..).context("checkout workspace for retry")?;
-        let mut core_index = CoreIndex::default();
-        core_index.apply_delta(&catalog, &catalog);
 
-        let Some(context_handle) = core_index.thought_context_handle(thought_id) else {
+        let Some(context_handle) = thought_context_handle(&catalog, thought_id) else {
             return Err(anyhow!("thought {thought_id:x} missing context for retry"));
         };
 
@@ -1055,7 +986,6 @@ fn wait_for_model_result(
 ) -> Result<ModelResult> {
     let mut cached_head = None;
     let mut cached_catalog = TribleSet::new();
-    let mut core_index = CoreIndex::default();
     loop {
         let branch_head = current_branch_head(repo, branch_id)?;
         if branch_head == cached_head {
@@ -1065,12 +995,11 @@ fn wait_for_model_result(
 
         let mut ws = pull_workspace(repo, branch_id, "pull workspace for model result")?;
         let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
-        core_index.apply_delta(&cached_catalog, &delta);
         if !delta_has_model_result(&cached_catalog, &delta, request_id) {
             sleep(Duration::from_millis(poll_ms));
             continue;
         }
-        if let Some(result) = core_index.latest_model_result(request_id) {
+        if let Some(result) = latest_model_result(&cached_catalog, request_id) {
             return load_model_result(&mut ws, result);
         }
         sleep(Duration::from_millis(poll_ms));
@@ -1115,588 +1044,504 @@ struct CommandResultInfo {
     error: Option<Value<Handle<Blake3, LongString>>>,
 }
 
-impl CoreIndex {
-    fn apply_delta(&mut self, updated: &TribleSet, delta: &TribleSet) {
-        if delta.is_empty() {
-            return;
-        }
+fn has_pending_command_request(catalog: &TribleSet) -> bool {
+    // Collect command request IDs that have a result.
+    let done: Vec<Id> = find!(
+        (about_request: Id),
+        pattern!(catalog, [{
+            _?result_id @
+            metadata::tag: playground_exec::kind_command_result,
+            playground_exec::about_request: ?about_request,
+        }])
+    )
+    .into_iter()
+    .map(|(id,)| id)
+    .collect();
 
-        for (request_id,) in find!(
-            (request_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ metadata::tag: model_chat::kind_request
-            }])
-        ) {
-            self.model_requests
-                .entry(request_id)
-                .or_insert(CoreModelRequest {
-                    id: request_id,
-                    requested_at: None,
-                    thought_id: None,
-                });
-        }
+    // Check if any command request has no result.
+    find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            ?request_id @ metadata::tag: playground_exec::kind_command_request
+        }])
+    )
+    .into_iter()
+    .any(|(request_id,)| !done.contains(&request_id))
+}
 
-        for (request_id, requested_at) in find!(
-            (request_id: Id, requested_at: Value<NsTAIInterval>),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ model_chat::requested_at: ?requested_at
-            }])
-        ) {
-            if let Some(entry) = self.model_requests.get_mut(&request_id) {
-                entry.requested_at = Some(requested_at);
-            }
-        }
+fn latest_unprocessed_exec_result(catalog: &TribleSet) -> Option<CommandResultInfo> {
+    // Collect exec result IDs that are already referenced by a thought.
+    let used: Vec<Id> = find!(
+        (exec_result_id: Id),
+        pattern!(catalog, [{
+            _?thought_id @
+            metadata::tag: playground_cog::kind_thought,
+            playground_cog::about_exec_result: ?exec_result_id,
+        }])
+    )
+    .into_iter()
+    .map(|(id,)| id)
+    .collect();
 
-        for (request_id, thought_id) in find!(
-            (request_id: Id, thought_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ model_chat::about_thought: ?thought_id
-            }])
-        ) {
-            if let Some(entry) = self.model_requests.get_mut(&request_id) {
-                entry.thought_id = Some(thought_id);
-            }
-            self.request_for_thought.insert(thought_id, request_id);
-            self.requested_thoughts.insert(thought_id);
-        }
-
-        for (thought_id,) in find!(
-            (thought_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?thought_id @ metadata::tag: playground_cog::kind_thought
-            }])
-        ) {
-            self.thoughts.entry(thought_id).or_insert(CoreThought {
-                id: thought_id,
-                created_at: None,
-                context: None,
-            });
-        }
-
-        for (boundary_id,) in find!(
-            (boundary_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?boundary_id @ metadata::tag: playground_cog::kind_moment_boundary
-            }])
-        ) {
-            self.moment_boundaries
-                .entry(boundary_id)
-                .or_insert(CoreMomentBoundary {
-                    id: boundary_id,
-                    created_at: None,
-                    turn_id: None,
-                });
-        }
-
-        for (thought_id, created_at) in find!(
-            (thought_id: Id, created_at: Value<NsTAIInterval>),
-            pattern_changes!(updated, delta, [{
-                ?thought_id @ playground_cog::created_at: ?created_at
-            }])
-        ) {
-            if let Some(entry) = self.thoughts.get_mut(&thought_id) {
-                entry.created_at = Some(created_at);
-            }
-            if let Some(entry) = self.moment_boundaries.get_mut(&thought_id) {
-                entry.created_at = Some(created_at);
-            }
-        }
-
-        for (thought_id, context) in find!(
-            (thought_id: Id, context: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?thought_id @ playground_cog::context: ?context
-            }])
-        ) {
-            if let Some(entry) = self.thoughts.get_mut(&thought_id) {
-                entry.context = Some(context);
-            }
-        }
-
-        for (thought_id, exec_result_id) in find!(
-            (thought_id: Id, exec_result_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?thought_id @ playground_cog::about_exec_result: ?exec_result_id
-            }])
-        ) {
-            self.thought_for_exec_result
-                .insert(exec_result_id, thought_id);
-            self.used_exec_results.insert(exec_result_id);
-        }
-
-        for (boundary_id, turn_id) in find!(
-            (boundary_id: Id, turn_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?boundary_id @ playground_cog::moment_boundary_turn_id: ?turn_id
-            }])
-        ) {
-            if let Some(entry) = self.moment_boundaries.get_mut(&boundary_id) {
-                entry.turn_id = Some(turn_id);
-            }
-        }
-
-        for (result_id, about_request) in find!(
-            (result_id: Id, about_request: Id),
-            pattern_changes!(updated, delta, [{
-                ?result_id @
-                metadata::tag: model_chat::kind_result,
-                model_chat::about_request: ?about_request,
-            }])
-        ) {
-            self.model_done_requests.insert(about_request);
-            let entry = self.model_results.entry(result_id).or_insert(ModelResultEntry {
-                id: result_id,
-                about_request: None,
-                finished_at: None,
-                attempt: None,
-                output_text: None,
-                reasoning_text: None,
-                error: None,
-            });
-            entry.about_request = Some(about_request);
-        }
-
-        for (result_id, finished_at) in find!(
-            (result_id: Id, finished_at: Value<NsTAIInterval>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ model_chat::finished_at: ?finished_at
-            }])
-        ) {
-            if let Some(entry) = self.model_results.get_mut(&result_id) {
-                entry.finished_at = Some(finished_at);
-            }
-        }
-
-        for (result_id, attempt) in find!(
-            (result_id: Id, attempt: Value<U256BE>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ model_chat::attempt: ?attempt
-            }])
-        ) {
-            if let Some(entry) = self.model_results.get_mut(&result_id) {
-                entry.attempt = Some(attempt);
-            }
-        }
-
-        for (result_id, output_text) in find!(
-            (result_id: Id, output_text: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ model_chat::output_text: ?output_text
-            }])
-        ) {
-            if let Some(entry) = self.model_results.get_mut(&result_id) {
-                entry.output_text = Some(output_text);
-            }
-        }
-
-        for (result_id, reasoning_text) in find!(
-            (result_id: Id, reasoning_text: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ model_chat::reasoning_text: ?reasoning_text
-            }])
-        ) {
-            if let Some(entry) = self.model_results.get_mut(&result_id) {
-                entry.reasoning_text = Some(reasoning_text);
-            }
-        }
-
-        for (result_id, error) in find!(
-            (result_id: Id, error: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ model_chat::error: ?error
-            }])
-        ) {
-            if let Some(entry) = self.model_results.get_mut(&result_id) {
-                entry.error = Some(error);
-            }
-        }
-
-        for (request_id,) in find!(
-            (request_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ metadata::tag: playground_exec::kind_command_request
-            }])
-        ) {
-            self.command_requests
-                .entry(request_id)
-                .or_insert(CoreCommandRequest {
-                    id: request_id,
-                    requested_at: None,
-                    about_thought: None,
-                    command: None,
-                });
-        }
-
-        for (request_id, requested_at) in find!(
-            (request_id: Id, requested_at: Value<NsTAIInterval>),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ playground_exec::requested_at: ?requested_at
-            }])
-        ) {
-            if let Some(entry) = self.command_requests.get_mut(&request_id) {
-                entry.requested_at = Some(requested_at);
-            }
-        }
-
-        for (request_id, about_thought) in find!(
-            (request_id: Id, about_thought: Id),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ playground_exec::about_thought: ?about_thought
-            }])
-        ) {
-            if let Some(entry) = self.command_requests.get_mut(&request_id) {
-                entry.about_thought = Some(about_thought);
-            }
-            self.command_request_for_thought
-                .insert(about_thought, request_id);
-        }
-
-        for (request_id, command) in find!(
-            (request_id: Id, command: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?request_id @ playground_exec::command_text: ?command
-            }])
-        ) {
-            if let Some(entry) = self.command_requests.get_mut(&request_id) {
-                entry.command = Some(command);
-            }
-        }
-
-        for (result_id, about_request) in find!(
-            (result_id: Id, about_request: Id),
-            pattern_changes!(updated, delta, [{
-                ?result_id @
-                metadata::tag: playground_exec::kind_command_result,
-                playground_exec::about_request: ?about_request,
-            }])
-        ) {
-            self.command_done_requests.insert(about_request);
-            self.command_results
-                .entry(result_id)
-                .or_insert(CommandResultInfo {
-                    id: result_id,
-                    about_request,
-                    finished_at: None,
-                    attempt: None,
-                    stdout: None,
-                    stderr: None,
-                    stdout_text: None,
-                    stderr_text: None,
-                    exit_code: None,
-                    error: None,
-                });
-        }
-
-        for (result_id, finished_at) in find!(
-            (result_id: Id, finished_at: Value<NsTAIInterval>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ playground_exec::finished_at: ?finished_at
-            }])
-        ) {
-            if let Some(entry) = self.command_results.get_mut(&result_id) {
-                entry.finished_at = Some(finished_at);
-            }
-        }
-
-        for (result_id, attempt) in find!(
-            (result_id: Id, attempt: Value<U256BE>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ playground_exec::attempt: ?attempt
-            }])
-        ) {
-            if let Some(entry) = self.command_results.get_mut(&result_id) {
-                entry.attempt = Some(attempt);
-            }
-        }
-
-        for (result_id, stdout) in find!(
-            (result_id: Id, stdout: Value<Handle<Blake3, UnknownBlob>>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ playground_exec::stdout: ?stdout
-            }])
-        ) {
-            if let Some(entry) = self.command_results.get_mut(&result_id) {
-                entry.stdout = Some(stdout);
-            }
-        }
-
-        for (result_id, stderr) in find!(
-            (result_id: Id, stderr: Value<Handle<Blake3, UnknownBlob>>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ playground_exec::stderr: ?stderr
-            }])
-        ) {
-            if let Some(entry) = self.command_results.get_mut(&result_id) {
-                entry.stderr = Some(stderr);
-            }
-        }
-
-        for (result_id, stdout_text) in find!(
-            (result_id: Id, stdout_text: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ playground_exec::stdout_text: ?stdout_text
-            }])
-        ) {
-            if let Some(entry) = self.command_results.get_mut(&result_id) {
-                entry.stdout_text = Some(stdout_text);
-            }
-        }
-
-        for (result_id, stderr_text) in find!(
-            (result_id: Id, stderr_text: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ playground_exec::stderr_text: ?stderr_text
-            }])
-        ) {
-            if let Some(entry) = self.command_results.get_mut(&result_id) {
-                entry.stderr_text = Some(stderr_text);
-            }
-        }
-
-        for (result_id, exit_code) in find!(
-            (result_id: Id, exit_code: Value<U256BE>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ playground_exec::exit_code: ?exit_code
-            }])
-        ) {
-            if let Some(entry) = self.command_results.get_mut(&result_id) {
-                entry.exit_code = Some(exit_code);
-            }
-        }
-
-        for (result_id, error) in find!(
-            (result_id: Id, error: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?result_id @ playground_exec::error: ?error
-            }])
-        ) {
-            if let Some(entry) = self.command_results.get_mut(&result_id) {
-                entry.error = Some(error);
-            }
-        }
-
-        for (reason_id, text) in find!(
-            (reason_id: Id, text: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?reason_id @ reason_events::text: ?text
-            }])
-        ) {
-            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
-                id: reason_id,
-                about_turn: None,
-                created_at: None,
-                text: None,
-                command_text: None,
-                worker: None,
-            });
-            entry.text = Some(text);
-        }
-
-        for (reason_id, created_at) in find!(
-            (reason_id: Id, created_at: Value<NsTAIInterval>),
-            pattern_changes!(updated, delta, [{
-                ?reason_id @ reason_events::created_at: ?created_at
-            }])
-        ) {
-            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
-                id: reason_id,
-                about_turn: None,
-                created_at: None,
-                text: None,
-                command_text: None,
-                worker: None,
-            });
-            entry.created_at = Some(created_at);
-        }
-
-        for (reason_id, turn_id) in find!(
-            (reason_id: Id, turn_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?reason_id @ reason_events::about_turn: ?turn_id
-            }])
-        ) {
-            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
-                id: reason_id,
-                about_turn: None,
-                created_at: None,
-                text: None,
-                command_text: None,
-                worker: None,
-            });
-            if let Some(previous_turn) = entry.about_turn {
-                if previous_turn != turn_id {
-                    if let Some(ids) = self.reason_event_ids_by_turn.get_mut(&previous_turn) {
-                        ids.remove(&reason_id);
-                        if ids.is_empty() {
-                            self.reason_event_ids_by_turn.remove(&previous_turn);
-                        }
-                    }
-                }
-            }
-            entry.about_turn = Some(turn_id);
-            self.reason_event_ids_by_turn
-                .entry(turn_id)
-                .or_default()
-                .insert(reason_id);
-        }
-
-        for (reason_id, command_text) in find!(
-            (reason_id: Id, command_text: Value<Handle<Blake3, LongString>>),
-            pattern_changes!(updated, delta, [{
-                ?reason_id @ reason_events::command_text: ?command_text
-            }])
-        ) {
-            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
-                id: reason_id,
-                about_turn: None,
-                created_at: None,
-                text: None,
-                command_text: None,
-                worker: None,
-            });
-            entry.command_text = Some(command_text);
-        }
-
-        for (reason_id, worker_id) in find!(
-            (reason_id: Id, worker_id: Id),
-            pattern_changes!(updated, delta, [{
-                ?reason_id @ reason_events::worker: ?worker_id
-            }])
-        ) {
-            let entry = self.reason_events.entry(reason_id).or_insert(CoreReasonEvent {
-                id: reason_id,
-                about_turn: None,
-                created_at: None,
-                text: None,
-                command_text: None,
-                worker: None,
-            });
-            entry.worker = Some(worker_id);
-        }
-    }
-
-    fn latest_pending_model_request(&self) -> Option<ModelRequestInfo> {
-        let mut candidates: Vec<CoreModelRequest> = self
-            .model_requests
-            .values()
-            .filter(|request| !self.model_done_requests.contains(&request.id))
-            .cloned()
-            .collect();
-        candidates.sort_by_key(|request| {
-            (
-                request.requested_at.map(interval_key).unwrap_or(i128::MIN),
-                request.id,
-            )
-        });
-        candidates.pop().map(|request| ModelRequestInfo {
-            id: request.id,
-            thought_id: request.thought_id,
-        })
-    }
-
-    fn latest_unrequested_thought(&self) -> Option<Id> {
-        let mut candidates: Vec<CoreThought> = self
-            .thoughts
-            .values()
-            .filter(|thought| !self.requested_thoughts.contains(&thought.id))
-            .cloned()
-            .collect();
-        candidates.sort_by_key(|thought| (thought.created_at.map(interval_key), thought.id));
-        candidates.pop().map(|thought| thought.id)
-    }
-
-    fn request_for_thought(&self, thought_id: Id) -> Option<Id> {
-        self.request_for_thought.get(&thought_id).copied()
-    }
-
-    fn thought_for_exec_result(&self, exec_result_id: Id) -> Option<Id> {
-        self.thought_for_exec_result.get(&exec_result_id).copied()
-    }
-
-    fn thought_context_handle(&self, thought_id: Id) -> Option<Value<Handle<Blake3, LongString>>> {
-        self.thoughts
-            .get(&thought_id)
-            .and_then(|thought| thought.context)
-    }
-
-    fn latest_model_result(&self, request_id: Id) -> Option<ModelResultInfo> {
-        self.model_results
-            .values()
-            .filter(|result| result.about_request == Some(request_id))
-            .max_by_key(|result| model_result_rank(result.attempt, result.finished_at))
-            .map(|result| ModelResultInfo {
-                id: result.id,
-                output_text: result.output_text,
-                reasoning_text: result.reasoning_text,
-                error: result.error,
-            })
-    }
-
-    fn reason_events_for_turn(&self, turn_id: Id) -> Vec<CoreReasonEvent> {
-        let Some(ids) = self.reason_event_ids_by_turn.get(&turn_id) else {
-            return Vec::new();
+    let mut candidates: Vec<CommandResultInfo> = find!(
+        (result_id: Id, about_request: Id),
+        pattern!(catalog, [{
+            ?result_id @
+            metadata::tag: playground_exec::kind_command_result,
+            playground_exec::about_request: ?about_request,
+        }])
+    )
+    .into_iter()
+    .filter(|(result_id, _)| !used.contains(result_id))
+    .map(|(result_id, about_request)| {
+        let mut info = CommandResultInfo {
+            id: result_id,
+            about_request,
+            finished_at: None,
+            attempt: None,
+            stdout: None,
+            stderr: None,
+            stdout_text: None,
+            stderr_text: None,
+            exit_code: None,
+            error: None,
         };
-        let mut events: Vec<CoreReasonEvent> = ids
-            .iter()
-            .filter_map(|id| self.reason_events.get(id).cloned())
-            .collect();
-        events.sort_by_key(|event| (event.created_at.map(interval_key).unwrap_or(i128::MIN), event.id));
-        events
-    }
+        fill_command_result_fields(catalog, &mut info);
+        info
+    })
+    .collect();
 
-    fn has_pending_command_request(&self) -> bool {
-        self.command_requests
-            .values()
-            .any(|request| !self.command_done_requests.contains(&request.id))
-    }
+    candidates.sort_by_key(|r| r.finished_at.map(interval_key).unwrap_or(i128::MIN));
+    candidates.pop()
+}
 
-    fn command_request_command_handle(
-        &self,
-        request_id: Id,
-    ) -> Option<Value<Handle<Blake3, LongString>>> {
-        self.command_requests
-            .get(&request_id)
-            .and_then(|request| request.command)
-    }
+fn latest_pending_model_request(catalog: &TribleSet) -> Option<ModelRequestInfo> {
+    // Collect request IDs that already have a result.
+    let done: Vec<Id> = find!(
+        (about_request: Id),
+        pattern!(catalog, [{
+            _?result_id @
+            metadata::tag: model_chat::kind_result,
+            model_chat::about_request: ?about_request,
+        }])
+    )
+    .into_iter()
+    .map(|(id,)| id)
+    .collect();
 
-    fn command_request_for_thought(&self, thought_id: Id) -> Option<Id> {
-        self.command_request_for_thought.get(&thought_id).copied()
-    }
+    let mut candidates: Vec<(Id, i128, Option<Id>)> = find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            ?request_id @ metadata::tag: model_chat::kind_request
+        }])
+    )
+    .into_iter()
+    .filter(|(request_id,)| !done.contains(request_id))
+    .map(|(request_id,)| {
+        let requested_at = find!(
+            (ts: Value<NsTAIInterval>),
+            pattern!(catalog, [{ request_id @ model_chat::requested_at: ?ts }])
+        )
+        .into_iter()
+        .next()
+        .map(|(ts,)| interval_key(ts))
+        .unwrap_or(i128::MIN);
 
-    fn thought_for_command_request(&self, command_request_id: Id) -> Option<Id> {
-        self.command_requests
-            .get(&command_request_id)
-            .and_then(|request| request.about_thought)
-    }
+        let thought_id = find!(
+            (thought_id: Id),
+            pattern!(catalog, [{ request_id @ model_chat::about_thought: ?thought_id }])
+        )
+        .into_iter()
+        .next()
+        .map(|(id,)| id);
 
-    fn latest_command_result(&self, request_id: Id) -> Option<CommandResultInfo> {
-        self.command_results
-            .values()
-            .filter(|result| result.about_request == request_id)
-            .cloned()
-            .max_by_key(command_result_rank)
-    }
+        (request_id, requested_at, thought_id)
+    })
+    .collect();
 
-    fn latest_unprocessed_exec_result(&self) -> Option<CommandResultInfo> {
-        self.command_results
-            .values()
-            .filter(|result| !self.used_exec_results.contains(&result.id))
-            .cloned()
-            .max_by_key(|result| result.finished_at.map(interval_key).unwrap_or(i128::MIN))
-    }
+    candidates.sort_by_key(|(id, ts, _)| (*ts, *id));
+    candidates.pop().map(|(id, _, thought_id)| ModelRequestInfo {
+        id,
+        thought_id,
+    })
+}
 
-    fn latest_moment_boundary_turn_id(&self) -> Option<Id> {
-        self.moment_boundaries
-            .values()
-            .filter_map(|entry| {
-                let created = entry.created_at.map(interval_key)?;
-                let turn_id = entry.turn_id?;
-                Some((created, entry.id, turn_id))
-            })
-            .max_by_key(|(created, boundary_id, _)| (*created, *boundary_id))
-            .map(|(_, _, turn_id)| turn_id)
-    }
+fn latest_unrequested_thought(catalog: &TribleSet) -> Option<Id> {
+    // Collect thought IDs that have a model request referencing them.
+    let requested: Vec<Id> = find!(
+        (thought_id: Id),
+        pattern!(catalog, [{
+            _?request_id @
+            metadata::tag: model_chat::kind_request,
+            model_chat::about_thought: ?thought_id,
+        }])
+    )
+    .into_iter()
+    .map(|(id,)| id)
+    .collect();
 
+    let mut candidates: Vec<(Id, i128)> = find!(
+        (thought_id: Id),
+        pattern!(catalog, [{
+            ?thought_id @ metadata::tag: playground_cog::kind_thought
+        }])
+    )
+    .into_iter()
+    .filter(|(thought_id,)| !requested.contains(thought_id))
+    .map(|(thought_id,)| {
+        let created_at = find!(
+            (ts: Value<NsTAIInterval>),
+            pattern!(catalog, [{ thought_id @ playground_cog::created_at: ?ts }])
+        )
+        .into_iter()
+        .next()
+        .map(|(ts,)| interval_key(ts))
+        .unwrap_or(i128::MIN);
+        (thought_id, created_at)
+    })
+    .collect();
+
+    candidates.sort_by_key(|(id, ts)| (*ts, *id));
+    candidates.pop().map(|(id, _)| id)
+}
+
+fn request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id> {
+    find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            ?request_id @
+            metadata::tag: model_chat::kind_request,
+            model_chat::about_thought: thought_id,
+        }])
+    )
+    .into_iter()
+    .next()
+    .map(|(id,)| id)
+}
+
+fn thought_for_exec_result(catalog: &TribleSet, exec_result_id: Id) -> Option<Id> {
+    find!(
+        (thought_id: Id),
+        pattern!(catalog, [{
+            ?thought_id @
+            metadata::tag: playground_cog::kind_thought,
+            playground_cog::about_exec_result: exec_result_id,
+        }])
+    )
+    .into_iter()
+    .next()
+    .map(|(id,)| id)
+}
+
+fn thought_context_handle(
+    catalog: &TribleSet,
+    thought_id: Id,
+) -> Option<Value<Handle<Blake3, LongString>>> {
+    find!(
+        (context: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{ thought_id @ playground_cog::context: ?context }])
+    )
+    .into_iter()
+    .next()
+    .map(|(ctx,)| ctx)
+}
+
+fn latest_model_result(catalog: &TribleSet, request_id: Id) -> Option<ModelResultInfo> {
+    find!(
+        (result_id: Id),
+        pattern!(catalog, [{
+            ?result_id @
+            metadata::tag: model_chat::kind_result,
+            model_chat::about_request: request_id,
+        }])
+    )
+    .into_iter()
+    .map(|(result_id,)| {
+            let finished_at = find!(
+                (ts: Value<NsTAIInterval>),
+                pattern!(catalog, [{ result_id @ model_chat::finished_at: ?ts }])
+            )
+            .into_iter()
+            .next()
+            .map(|(ts,)| ts);
+
+            let attempt = find!(
+                (a: Value<U256BE>),
+                pattern!(catalog, [{ result_id @ model_chat::attempt: ?a }])
+            )
+            .into_iter()
+            .next()
+            .map(|(a,)| a);
+
+            let output_text = find!(
+                (t: Value<Handle<Blake3, LongString>>),
+                pattern!(catalog, [{ result_id @ model_chat::output_text: ?t }])
+            )
+            .into_iter()
+            .next()
+            .map(|(t,)| t);
+
+            let reasoning_text = find!(
+                (t: Value<Handle<Blake3, LongString>>),
+                pattern!(catalog, [{ result_id @ model_chat::reasoning_text: ?t }])
+            )
+            .into_iter()
+            .next()
+            .map(|(t,)| t);
+
+            let error = find!(
+                (t: Value<Handle<Blake3, LongString>>),
+                pattern!(catalog, [{ result_id @ model_chat::error: ?t }])
+            )
+            .into_iter()
+            .next()
+            .map(|(t,)| t);
+
+            (result_id, attempt, finished_at, output_text, reasoning_text, error)
+        })
+        .max_by_key(|(_, attempt, finished_at, _, _, _)| model_result_rank(*attempt, *finished_at))
+        .map(|(id, _, _, output_text, reasoning_text, error)| ModelResultInfo {
+            id,
+            output_text,
+            reasoning_text,
+            error,
+        })
+}
+
+fn reason_events_for_turn(catalog: &TribleSet, turn_id: Id) -> Vec<ReasonEventInfo> {
+    let mut events: Vec<(i128, Id, ReasonEventInfo)> = find!(
+        (reason_id: Id),
+        pattern!(catalog, [{
+            ?reason_id @
+            reason_events::about_turn: turn_id,
+        }])
+    )
+    .into_iter()
+    .map(|(reason_id,)| {
+        let created_at = find!(
+            (ts: Value<NsTAIInterval>),
+            pattern!(catalog, [{ reason_id @ reason_events::created_at: ?ts }])
+        )
+        .into_iter()
+        .next()
+        .map(|(ts,)| interval_key(ts))
+        .unwrap_or(i128::MIN);
+
+        let text = find!(
+            (t: Value<Handle<Blake3, LongString>>),
+            pattern!(catalog, [{ reason_id @ reason_events::text: ?t }])
+        )
+        .into_iter()
+        .next()
+        .map(|(t,)| t);
+
+        let command_text = find!(
+            (t: Value<Handle<Blake3, LongString>>),
+            pattern!(catalog, [{ reason_id @ reason_events::command_text: ?t }])
+        )
+        .into_iter()
+        .next()
+        .map(|(t,)| t);
+
+        (created_at, reason_id, ReasonEventInfo { text, command_text })
+    })
+    .collect();
+
+    events.sort_by_key(|(ts, id, _)| (*ts, *id));
+    events.into_iter().map(|(_, _, info)| info).collect()
+}
+
+fn command_request_command_handle(
+    catalog: &TribleSet,
+    request_id: Id,
+) -> Option<Value<Handle<Blake3, LongString>>> {
+    find!(
+        (cmd: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{ request_id @ playground_exec::command_text: ?cmd }])
+    )
+    .into_iter()
+    .next()
+    .map(|(cmd,)| cmd)
+}
+
+fn command_request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id> {
+    find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            ?request_id @
+            metadata::tag: playground_exec::kind_command_request,
+            playground_exec::about_thought: thought_id,
+        }])
+    )
+    .into_iter()
+    .next()
+    .map(|(id,)| id)
+}
+
+fn thought_for_command_request(catalog: &TribleSet, command_request_id: Id) -> Option<Id> {
+    find!(
+        (thought_id: Id),
+        pattern!(catalog, [{ command_request_id @ playground_exec::about_thought: ?thought_id }])
+    )
+    .into_iter()
+    .next()
+    .map(|(id,)| id)
+}
+
+fn latest_command_result(catalog: &TribleSet, request_id: Id) -> Option<CommandResultInfo> {
+    let results: Vec<CommandResultInfo> = find!(
+        (result_id: Id),
+        pattern!(catalog, [{
+            ?result_id @
+            metadata::tag: playground_exec::kind_command_result,
+            playground_exec::about_request: request_id,
+        }])
+    )
+    .into_iter()
+    .map(|(result_id,)| {
+        let mut info = CommandResultInfo {
+            id: result_id,
+            about_request: request_id,
+            finished_at: None,
+            attempt: None,
+            stdout: None,
+            stderr: None,
+            stdout_text: None,
+            stderr_text: None,
+            exit_code: None,
+            error: None,
+        };
+        fill_command_result_fields(catalog, &mut info);
+        info
+    })
+    .collect();
+
+    results.into_iter().max_by_key(command_result_rank)
+}
+
+fn latest_moment_boundary_turn_id(catalog: &TribleSet) -> Option<Id> {
+    find!(
+        (boundary_id: Id, turn_id: Id),
+        pattern!(catalog, [{
+            ?boundary_id @
+            metadata::tag: playground_cog::kind_moment_boundary,
+            playground_cog::moment_boundary_turn_id: ?turn_id,
+        }])
+    )
+    .into_iter()
+    .filter_map(|(boundary_id, turn_id)| {
+        let created = find!(
+            (ts: Value<NsTAIInterval>),
+            pattern!(catalog, [{ boundary_id @ playground_cog::created_at: ?ts }])
+        )
+        .into_iter()
+        .next()
+        .map(|(ts,)| interval_key(ts))?;
+        Some((created, boundary_id, turn_id))
+    })
+    .max_by_key(|(created, boundary_id, _)| (*created, *boundary_id))
+    .map(|(_, _, turn_id)| turn_id)
+}
+
+fn sorted_finished_command_results(catalog: &TribleSet) -> Vec<CommandResultInfo> {
+    let mut results: Vec<CommandResultInfo> = find!(
+        (result_id: Id, about_request: Id),
+        pattern!(catalog, [{
+            ?result_id @
+            metadata::tag: playground_exec::kind_command_result,
+            playground_exec::about_request: ?about_request,
+        }])
+    )
+    .into_iter()
+    .map(|(result_id, about_request)| {
+        let mut info = CommandResultInfo {
+            id: result_id,
+            about_request,
+            finished_at: None,
+            attempt: None,
+            stdout: None,
+            stderr: None,
+            stdout_text: None,
+            stderr_text: None,
+            exit_code: None,
+            error: None,
+        };
+        fill_command_result_fields(catalog, &mut info);
+        info
+    })
+    .collect();
+    results.retain(|result| result.finished_at.is_some());
+    results.sort_by_key(|result| result.finished_at.map(interval_key).unwrap_or(i128::MIN));
+    results
+}
+
+/// Fill optional fields of a CommandResultInfo from the catalog.
+fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo) {
+    let result_id = info.id;
+
+    info.finished_at = find!(
+        (ts: Value<NsTAIInterval>),
+        pattern!(catalog, [{ result_id @ playground_exec::finished_at: ?ts }])
+    )
+    .into_iter()
+    .next()
+    .map(|(ts,)| ts);
+
+    info.attempt = find!(
+        (a: Value<U256BE>),
+        pattern!(catalog, [{ result_id @ playground_exec::attempt: ?a }])
+    )
+    .into_iter()
+    .next()
+    .map(|(a,)| a);
+
+    info.stdout = find!(
+        (s: Value<Handle<Blake3, UnknownBlob>>),
+        pattern!(catalog, [{ result_id @ playground_exec::stdout: ?s }])
+    )
+    .into_iter()
+    .next()
+    .map(|(s,)| s);
+
+    info.stderr = find!(
+        (s: Value<Handle<Blake3, UnknownBlob>>),
+        pattern!(catalog, [{ result_id @ playground_exec::stderr: ?s }])
+    )
+    .into_iter()
+    .next()
+    .map(|(s,)| s);
+
+    info.stdout_text = find!(
+        (t: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{ result_id @ playground_exec::stdout_text: ?t }])
+    )
+    .into_iter()
+    .next()
+    .map(|(t,)| t);
+
+    info.stderr_text = find!(
+        (t: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{ result_id @ playground_exec::stderr_text: ?t }])
+    )
+    .into_iter()
+    .next()
+    .map(|(t,)| t);
+
+    info.exit_code = find!(
+        (c: Value<U256BE>),
+        pattern!(catalog, [{ result_id @ playground_exec::exit_code: ?c }])
+    )
+    .into_iter()
+    .next()
+    .map(|(c,)| c);
+
+    info.error = find!(
+        (e: Value<Handle<Blake3, LongString>>),
+        pattern!(catalog, [{ result_id @ playground_exec::error: ?e }])
+    )
+    .into_iter()
+    .next()
+    .map(|(e,)| e);
 }
 
 fn model_result_rank(
@@ -1727,12 +1572,10 @@ fn ensure_command_request(
     let mut ws = pull_workspace(repo, branch_id, "pull workspace for command request")?;
     let mut cached_head = None;
     let mut cached_catalog = TribleSet::new();
-    let mut core_index = CoreIndex::default();
-    let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
-    core_index.apply_delta(&cached_catalog, &delta);
+    let _delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
 
     if let Some(thought_id) = thought_id {
-        if let Some(existing) = core_index.command_request_for_thought(thought_id) {
+        if let Some(existing) = command_request_for_thought(&cached_catalog, thought_id) {
             return Ok(existing);
         }
     }
@@ -1769,7 +1612,6 @@ fn wait_for_command_result(
 ) -> Result<Id> {
     let mut cached_head = None;
     let mut cached_catalog = TribleSet::new();
-    let mut core_index = CoreIndex::default();
     loop {
         let branch_head = current_branch_head(repo, branch_id)?;
         if branch_head == cached_head {
@@ -1779,12 +1621,11 @@ fn wait_for_command_result(
 
         let mut ws = pull_workspace(repo, branch_id, "pull workspace for command result")?;
         let delta = refresh_cached_checkout(&mut ws, &mut cached_head, &mut cached_catalog)?;
-        core_index.apply_delta(&cached_catalog, &delta);
         if !delta_has_command_result(&cached_catalog, &delta, request_id) {
             sleep(Duration::from_millis(poll_ms));
             continue;
         }
-        if let Some(result) = core_index.latest_command_result(request_id) {
+        if let Some(result) = latest_command_result(&cached_catalog, request_id) {
             return Ok(result.id);
         }
         sleep(Duration::from_millis(poll_ms));
@@ -1836,18 +1677,9 @@ struct ContextChunkIndex {
     roots: Vec<Id>,
 }
 
-fn sorted_finished_command_results(core_index: &CoreIndex) -> Vec<CommandResultInfo> {
-    let mut results: Vec<CommandResultInfo> =
-        core_index.command_results.values().cloned().collect();
-    results.sort_by_key(|result| result.finished_at.map(interval_key).unwrap_or(i128::MIN));
-    results.retain(|result| result.finished_at.is_some());
-    results
-}
-
-
 fn context_for_exec_result_with_history(
     ws: &mut Workspace<Pile>,
-    core_index: &CoreIndex,
+    catalog: &TribleSet,
     memory_catalog: &TribleSet,
     exec_result_id: Id,
     config: &Config,
@@ -1855,7 +1687,7 @@ fn context_for_exec_result_with_history(
 ) -> Result<String> {
     let mut messages = build_context_messages(
         ws,
-        core_index,
+        catalog,
         memory_catalog,
         exec_result_id,
         config,
@@ -1868,7 +1700,7 @@ fn context_for_exec_result_with_history(
 
 fn build_context_messages(
     ws: &mut Workspace<Pile>,
-    core_index: &CoreIndex,
+    catalog: &TribleSet,
     memory_catalog: &TribleSet,
     exec_result_id: Id,
     config: &Config,
@@ -1877,7 +1709,7 @@ fn build_context_messages(
     let index = load_context_chunks(memory_catalog);
     let body_budget_chars = context_body_budget_chars(config);
     // Sort all command results in chronological order (oldest -> newest).
-    let results = sorted_finished_command_results(core_index);
+    let results = sorted_finished_command_results(catalog);
 
     let Some(current_pos) = results
         .iter()
@@ -1889,7 +1721,7 @@ fn build_context_messages(
 
     let moment_boundary_end_key = resolve_moment_boundary_end_key(
         results.as_slice(),
-        core_index.latest_moment_boundary_turn_id(),
+        latest_moment_boundary_turn_id(catalog),
     );
     let (new_messages, new_used_chars, new_breath_idx, new_cover_end_key) =
         build_memory_cover_messages(ws, &index, body_budget_chars, moment_boundary_end_key)?;
@@ -1969,7 +1801,7 @@ fn build_context_messages(
                     continue;
                 }
             }
-            let projection = load_exec_turn_projection(ws, core_index, result)?;
+            let projection = load_exec_turn_projection(ws, catalog, result)?;
             let exec_output = load_exec_result(ws, result.clone())?;
 
             let mut turn_messages = Vec::new();
@@ -2005,7 +1837,7 @@ fn build_context_messages(
         }
     }
 
-    if let Some(guard) = memory_loop_guard_message(ws, core_index, results.as_slice(), current_pos)?
+    if let Some(guard) = memory_loop_guard_message(ws, catalog, results.as_slice(), current_pos)?
     {
         messages.push(ChatMessage::user(guard));
     }
@@ -2284,7 +2116,7 @@ fn memory_lookup_failed_result(command: &str, result: &ExecResult) -> bool {
 
 fn memory_loop_guard_message(
     ws: &mut Workspace<Pile>,
-    core_index: &CoreIndex,
+    catalog: &TribleSet,
     results: &[CommandResultInfo],
     current_pos: usize,
 ) -> Result<Option<String>> {
@@ -2293,7 +2125,7 @@ fn memory_loop_guard_message(
     let window_start = current_pos.saturating_sub(MEMORY_FAILURE_LOOKBACK - 1);
     let mut streak_len = 0usize;
     for result in results[window_start..=current_pos].iter().rev() {
-        let command = load_command_for_result(ws, core_index, result)?;
+        let command = load_command_for_result(ws, catalog, result)?;
         let Some(id_hint) = memory_command_id(command.as_str()) else {
             break;
         };
@@ -2317,10 +2149,10 @@ fn memory_loop_guard_message(
 
 fn load_command_for_result(
     ws: &mut Workspace<Pile>,
-    core_index: &CoreIndex,
+    catalog: &TribleSet,
     exec_result: &CommandResultInfo,
 ) -> Result<String> {
-    let Some(command_handle) = core_index.command_request_command_handle(exec_result.about_request)
+    let Some(command_handle) = command_request_command_handle(catalog, exec_result.about_request)
     else {
         return Err(anyhow!(
             "command request {id:x} missing command text",
@@ -2332,16 +2164,16 @@ fn load_command_for_result(
 
 fn load_reasoning_for_exec_result(
     ws: &mut Workspace<Pile>,
-    core_index: &CoreIndex,
+    catalog: &TribleSet,
     exec_result: &CommandResultInfo,
 ) -> Result<Option<(Id, String)>> {
-    let Some(thought_id) = core_index.thought_for_command_request(exec_result.about_request) else {
+    let Some(thought_id) = thought_for_command_request(catalog, exec_result.about_request) else {
         return Ok(None);
     };
-    let Some(request_id) = core_index.request_for_thought(thought_id) else {
+    let Some(request_id) = request_for_thought(catalog, thought_id) else {
         return Ok(None);
     };
-    let Some(result) = core_index.latest_model_result(request_id) else {
+    let Some(result) = latest_model_result(catalog, request_id) else {
         return Ok(None);
     };
     let Some(reasoning_handle) = result.reasoning_text else {
@@ -2546,11 +2378,11 @@ fn load_exec_result(ws: &mut Workspace<Pile>, result: CommandResultInfo) -> Resu
 
 fn load_exec_turn_projection(
     ws: &mut Workspace<Pile>,
-    core_index: &CoreIndex,
+    catalog: &TribleSet,
     exec_result: &CommandResultInfo,
 ) -> Result<ExecTurnProjection> {
-    let mut reason_events = Vec::new();
-    for event in core_index.reason_events_for_turn(exec_result.about_request) {
+    let mut reason_events_list = Vec::new();
+    for event in reason_events_for_turn(catalog, exec_result.about_request) {
         let text = event
             .text
             .map(|handle| load_text(ws, handle))
@@ -2562,7 +2394,7 @@ fn load_exec_turn_projection(
             .map(|handle| load_text(ws, handle))
             .transpose()
             .context("load reason event command text")?;
-        reason_events.push(ReasonProjectionEvent {
+        reason_events_list.push(ReasonProjectionEvent {
             text,
             command_text,
             source: ReasonProjectionSource::Logged,
@@ -2570,24 +2402,24 @@ fn load_exec_turn_projection(
     }
 
     if let Some((_result_id, reasoning_text)) =
-        load_reasoning_for_exec_result(ws, core_index, exec_result)?
+        load_reasoning_for_exec_result(ws, catalog, exec_result)?
     {
-        reason_events.push(ReasonProjectionEvent {
+        reason_events_list.push(ReasonProjectionEvent {
             text: reasoning_text,
             command_text: None,
             source: ReasonProjectionSource::Model,
         });
     }
 
-    let command = if let Some(command) = command_override_from_reason_events(reason_events.as_slice()) {
+    let command = if let Some(command) = command_override_from_reason_events(reason_events_list.as_slice()) {
         command
     } else {
-        load_command_for_result(ws, core_index, exec_result)
+        load_command_for_result(ws, catalog, exec_result)
             .context("load command for exec turn projection")?
     };
     Ok(ExecTurnProjection {
         command,
-        reason_events,
+        reason_events: reason_events_list,
     })
 }
 
