@@ -1479,11 +1479,11 @@ fn list_branches(pile: &mut Pile<Blake3>) -> Result<Vec<BranchEntry>, String> {
                 let name = match reader.get::<TribleSet, _>(meta_handle) {
                     Ok(metadata_set) => {
                         let mut names = find!(
-                            (handle: Value<Handle<Blake3, LongString>>),
+                            handle: Value<Handle<Blake3, LongString>>,
                             pattern!(&metadata_set, [{ metadata::name: ?handle }])
                         );
                         match (names.next(), names.next()) {
-                            (Some((handle,)), None) => reader
+                            (Some(handle), None) => reader
                                 .get::<View<str>, _>(handle)
                                 .ok()
                                 .map(|view| view.as_ref().to_string())
@@ -1817,19 +1817,18 @@ fn latest_model_profile_entry_id(data: &TribleSet, profile_id: Id) -> Option<Id>
 
 fn load_optional_id_attr(data: &TribleSet, entity_id: Id, attr: Attribute<GenId>) -> Option<Id> {
     find!(
-        (value: Value<GenId>),
+        value: Value<GenId>,
         pattern!(data, [{ entity_id @ attr: ?value }])
     )
-    .find_map(|(value,)| Id::try_from_value(&value).ok())
+    .find_map(|value| Id::try_from_value(&value).ok())
 }
 
 fn load_optional_u64_attr(data: &TribleSet, entity_id: Id, attr: Attribute<U256BE>) -> Option<u64> {
     find!(
-        (value: Value<U256BE>),
+        value: Value<U256BE>,
         pattern!(data, [{ entity_id @ attr: ?value }])
     )
     .next()
-    .map(|(value,)| value)
     .and_then(|v| v.try_from_value::<u64>().ok())
 }
 
@@ -1839,11 +1838,11 @@ fn load_optional_interval_attr(
     attr: Attribute<NsTAIInterval>,
 ) -> Option<i128> {
     find!(
-        (value: Value<NsTAIInterval>),
+        value: Value<NsTAIInterval>,
         pattern!(data, [{ entity_id @ attr: ?value }])
     )
     .next()
-    .map(|(value,)| interval_key(value))
+    .map(|value| interval_key(value))
 }
 
 fn collect_exec_rows_incremental(
@@ -1879,8 +1878,8 @@ fn collect_exec_rows_incremental(
 
 fn collect_changed_exec_request_ids(data: &TribleSet, delta: &TribleSet) -> HashSet<Id> {
     let mut ids = HashSet::new();
-    for (request_id,) in find!(
-        (request_id: Id),
+    for request_id in find!(
+        request_id: Id,
         pattern_changes!(data, delta, [{
             ?request_id @
             metadata::tag: playground_exec::kind_command_request,
@@ -1888,14 +1887,14 @@ fn collect_changed_exec_request_ids(data: &TribleSet, delta: &TribleSet) -> Hash
     ) {
         ids.insert(request_id);
     }
-    for (request_id,) in find!(
-        (request_id: Id),
+    for request_id in find!(
+        request_id: Id,
         pattern_changes!(data, delta, [{ ?request_id @ playground_exec::requested_at: _?requested_at }])
     ) {
         ids.insert(request_id);
     }
-    for (request_id,) in find!(
-        (request_id: Id),
+    for request_id in find!(
+        request_id: Id,
         pattern_changes!(data, delta, [{ _?event_id @ playground_exec::about_request: ?request_id }])
     ) {
         ids.insert(request_id);
@@ -1905,21 +1904,20 @@ fn collect_changed_exec_request_ids(data: &TribleSet, delta: &TribleSet) -> Hash
 
 fn collect_exec_row(data: &TribleSet, ws: &mut Workspace<Pile>, request_id: Id) -> Option<ExecRow> {
     let command_handle = find!(
-        (command: Value<Handle<Blake3, LongString>>),
+        command: Value<Handle<Blake3, LongString>>,
         pattern!(data, [{
             request_id @
             metadata::tag: playground_exec::kind_command_request,
             playground_exec::command_text: ?command,
         }])
     )
-    .next()
-    .map(|(command,)| command)?;
+    .next()?;
     let command = load_text(ws, command_handle).unwrap_or_else(|| "<missing>".to_string());
     let requested_at = load_optional_interval_attr(data, request_id, playground_exec::requested_at);
 
     let mut progress: Option<ProgressInfo> = None;
-    for (event_id,) in find!(
-        (event_id: Id),
+    for event_id in find!(
+        event_id: Id,
         pattern!(data, [{
             ?event_id @
             metadata::tag: playground_exec::kind_in_progress,
@@ -1943,8 +1941,8 @@ fn collect_exec_row(data: &TribleSet, ws: &mut Workspace<Pile>, request_id: Id) 
     }
 
     let mut result: Option<ResultInfo> = None;
-    for (event_id,) in find!(
-        (event_id: Id),
+    for event_id in find!(
+        event_id: Id,
         pattern!(data, [{
             ?event_id @
             metadata::tag: playground_exec::kind_command_result,
@@ -2198,8 +2196,8 @@ fn collect_local_messages_incremental(
 
 fn collect_changed_local_message_ids(data: &TribleSet, delta: &TribleSet) -> HashSet<Id> {
     let mut ids = HashSet::new();
-    for (message_id,) in find!(
-        (message_id: Id),
+    for message_id in find!(
+        message_id: Id,
         pattern_changes!(data, delta, [{
             ?message_id @
             metadata::tag: &LOCAL_KIND_MESSAGE_ID,
@@ -2207,8 +2205,8 @@ fn collect_changed_local_message_ids(data: &TribleSet, delta: &TribleSet) -> Has
     ) {
         ids.insert(message_id);
     }
-    for (message_id,) in find!(
-        (message_id: Id),
+    for message_id in find!(
+        message_id: Id,
         pattern_changes!(data, delta, [{
             _?read_id @
             metadata::tag: &LOCAL_KIND_READ_ID,
@@ -2246,8 +2244,8 @@ fn collect_local_message_row(
     let body = load_text(ws, body_handle).unwrap_or_else(|| "<missing>".to_string());
 
     let mut readers: HashSet<Id> = HashSet::new();
-    for (reader_id,) in find!(
-        (reader_id: Id),
+    for reader_id in find!(
+        reader_id: Id,
         pattern!(&data, [{
             _?read_id @
             metadata::tag: &LOCAL_KIND_READ_ID,
@@ -2336,8 +2334,8 @@ fn collect_local_messages(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<Loc
 fn collect_relations_people(data: &TribleSet, ws: &mut Workspace<Pile>) -> Vec<RelationRow> {
     let mut people: HashMap<Id, RelationRow> = HashMap::new();
 
-    for (person_id,) in find!(
-        (person_id: Id),
+    for person_id in find!(
+        person_id: Id,
         pattern!(data, [{ ?person_id @ metadata::tag: &RELATIONS_KIND_PERSON_ID }])
     ) {
         people.insert(
@@ -2620,14 +2618,14 @@ fn load_optional_string_attr(
     attr: Attribute<Handle<Blake3, LongString>>,
 ) -> Option<String> {
     find!(
-        (handle: Value<Handle<Blake3, LongString>>),
+        handle: Value<Handle<Blake3, LongString>>,
         pattern!(data, [{
             entity_id @
             attr: ?handle,
         }])
     )
     .next()
-    .and_then(|(handle,)| load_text(ws, handle))
+    .and_then(|handle| load_text(ws, handle))
 }
 
 fn sort_reasoning_summaries(rows: HashMap<Id, ReasoningSummaryRow>) -> Vec<ReasoningSummaryRow> {
@@ -2669,32 +2667,32 @@ fn collect_reasoning_summaries_incremental(
 
 fn collect_changed_result_ids(data: &TribleSet, delta: &TribleSet) -> HashSet<Id> {
     let mut ids = HashSet::new();
-    for (result_id,) in find!(
-        (result_id: Id),
+    for result_id in find!(
+        result_id: Id,
         pattern_changes!(data, delta, [{ ?result_id @ metadata::tag: model_chat::kind_result }])
     ) {
         ids.insert(result_id);
     }
-    for (result_id,) in find!(
-        (result_id: Id),
+    for result_id in find!(
+        result_id: Id,
         pattern_changes!(data, delta, [{ ?result_id @ model_chat::reasoning_text: _?reasoning_handle }])
     ) {
         ids.insert(result_id);
     }
-    for (result_id,) in find!(
-        (result_id: Id),
+    for result_id in find!(
+        result_id: Id,
         pattern_changes!(data, delta, [{ ?result_id @ model_chat::response_raw: _?raw_handle }])
     ) {
         ids.insert(result_id);
     }
-    for (result_id,) in find!(
-        (result_id: Id),
+    for result_id in find!(
+        result_id: Id,
         pattern_changes!(data, delta, [{ ?result_id @ model_chat::finished_at: _?finished_at }])
     ) {
         ids.insert(result_id);
     }
-    for (result_id,) in find!(
-        (result_id: Id),
+    for result_id in find!(
+        result_id: Id,
         pattern_changes!(data, delta, [{ ?result_id @ model_chat::input_tokens: _?v }])
     ) {
         ids.insert(result_id);
@@ -2708,7 +2706,7 @@ fn collect_reasoning_summary_row(
     result_id: Id,
 ) -> Option<ReasoningSummaryRow> {
     let finished_at = find!(
-        (finished_at: Value<NsTAIInterval>),
+        finished_at: Value<NsTAIInterval>,
         pattern!(data, [{
             result_id @
             metadata::tag: model_chat::kind_result,
@@ -2716,10 +2714,10 @@ fn collect_reasoning_summary_row(
         }])
     )
     .next()
-    .map(|(finished_at,)| interval_key(finished_at))?;
+    .map(|finished_at| interval_key(finished_at))?;
 
-    let summary = if let Some((reasoning_handle,)) = find!(
-        (reasoning_handle: Value<Handle<Blake3, LongString>>),
+    let summary = if let Some(reasoning_handle) = find!(
+        reasoning_handle: Value<Handle<Blake3, LongString>>,
         pattern!(data, [{
             result_id @
             metadata::tag: model_chat::kind_result,
@@ -2729,8 +2727,8 @@ fn collect_reasoning_summary_row(
     .next()
     {
         load_text(ws, reasoning_handle).unwrap_or_default()
-    } else if let Some((raw_handle,)) = find!(
-        (raw_handle: Value<Handle<Blake3, LongString>>),
+    } else if let Some(raw_handle) = find!(
+        raw_handle: Value<Handle<Blake3, LongString>>,
         pattern!(data, [{
             result_id @
             metadata::tag: model_chat::kind_result,
@@ -2748,24 +2746,24 @@ fn collect_reasoning_summary_row(
     };
 
     let input_tokens = find!(
-        (v: Value<U256BE>),
+        v: Value<U256BE>,
         pattern!(data, [{ result_id @ model_chat::input_tokens: ?v }])
-    ).next().and_then(|(v,)| u256be_to_u64(v));
+    ).next().and_then(|v| u256be_to_u64(v));
 
     let output_tokens = find!(
-        (v: Value<U256BE>),
+        v: Value<U256BE>,
         pattern!(data, [{ result_id @ model_chat::output_tokens: ?v }])
-    ).next().and_then(|(v,)| u256be_to_u64(v));
+    ).next().and_then(|v| u256be_to_u64(v));
 
     let cache_creation_input_tokens = find!(
-        (v: Value<U256BE>),
+        v: Value<U256BE>,
         pattern!(data, [{ result_id @ model_chat::cache_creation_input_tokens: ?v }])
-    ).next().and_then(|(v,)| u256be_to_u64(v));
+    ).next().and_then(|v| u256be_to_u64(v));
 
     let cache_read_input_tokens = find!(
-        (v: Value<U256BE>),
+        v: Value<U256BE>,
         pattern!(data, [{ result_id @ model_chat::cache_read_input_tokens: ?v }])
-    ).next().and_then(|(v,)| u256be_to_u64(v));
+    ).next().and_then(|v| u256be_to_u64(v));
 
     let has_content = !summary.trim().is_empty()
         || input_tokens.is_some()
@@ -2917,38 +2915,38 @@ fn collect_reason_rows_incremental(
 
 fn collect_changed_reason_ids(data: &TribleSet, delta: &TribleSet) -> HashSet<Id> {
     let mut ids = HashSet::new();
-    for (reason_id,) in find!(
-        (reason_id: Id),
+    for reason_id in find!(
+        reason_id: Id,
         pattern_changes!(data, delta, [{ ?reason_id @ metadata::tag: &REASON_KIND_EVENT_ID }])
     ) {
         ids.insert(reason_id);
     }
-    for (reason_id,) in find!(
-        (reason_id: Id),
+    for reason_id in find!(
+        reason_id: Id,
         pattern_changes!(data, delta, [{ ?reason_id @ reason_events::text: _?text }])
     ) {
         ids.insert(reason_id);
     }
-    for (reason_id,) in find!(
-        (reason_id: Id),
+    for reason_id in find!(
+        reason_id: Id,
         pattern_changes!(data, delta, [{ ?reason_id @ reason_events::created_at: _?at }])
     ) {
         ids.insert(reason_id);
     }
-    for (reason_id,) in find!(
-        (reason_id: Id),
+    for reason_id in find!(
+        reason_id: Id,
         pattern_changes!(data, delta, [{ ?reason_id @ reason_events::about_turn: _?turn_id }])
     ) {
         ids.insert(reason_id);
     }
-    for (reason_id,) in find!(
-        (reason_id: Id),
+    for reason_id in find!(
+        reason_id: Id,
         pattern_changes!(data, delta, [{ ?reason_id @ reason_events::worker: _?worker_id }])
     ) {
         ids.insert(reason_id);
     }
-    for (reason_id,) in find!(
-        (reason_id: Id),
+    for reason_id in find!(
+        reason_id: Id,
         pattern_changes!(data, delta, [{ ?reason_id @ reason_events::command_text: _?command_handle }])
     ) {
         ids.insert(reason_id);
@@ -2976,27 +2974,25 @@ fn collect_reason_row(
     .next()?;
     let text = load_text(ws, text_handle)?;
     let turn_id = find!(
-        (turn_id: Id),
+        turn_id: Id,
         pattern!(data, [{
             reason_id @
             metadata::tag: &REASON_KIND_EVENT_ID,
             reason_events::about_turn: ?turn_id,
         }])
     )
-    .next()
-    .map(|(turn_id,)| turn_id);
+    .next();
     let worker_id = find!(
-        (worker_id: Id),
+        worker_id: Id,
         pattern!(data, [{
             reason_id @
             metadata::tag: &REASON_KIND_EVENT_ID,
             reason_events::worker: ?worker_id,
         }])
     )
-    .next()
-    .map(|(worker_id,)| worker_id);
+    .next();
     let command_text = find!(
-        (command_handle: Value<Handle<Blake3, LongString>>),
+        command_handle: Value<Handle<Blake3, LongString>>,
         pattern!(data, [{
             reason_id @
             metadata::tag: &REASON_KIND_EVENT_ID,
@@ -3004,7 +3000,7 @@ fn collect_reason_row(
         }])
     )
     .next()
-    .and_then(|(command_handle,)| load_text(ws, command_handle));
+    .and_then(|command_handle| load_text(ws, command_handle));
 
     Some(ReasonRow {
         id: reason_id,
@@ -3522,8 +3518,8 @@ fn collect_compass_rows(
     }
 
     let mut note_counts: HashMap<Id, usize> = HashMap::new();
-    for (task_id,) in find!(
-        (task_id: Id),
+    for task_id in find!(
+        task_id: Id,
         pattern!(&data, [{
             _?event @
             metadata::tag: &COMPASS_KIND_NOTE_ID,
@@ -4130,10 +4126,9 @@ fn ensure_local_metadata(ws: &mut Workspace<Pile>) -> Result<TribleSet, String> 
     let mut change = TribleSet::new();
 
     let mut existing_kinds: HashSet<Id> = find!(
-        (kind: Id),
+        kind: Id,
         pattern!(&space, [{ ?kind @ metadata::name: _?handle }])
     )
-    .map(|(kind,)| kind)
     .collect();
 
     for (id, label) in LOCAL_KIND_SPECS {

@@ -1047,37 +1047,35 @@ struct CommandResultInfo {
 fn has_pending_command_request(catalog: &TribleSet) -> bool {
     // Collect command request IDs that have a result.
     let done: Vec<Id> = find!(
-        (about_request: Id),
+        about_request: Id,
         pattern!(catalog, [{
             _?result_id @
             metadata::tag: playground_exec::kind_command_result,
             playground_exec::about_request: ?about_request,
         }])
     )
-    .map(|(id,)| id)
     .collect();
 
     // Check if any command request has no result.
     find!(
-        (request_id: Id),
+        request_id: Id,
         pattern!(catalog, [{
             ?request_id @ metadata::tag: playground_exec::kind_command_request
         }])
     )
-    .any(|(request_id,)| !done.contains(&request_id))
+    .any(|request_id| !done.contains(&request_id))
 }
 
 fn latest_unprocessed_exec_result(catalog: &TribleSet) -> Option<CommandResultInfo> {
     // Collect exec result IDs that are already referenced by a thought.
     let used: Vec<Id> = find!(
-        (exec_result_id: Id),
+        exec_result_id: Id,
         pattern!(catalog, [{
             _?thought_id @
             metadata::tag: playground_cog::kind_thought,
             playground_cog::about_exec_result: ?exec_result_id,
         }])
     )
-    .map(|(id,)| id)
     .collect();
 
     let mut candidates: Vec<CommandResultInfo> = find!(
@@ -1114,38 +1112,36 @@ fn latest_unprocessed_exec_result(catalog: &TribleSet) -> Option<CommandResultIn
 fn latest_pending_model_request(catalog: &TribleSet) -> Option<ModelRequestInfo> {
     // Collect request IDs that already have a result.
     let done: Vec<Id> = find!(
-        (about_request: Id),
+        about_request: Id,
         pattern!(catalog, [{
             _?result_id @
             metadata::tag: model_chat::kind_result,
             model_chat::about_request: ?about_request,
         }])
     )
-    .map(|(id,)| id)
     .collect();
 
     let mut candidates: Vec<(Id, i128, Option<Id>)> = find!(
-        (request_id: Id),
+        request_id: Id,
         pattern!(catalog, [{
             ?request_id @ metadata::tag: model_chat::kind_request
         }])
     )
-    .filter(|(request_id,)| !done.contains(request_id))
-    .map(|(request_id,)| {
+    .filter(|request_id| !done.contains(request_id))
+    .map(|request_id| {
         let requested_at = find!(
-            (ts: Value<NsTAIInterval>),
+            ts: Value<NsTAIInterval>,
             pattern!(catalog, [{ request_id @ model_chat::requested_at: ?ts }])
         )
         .next()
-        .map(|(ts,)| interval_key(ts))
+        .map(|ts| interval_key(ts))
         .unwrap_or(i128::MIN);
 
         let thought_id = find!(
-            (thought_id: Id),
+            thought_id: Id,
             pattern!(catalog, [{ request_id @ model_chat::about_thought: ?thought_id }])
         )
-        .next()
-        .map(|(id,)| id);
+        .next();
 
         (request_id, requested_at, thought_id)
     })
@@ -1161,30 +1157,29 @@ fn latest_pending_model_request(catalog: &TribleSet) -> Option<ModelRequestInfo>
 fn latest_unrequested_thought(catalog: &TribleSet) -> Option<Id> {
     // Collect thought IDs that have a model request referencing them.
     let requested: Vec<Id> = find!(
-        (thought_id: Id),
+        thought_id: Id,
         pattern!(catalog, [{
             _?request_id @
             metadata::tag: model_chat::kind_request,
             model_chat::about_thought: ?thought_id,
         }])
     )
-    .map(|(id,)| id)
     .collect();
 
     let mut candidates: Vec<(Id, i128)> = find!(
-        (thought_id: Id),
+        thought_id: Id,
         pattern!(catalog, [{
             ?thought_id @ metadata::tag: playground_cog::kind_thought
         }])
     )
-    .filter(|(thought_id,)| !requested.contains(thought_id))
-    .map(|(thought_id,)| {
+    .filter(|thought_id| !requested.contains(thought_id))
+    .map(|thought_id| {
         let created_at = find!(
-            (ts: Value<NsTAIInterval>),
+            ts: Value<NsTAIInterval>,
             pattern!(catalog, [{ thought_id @ playground_cog::created_at: ?ts }])
         )
         .next()
-        .map(|(ts,)| interval_key(ts))
+        .map(|ts| interval_key(ts))
         .unwrap_or(i128::MIN);
         (thought_id, created_at)
     })
@@ -1196,7 +1191,7 @@ fn latest_unrequested_thought(catalog: &TribleSet) -> Option<Id> {
 
 fn request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id> {
     find!(
-        (request_id: Id),
+        request_id: Id,
         pattern!(catalog, [{
             ?request_id @
             metadata::tag: model_chat::kind_request,
@@ -1204,12 +1199,11 @@ fn request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id> {
         }])
     )
     .next()
-    .map(|(id,)| id)
 }
 
 fn thought_for_exec_result(catalog: &TribleSet, exec_result_id: Id) -> Option<Id> {
     find!(
-        (thought_id: Id),
+        thought_id: Id,
         pattern!(catalog, [{
             ?thought_id @
             metadata::tag: playground_cog::kind_thought,
@@ -1217,7 +1211,6 @@ fn thought_for_exec_result(catalog: &TribleSet, exec_result_id: Id) -> Option<Id
         }])
     )
     .next()
-    .map(|(id,)| id)
 }
 
 fn thought_context_handle(
@@ -1225,57 +1218,51 @@ fn thought_context_handle(
     thought_id: Id,
 ) -> Option<Value<Handle<Blake3, LongString>>> {
     find!(
-        (context: Value<Handle<Blake3, LongString>>),
+        context: Value<Handle<Blake3, LongString>>,
         pattern!(catalog, [{ thought_id @ playground_cog::context: ?context }])
     )
     .next()
-    .map(|(ctx,)| ctx)
 }
 
 fn latest_model_result(catalog: &TribleSet, request_id: Id) -> Option<ModelResultInfo> {
     find!(
-        (result_id: Id),
+        result_id: Id,
         pattern!(catalog, [{
             ?result_id @
             metadata::tag: model_chat::kind_result,
             model_chat::about_request: request_id,
         }])
     )
-    .map(|(result_id,)| {
+    .map(|result_id| {
             let finished_at = find!(
-                (ts: Value<NsTAIInterval>),
+                ts: Value<NsTAIInterval>,
                 pattern!(catalog, [{ result_id @ model_chat::finished_at: ?ts }])
             )
-            .next()
-            .map(|(ts,)| ts);
+            .next();
 
             let attempt = find!(
-                (a: Value<U256BE>),
+                a: Value<U256BE>,
                 pattern!(catalog, [{ result_id @ model_chat::attempt: ?a }])
             )
-            .next()
-            .map(|(a,)| a);
+            .next();
 
             let output_text = find!(
-                (t: Value<Handle<Blake3, LongString>>),
+                t: Value<Handle<Blake3, LongString>>,
                 pattern!(catalog, [{ result_id @ model_chat::output_text: ?t }])
             )
-            .next()
-            .map(|(t,)| t);
+            .next();
 
             let reasoning_text = find!(
-                (t: Value<Handle<Blake3, LongString>>),
+                t: Value<Handle<Blake3, LongString>>,
                 pattern!(catalog, [{ result_id @ model_chat::reasoning_text: ?t }])
             )
-            .next()
-            .map(|(t,)| t);
+            .next();
 
             let error = find!(
-                (t: Value<Handle<Blake3, LongString>>),
+                t: Value<Handle<Blake3, LongString>>,
                 pattern!(catalog, [{ result_id @ model_chat::error: ?t }])
             )
-            .next()
-            .map(|(t,)| t);
+            .next();
 
             (result_id, attempt, finished_at, output_text, reasoning_text, error)
         })
@@ -1290,34 +1277,32 @@ fn latest_model_result(catalog: &TribleSet, request_id: Id) -> Option<ModelResul
 
 fn reason_events_for_turn(catalog: &TribleSet, turn_id: Id) -> Vec<ReasonEventInfo> {
     let mut events: Vec<(i128, Id, ReasonEventInfo)> = find!(
-        (reason_id: Id),
+        reason_id: Id,
         pattern!(catalog, [{
             ?reason_id @
             reason_events::about_turn: turn_id,
         }])
     )
-    .map(|(reason_id,)| {
+    .map(|reason_id| {
         let created_at = find!(
-            (ts: Value<NsTAIInterval>),
+            ts: Value<NsTAIInterval>,
             pattern!(catalog, [{ reason_id @ reason_events::created_at: ?ts }])
         )
         .next()
-        .map(|(ts,)| interval_key(ts))
+        .map(|ts| interval_key(ts))
         .unwrap_or(i128::MIN);
 
         let text = find!(
-            (t: Value<Handle<Blake3, LongString>>),
+            t: Value<Handle<Blake3, LongString>>,
             pattern!(catalog, [{ reason_id @ reason_events::text: ?t }])
         )
-        .next()
-        .map(|(t,)| t);
+        .next();
 
         let command_text = find!(
-            (t: Value<Handle<Blake3, LongString>>),
+            t: Value<Handle<Blake3, LongString>>,
             pattern!(catalog, [{ reason_id @ reason_events::command_text: ?t }])
         )
-        .next()
-        .map(|(t,)| t);
+        .next();
 
         (created_at, reason_id, ReasonEventInfo { text, command_text })
     })
@@ -1332,16 +1317,15 @@ fn command_request_command_handle(
     request_id: Id,
 ) -> Option<Value<Handle<Blake3, LongString>>> {
     find!(
-        (cmd: Value<Handle<Blake3, LongString>>),
+        cmd: Value<Handle<Blake3, LongString>>,
         pattern!(catalog, [{ request_id @ playground_exec::command_text: ?cmd }])
     )
     .next()
-    .map(|(cmd,)| cmd)
 }
 
 fn command_request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id> {
     find!(
-        (request_id: Id),
+        request_id: Id,
         pattern!(catalog, [{
             ?request_id @
             metadata::tag: playground_exec::kind_command_request,
@@ -1349,19 +1333,18 @@ fn command_request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id
         }])
     )
     .next()
-    .map(|(id,)| id)
 }
 
 fn latest_command_result(catalog: &TribleSet, request_id: Id) -> Option<CommandResultInfo> {
     let results: Vec<CommandResultInfo> = find!(
-        (result_id: Id),
+        result_id: Id,
         pattern!(catalog, [{
             ?result_id @
             metadata::tag: playground_exec::kind_command_result,
             playground_exec::about_request: request_id,
         }])
     )
-    .map(|(result_id,)| {
+    .map(|result_id| {
         let mut info = CommandResultInfo {
             id: result_id,
             about_request: request_id,
@@ -1393,11 +1376,11 @@ fn latest_moment_boundary_turn_id(catalog: &TribleSet) -> Option<Id> {
     )
     .filter_map(|(boundary_id, turn_id)| {
         let created = find!(
-            (ts: Value<NsTAIInterval>),
+            ts: Value<NsTAIInterval>,
             pattern!(catalog, [{ boundary_id @ playground_cog::created_at: ?ts }])
         )
         .next()
-        .map(|(ts,)| interval_key(ts))?;
+        .map(|ts| interval_key(ts))?;
         Some((created, boundary_id, turn_id))
     })
     .max_by_key(|(created, boundary_id, _)| (*created, *boundary_id))
@@ -1440,60 +1423,52 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
     let result_id = info.id;
 
     info.finished_at = find!(
-        (ts: Value<NsTAIInterval>),
+        ts: Value<NsTAIInterval>,
         pattern!(catalog, [{ result_id @ playground_exec::finished_at: ?ts }])
     )
-    .next()
-    .map(|(ts,)| ts);
+    .next();
 
     info.attempt = find!(
-        (a: Value<U256BE>),
+        a: Value<U256BE>,
         pattern!(catalog, [{ result_id @ playground_exec::attempt: ?a }])
     )
-    .next()
-    .map(|(a,)| a);
+    .next();
 
     info.stdout = find!(
-        (s: Value<Handle<Blake3, UnknownBlob>>),
+        s: Value<Handle<Blake3, UnknownBlob>>,
         pattern!(catalog, [{ result_id @ playground_exec::stdout: ?s }])
     )
-    .next()
-    .map(|(s,)| s);
+    .next();
 
     info.stderr = find!(
-        (s: Value<Handle<Blake3, UnknownBlob>>),
+        s: Value<Handle<Blake3, UnknownBlob>>,
         pattern!(catalog, [{ result_id @ playground_exec::stderr: ?s }])
     )
-    .next()
-    .map(|(s,)| s);
+    .next();
 
     info.stdout_text = find!(
-        (t: Value<Handle<Blake3, LongString>>),
+        t: Value<Handle<Blake3, LongString>>,
         pattern!(catalog, [{ result_id @ playground_exec::stdout_text: ?t }])
     )
-    .next()
-    .map(|(t,)| t);
+    .next();
 
     info.stderr_text = find!(
-        (t: Value<Handle<Blake3, LongString>>),
+        t: Value<Handle<Blake3, LongString>>,
         pattern!(catalog, [{ result_id @ playground_exec::stderr_text: ?t }])
     )
-    .next()
-    .map(|(t,)| t);
+    .next();
 
     info.exit_code = find!(
-        (c: Value<U256BE>),
+        c: Value<U256BE>,
         pattern!(catalog, [{ result_id @ playground_exec::exit_code: ?c }])
     )
-    .next()
-    .map(|(c,)| c);
+    .next();
 
     info.error = find!(
-        (e: Value<Handle<Blake3, LongString>>),
+        e: Value<Handle<Blake3, LongString>>,
         pattern!(catalog, [{ result_id @ playground_exec::error: ?e }])
     )
-    .next()
-    .map(|(e,)| e);
+    .next();
 }
 
 fn model_result_rank(
@@ -1586,26 +1561,26 @@ fn wait_for_command_result(
 
 fn delta_has_model_result(updated: &TribleSet, delta: &TribleSet, request_id: Id) -> bool {
     find!(
-        (about_request: Id),
+        about_request: Id,
         pattern_changes!(updated, delta, [{
             _?event @
             metadata::tag: model_chat::kind_result,
             model_chat::about_request: ?about_request,
         }])
     )
-    .any(|(about_request,)| about_request == request_id)
+    .any(|about_request| about_request == request_id)
 }
 
 fn delta_has_command_result(updated: &TribleSet, delta: &TribleSet, request_id: Id) -> bool {
     find!(
-        (about_request: Id),
+        about_request: Id,
         pattern_changes!(updated, delta, [{
             _?event @
             metadata::tag: playground_exec::kind_command_result,
             playground_exec::about_request: ?about_request,
         }])
     )
-    .any(|(about_request,)| about_request == request_id)
+    .any(|about_request| about_request == request_id)
 }
 
 
@@ -2119,7 +2094,7 @@ fn load_reasoning_for_exec_result(
 ) -> Result<Option<(Id, String)>> {
     // Multi-hop join: command_request → thought → model_request → result
     let Some(request_id) = find!(
-        (request_id: Id),
+        request_id: Id,
         pattern!(catalog, [{
             exec_result.about_request @ playground_exec::about_thought: _?mid,
         }, {
@@ -2128,8 +2103,7 @@ fn load_reasoning_for_exec_result(
             model_chat::about_thought: _?mid,
         }])
     )
-    .next()
-    .map(|(id,)| id) else {
+    .next() else {
         return Ok(None);
     };
     let Some(result) = latest_model_result(catalog, request_id) else {

@@ -24,7 +24,7 @@ rand_core = "0.9.5"
 reqwest = { version = "0.12.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-triblespace = { version = "0.21.0", default-features = false }
+triblespace = { version = "0.22.0", default-features = false }
 
 [dev-dependencies]
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
