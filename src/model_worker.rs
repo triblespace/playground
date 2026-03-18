@@ -306,7 +306,7 @@ pub(crate) fn run_model_loop(
             let context_text = load_text(&mut ws, request.context).context("load context")?;
             let model = request
                 .model
-                .map(|value| String::from_value(&value))
+                .and_then(|value| value.try_from_value::<String>().ok())
                 .unwrap_or_else(|| config.model.model.clone());
 
             let attempt: u64 = 1;

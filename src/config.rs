@@ -538,7 +538,7 @@ fn load_id_attr(catalog: &TribleSet, config_id: Id, attr: Attribute<GenId>) -> O
         pattern!(catalog, [{ ?entity @ attr: ?value }])
     )
     .into_iter()
-    .find_map(|(entity, value)| (entity == config_id).then_some(Id::from_value(&value)))
+    .find_map(|(entity, value)| (entity == config_id).then(|| value.try_from_value::<Id>().ok())?)
 }
 
 fn load_u256_attr(
