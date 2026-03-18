@@ -1378,16 +1378,6 @@ fn command_request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id
     .map(|(id,)| id)
 }
 
-fn thought_for_command_request(catalog: &TribleSet, command_request_id: Id) -> Option<Id> {
-    find!(
-        (thought_id: Id),
-        pattern!(catalog, [{ command_request_id @ playground_exec::about_thought: ?thought_id }])
-    )
-    .into_iter()
-    .next()
-    .map(|(id,)| id)
-}
-
 fn latest_command_result(catalog: &TribleSet, request_id: Id) -> Option<CommandResultInfo> {
     let results: Vec<CommandResultInfo> = find!(
         (result_id: Id),
@@ -2167,10 +2157,19 @@ fn load_reasoning_for_exec_result(
     catalog: &TribleSet,
     exec_result: &CommandResultInfo,
 ) -> Result<Option<(Id, String)>> {
-    let Some(thought_id) = thought_for_command_request(catalog, exec_result.about_request) else {
-        return Ok(None);
-    };
-    let Some(request_id) = request_for_thought(catalog, thought_id) else {
+    // Multi-hop join: command_request → thought → model_request → result
+    let Some(request_id) = find!(
+        (request_id: Id),
+        pattern!(catalog, [{
+            exec_result.about_request @ playground_exec::about_thought: _?mid,
+        }, {
+            ?request_id @
+            metadata::tag: model_chat::kind_request,
+            model_chat::about_thought: _?mid,
+        }])
+    )
+    .next()
+    .map(|(id,)| id) else {
         return Ok(None);
     };
     let Some(result) = latest_model_result(catalog, request_id) else {
