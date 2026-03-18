@@ -1481,8 +1481,7 @@ fn list_branches(pile: &mut Pile<Blake3>) -> Result<Vec<BranchEntry>, String> {
                         let mut names = find!(
                             (handle: Value<Handle<Blake3, LongString>>),
                             pattern!(&metadata_set, [{ metadata::name: ?handle }])
-                        )
-                        .into_iter();
+                        );
                         match (names.next(), names.next()) {
                             (Some((handle,)), None) => reader
                                 .get::<View<str>, _>(handle)
@@ -1821,7 +1820,6 @@ fn load_optional_id_attr(data: &TribleSet, entity_id: Id, attr: Attribute<GenId>
         (value: Value<GenId>),
         pattern!(data, [{ entity_id @ attr: ?value }])
     )
-    .into_iter()
     .find_map(|(value,)| Id::try_from_value(&value).ok())
 }
 
@@ -1830,7 +1828,6 @@ fn load_optional_u64_attr(data: &TribleSet, entity_id: Id, attr: Attribute<U256B
         (value: Value<U256BE>),
         pattern!(data, [{ entity_id @ attr: ?value }])
     )
-    .into_iter()
     .next()
     .map(|(value,)| value)
     .and_then(|v| v.try_from_value::<u64>().ok())
@@ -1845,7 +1842,6 @@ fn load_optional_interval_attr(
         (value: Value<NsTAIInterval>),
         pattern!(data, [{ entity_id @ attr: ?value }])
     )
-    .into_iter()
     .next()
     .map(|(value,)| interval_key(value))
 }
@@ -1916,7 +1912,6 @@ fn collect_exec_row(data: &TribleSet, ws: &mut Workspace<Pile>, request_id: Id) 
             playground_exec::command_text: ?command,
         }])
     )
-    .into_iter()
     .next()
     .map(|(command,)| command)?;
     let command = load_text(ws, command_handle).unwrap_or_else(|| "<missing>".to_string());
@@ -2246,7 +2241,6 @@ fn collect_local_message_row(
             local_messages::created_at: ?created_at,
         }])
     )
-    .into_iter()
     .next()?;
     let (from, to, body_handle, created_at) = message;
     let body = load_text(ws, body_handle).unwrap_or_else(|| "<missing>".to_string());
@@ -2632,7 +2626,6 @@ fn load_optional_string_attr(
             attr: ?handle,
         }])
     )
-    .into_iter()
     .next()
     .and_then(|(handle,)| load_text(ws, handle))
 }
@@ -2722,7 +2715,6 @@ fn collect_reasoning_summary_row(
             model_chat::finished_at: ?finished_at,
         }])
     )
-    .into_iter()
     .next()
     .map(|(finished_at,)| interval_key(finished_at))?;
 
@@ -2734,7 +2726,6 @@ fn collect_reasoning_summary_row(
             model_chat::reasoning_text: ?reasoning_handle,
         }])
     )
-    .into_iter()
     .next()
     {
         load_text(ws, reasoning_handle).unwrap_or_default()
@@ -2746,7 +2737,6 @@ fn collect_reasoning_summary_row(
             model_chat::response_raw: ?raw_handle,
         }])
     )
-    .into_iter()
     .next()
     {
         let raw = load_text(ws, raw_handle).unwrap_or_default();
@@ -2760,22 +2750,22 @@ fn collect_reasoning_summary_row(
     let input_tokens = find!(
         (v: Value<U256BE>),
         pattern!(data, [{ result_id @ model_chat::input_tokens: ?v }])
-    ).into_iter().next().and_then(|(v,)| u256be_to_u64(v));
+    ).next().and_then(|(v,)| u256be_to_u64(v));
 
     let output_tokens = find!(
         (v: Value<U256BE>),
         pattern!(data, [{ result_id @ model_chat::output_tokens: ?v }])
-    ).into_iter().next().and_then(|(v,)| u256be_to_u64(v));
+    ).next().and_then(|(v,)| u256be_to_u64(v));
 
     let cache_creation_input_tokens = find!(
         (v: Value<U256BE>),
         pattern!(data, [{ result_id @ model_chat::cache_creation_input_tokens: ?v }])
-    ).into_iter().next().and_then(|(v,)| u256be_to_u64(v));
+    ).next().and_then(|(v,)| u256be_to_u64(v));
 
     let cache_read_input_tokens = find!(
         (v: Value<U256BE>),
         pattern!(data, [{ result_id @ model_chat::cache_read_input_tokens: ?v }])
-    ).into_iter().next().and_then(|(v,)| u256be_to_u64(v));
+    ).next().and_then(|(v,)| u256be_to_u64(v));
 
     let has_content = !summary.trim().is_empty()
         || input_tokens.is_some()
@@ -2983,7 +2973,6 @@ fn collect_reason_row(
             reason_events::created_at: ?created_at,
         }])
     )
-    .into_iter()
     .next()?;
     let text = load_text(ws, text_handle)?;
     let turn_id = find!(
@@ -2994,7 +2983,6 @@ fn collect_reason_row(
             reason_events::about_turn: ?turn_id,
         }])
     )
-    .into_iter()
     .next()
     .map(|(turn_id,)| turn_id);
     let worker_id = find!(
@@ -3005,7 +2993,6 @@ fn collect_reason_row(
             reason_events::worker: ?worker_id,
         }])
     )
-    .into_iter()
     .next()
     .map(|(worker_id,)| worker_id);
     let command_text = find!(
@@ -3016,7 +3003,6 @@ fn collect_reason_row(
             reason_events::command_text: ?command_handle,
         }])
     )
-    .into_iter()
     .next()
     .and_then(|(command_handle,)| load_text(ws, command_handle));
 
@@ -4147,7 +4133,6 @@ fn ensure_local_metadata(ws: &mut Workspace<Pile>) -> Result<TribleSet, String> 
         (kind: Id),
         pattern!(&space, [{ ?kind @ metadata::name: _?handle }])
     )
-    .into_iter()
     .map(|(kind,)| kind)
     .collect();
 
@@ -4590,7 +4575,6 @@ fn mask_secret(secret: &str) -> String {
         .rev()
         .take(4)
         .collect::<Vec<_>>()
-        .into_iter()
         .rev()
         .collect();
     format!("{prefix}…{suffix}")

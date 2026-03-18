@@ -1054,7 +1054,6 @@ fn has_pending_command_request(catalog: &TribleSet) -> bool {
             playground_exec::about_request: ?about_request,
         }])
     )
-    .into_iter()
     .map(|(id,)| id)
     .collect();
 
@@ -1065,7 +1064,6 @@ fn has_pending_command_request(catalog: &TribleSet) -> bool {
             ?request_id @ metadata::tag: playground_exec::kind_command_request
         }])
     )
-    .into_iter()
     .any(|(request_id,)| !done.contains(&request_id))
 }
 
@@ -1079,7 +1077,6 @@ fn latest_unprocessed_exec_result(catalog: &TribleSet) -> Option<CommandResultIn
             playground_cog::about_exec_result: ?exec_result_id,
         }])
     )
-    .into_iter()
     .map(|(id,)| id)
     .collect();
 
@@ -1091,7 +1088,6 @@ fn latest_unprocessed_exec_result(catalog: &TribleSet) -> Option<CommandResultIn
             playground_exec::about_request: ?about_request,
         }])
     )
-    .into_iter()
     .filter(|(result_id, _)| !used.contains(result_id))
     .map(|(result_id, about_request)| {
         let mut info = CommandResultInfo {
@@ -1125,7 +1121,6 @@ fn latest_pending_model_request(catalog: &TribleSet) -> Option<ModelRequestInfo>
             model_chat::about_request: ?about_request,
         }])
     )
-    .into_iter()
     .map(|(id,)| id)
     .collect();
 
@@ -1135,14 +1130,12 @@ fn latest_pending_model_request(catalog: &TribleSet) -> Option<ModelRequestInfo>
             ?request_id @ metadata::tag: model_chat::kind_request
         }])
     )
-    .into_iter()
     .filter(|(request_id,)| !done.contains(request_id))
     .map(|(request_id,)| {
         let requested_at = find!(
             (ts: Value<NsTAIInterval>),
             pattern!(catalog, [{ request_id @ model_chat::requested_at: ?ts }])
         )
-        .into_iter()
         .next()
         .map(|(ts,)| interval_key(ts))
         .unwrap_or(i128::MIN);
@@ -1151,7 +1144,6 @@ fn latest_pending_model_request(catalog: &TribleSet) -> Option<ModelRequestInfo>
             (thought_id: Id),
             pattern!(catalog, [{ request_id @ model_chat::about_thought: ?thought_id }])
         )
-        .into_iter()
         .next()
         .map(|(id,)| id);
 
@@ -1176,7 +1168,6 @@ fn latest_unrequested_thought(catalog: &TribleSet) -> Option<Id> {
             model_chat::about_thought: ?thought_id,
         }])
     )
-    .into_iter()
     .map(|(id,)| id)
     .collect();
 
@@ -1186,14 +1177,12 @@ fn latest_unrequested_thought(catalog: &TribleSet) -> Option<Id> {
             ?thought_id @ metadata::tag: playground_cog::kind_thought
         }])
     )
-    .into_iter()
     .filter(|(thought_id,)| !requested.contains(thought_id))
     .map(|(thought_id,)| {
         let created_at = find!(
             (ts: Value<NsTAIInterval>),
             pattern!(catalog, [{ thought_id @ playground_cog::created_at: ?ts }])
         )
-        .into_iter()
         .next()
         .map(|(ts,)| interval_key(ts))
         .unwrap_or(i128::MIN);
@@ -1214,7 +1203,6 @@ fn request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id> {
             model_chat::about_thought: thought_id,
         }])
     )
-    .into_iter()
     .next()
     .map(|(id,)| id)
 }
@@ -1228,7 +1216,6 @@ fn thought_for_exec_result(catalog: &TribleSet, exec_result_id: Id) -> Option<Id
             playground_cog::about_exec_result: exec_result_id,
         }])
     )
-    .into_iter()
     .next()
     .map(|(id,)| id)
 }
@@ -1241,7 +1228,6 @@ fn thought_context_handle(
         (context: Value<Handle<Blake3, LongString>>),
         pattern!(catalog, [{ thought_id @ playground_cog::context: ?context }])
     )
-    .into_iter()
     .next()
     .map(|(ctx,)| ctx)
 }
@@ -1255,13 +1241,11 @@ fn latest_model_result(catalog: &TribleSet, request_id: Id) -> Option<ModelResul
             model_chat::about_request: request_id,
         }])
     )
-    .into_iter()
     .map(|(result_id,)| {
             let finished_at = find!(
                 (ts: Value<NsTAIInterval>),
                 pattern!(catalog, [{ result_id @ model_chat::finished_at: ?ts }])
             )
-            .into_iter()
             .next()
             .map(|(ts,)| ts);
 
@@ -1269,7 +1253,6 @@ fn latest_model_result(catalog: &TribleSet, request_id: Id) -> Option<ModelResul
                 (a: Value<U256BE>),
                 pattern!(catalog, [{ result_id @ model_chat::attempt: ?a }])
             )
-            .into_iter()
             .next()
             .map(|(a,)| a);
 
@@ -1277,7 +1260,6 @@ fn latest_model_result(catalog: &TribleSet, request_id: Id) -> Option<ModelResul
                 (t: Value<Handle<Blake3, LongString>>),
                 pattern!(catalog, [{ result_id @ model_chat::output_text: ?t }])
             )
-            .into_iter()
             .next()
             .map(|(t,)| t);
 
@@ -1285,7 +1267,6 @@ fn latest_model_result(catalog: &TribleSet, request_id: Id) -> Option<ModelResul
                 (t: Value<Handle<Blake3, LongString>>),
                 pattern!(catalog, [{ result_id @ model_chat::reasoning_text: ?t }])
             )
-            .into_iter()
             .next()
             .map(|(t,)| t);
 
@@ -1293,7 +1274,6 @@ fn latest_model_result(catalog: &TribleSet, request_id: Id) -> Option<ModelResul
                 (t: Value<Handle<Blake3, LongString>>),
                 pattern!(catalog, [{ result_id @ model_chat::error: ?t }])
             )
-            .into_iter()
             .next()
             .map(|(t,)| t);
 
@@ -1316,13 +1296,11 @@ fn reason_events_for_turn(catalog: &TribleSet, turn_id: Id) -> Vec<ReasonEventIn
             reason_events::about_turn: turn_id,
         }])
     )
-    .into_iter()
     .map(|(reason_id,)| {
         let created_at = find!(
             (ts: Value<NsTAIInterval>),
             pattern!(catalog, [{ reason_id @ reason_events::created_at: ?ts }])
         )
-        .into_iter()
         .next()
         .map(|(ts,)| interval_key(ts))
         .unwrap_or(i128::MIN);
@@ -1331,7 +1309,6 @@ fn reason_events_for_turn(catalog: &TribleSet, turn_id: Id) -> Vec<ReasonEventIn
             (t: Value<Handle<Blake3, LongString>>),
             pattern!(catalog, [{ reason_id @ reason_events::text: ?t }])
         )
-        .into_iter()
         .next()
         .map(|(t,)| t);
 
@@ -1339,7 +1316,6 @@ fn reason_events_for_turn(catalog: &TribleSet, turn_id: Id) -> Vec<ReasonEventIn
             (t: Value<Handle<Blake3, LongString>>),
             pattern!(catalog, [{ reason_id @ reason_events::command_text: ?t }])
         )
-        .into_iter()
         .next()
         .map(|(t,)| t);
 
@@ -1359,7 +1335,6 @@ fn command_request_command_handle(
         (cmd: Value<Handle<Blake3, LongString>>),
         pattern!(catalog, [{ request_id @ playground_exec::command_text: ?cmd }])
     )
-    .into_iter()
     .next()
     .map(|(cmd,)| cmd)
 }
@@ -1373,7 +1348,6 @@ fn command_request_for_thought(catalog: &TribleSet, thought_id: Id) -> Option<Id
             playground_exec::about_thought: thought_id,
         }])
     )
-    .into_iter()
     .next()
     .map(|(id,)| id)
 }
@@ -1387,7 +1361,6 @@ fn latest_command_result(catalog: &TribleSet, request_id: Id) -> Option<CommandR
             playground_exec::about_request: request_id,
         }])
     )
-    .into_iter()
     .map(|(result_id,)| {
         let mut info = CommandResultInfo {
             id: result_id,
@@ -1418,13 +1391,11 @@ fn latest_moment_boundary_turn_id(catalog: &TribleSet) -> Option<Id> {
             playground_cog::moment_boundary_turn_id: ?turn_id,
         }])
     )
-    .into_iter()
     .filter_map(|(boundary_id, turn_id)| {
         let created = find!(
             (ts: Value<NsTAIInterval>),
             pattern!(catalog, [{ boundary_id @ playground_cog::created_at: ?ts }])
         )
-        .into_iter()
         .next()
         .map(|(ts,)| interval_key(ts))?;
         Some((created, boundary_id, turn_id))
@@ -1442,7 +1413,6 @@ fn sorted_finished_command_results(catalog: &TribleSet) -> Vec<CommandResultInfo
             playground_exec::about_request: ?about_request,
         }])
     )
-    .into_iter()
     .map(|(result_id, about_request)| {
         let mut info = CommandResultInfo {
             id: result_id,
@@ -1473,7 +1443,6 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
         (ts: Value<NsTAIInterval>),
         pattern!(catalog, [{ result_id @ playground_exec::finished_at: ?ts }])
     )
-    .into_iter()
     .next()
     .map(|(ts,)| ts);
 
@@ -1481,7 +1450,6 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
         (a: Value<U256BE>),
         pattern!(catalog, [{ result_id @ playground_exec::attempt: ?a }])
     )
-    .into_iter()
     .next()
     .map(|(a,)| a);
 
@@ -1489,7 +1457,6 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
         (s: Value<Handle<Blake3, UnknownBlob>>),
         pattern!(catalog, [{ result_id @ playground_exec::stdout: ?s }])
     )
-    .into_iter()
     .next()
     .map(|(s,)| s);
 
@@ -1497,7 +1464,6 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
         (s: Value<Handle<Blake3, UnknownBlob>>),
         pattern!(catalog, [{ result_id @ playground_exec::stderr: ?s }])
     )
-    .into_iter()
     .next()
     .map(|(s,)| s);
 
@@ -1505,7 +1471,6 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
         (t: Value<Handle<Blake3, LongString>>),
         pattern!(catalog, [{ result_id @ playground_exec::stdout_text: ?t }])
     )
-    .into_iter()
     .next()
     .map(|(t,)| t);
 
@@ -1513,7 +1478,6 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
         (t: Value<Handle<Blake3, LongString>>),
         pattern!(catalog, [{ result_id @ playground_exec::stderr_text: ?t }])
     )
-    .into_iter()
     .next()
     .map(|(t,)| t);
 
@@ -1521,7 +1485,6 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
         (c: Value<U256BE>),
         pattern!(catalog, [{ result_id @ playground_exec::exit_code: ?c }])
     )
-    .into_iter()
     .next()
     .map(|(c,)| c);
 
@@ -1529,7 +1492,6 @@ fn fill_command_result_fields(catalog: &TribleSet, info: &mut CommandResultInfo)
         (e: Value<Handle<Blake3, LongString>>),
         pattern!(catalog, [{ result_id @ playground_exec::error: ?e }])
     )
-    .into_iter()
     .next()
     .map(|(e,)| e);
 }
@@ -1631,7 +1593,6 @@ fn delta_has_model_result(updated: &TribleSet, delta: &TribleSet, request_id: Id
             model_chat::about_request: ?about_request,
         }])
     )
-    .into_iter()
     .any(|(about_request,)| about_request == request_id)
 }
 
@@ -1644,7 +1605,6 @@ fn delta_has_command_result(updated: &TribleSet, delta: &TribleSet, request_id: 
             playground_exec::about_request: ?about_request,
         }])
     )
-    .into_iter()
     .any(|(about_request,)| about_request == request_id)
 }
 

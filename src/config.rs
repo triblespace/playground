@@ -517,7 +517,6 @@ fn load_string_attr(
         (entity: Id, handle: Value<Handle<Blake3, LongString>>),
         pattern!(catalog, [{ ?entity @ attr: ?handle }])
     )
-    .into_iter()
     .filter(|(entity, _)| *entity == config_id);
     let Some((_, handle)) = handles.next() else {
         return Ok(None);
@@ -537,7 +536,6 @@ fn load_id_attr(catalog: &TribleSet, config_id: Id, attr: Attribute<GenId>) -> O
         (entity: Id, value: Value<GenId>),
         pattern!(catalog, [{ ?entity @ attr: ?value }])
     )
-    .into_iter()
     .find_map(|(entity, value)| (entity == config_id).then(|| value.try_from_value::<Id>().ok())?)
 }
 
@@ -550,7 +548,6 @@ fn load_u256_attr(
         (entity: Id, value: Value<U256BE>),
         pattern!(catalog, [{ ?entity @ attr: ?value }])
     )
-    .into_iter()
     .find_map(|(entity, value)| (entity == config_id).then_some(value))
 }
 
